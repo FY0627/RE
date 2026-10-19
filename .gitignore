@@ -1,0 +1,44 @@
+# OS / editors
+.DS_Store
+Thumbs.db
+*.swp
+.history
+.idea/
+*.iml
+*.ipr
+*.iws
+# .vscode/ is intentionally tracked if added (shared launch configs).
+
+# Flutter / Dart / Pub
+.dart_tool/
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+build/
+coverage/
+**/doc/api/
+.widget_preview/
+migrate_working_dir/
+
+# Native tooling
+*.class
+*.log
+*.pyc
+.atom/
+.build/
+.buildlog/
+.svn/
+.swiftpm/
+local.properties
+
+# Android Studio build artifacts
+app/android/app/debug
+app/android/app/profile
+app/android/app/release
+
+# Symbolication / obfuscation
+app.*.symbols
+app.*.map.json
+
+# DevTools performance recordings
+dart_devtools_*.json

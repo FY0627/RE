@@ -1,0 +1,28 @@
+name: bookkeeping_app
+description: "Local-first bookkeeping app for Android and iOS."
+publish_to: none
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.13.5
+
+resolution: workspace
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  # Layering: app -> backend -> database, app -> native.
+  # app must never import bk_database directly.
+  bk_backend:
+    path: ../backend
+  bk_native:
+    path: ../native
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

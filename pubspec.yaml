@@ -1,0 +1,12 @@
+# Pub workspace root. Run `flutter pub get` here once for all packages.
+name: bookkeeping_workspace
+publish_to: none
+
+environment:
+  sdk: ^3.13.5
+
+workspace:
+  - app
+  - backend
+  - database
+  - native

@@ -1,0 +1,14 @@
+name: bk_database
+description: "Local SQLite database (drift): tables, DAOs and migrations."
+publish_to: none
+version: 0.0.1
+
+environment:
+  sdk: ^3.13.5
+
+resolution: workspace
+
+# Pure Dart: must not depend on Flutter. drift will be added when the schema is written.
+
+dev_dependencies:
+  lints: ^6.0.0

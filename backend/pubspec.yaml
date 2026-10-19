@@ -1,0 +1,17 @@
+name: bk_backend
+description: "On-device backend: business services, sync and auto-entry parsing."
+publish_to: none
+version: 0.0.1
+
+environment:
+  sdk: ^3.13.5
+
+resolution: workspace
+
+# Pure Dart: must not depend on Flutter.
+dependencies:
+  bk_database:
+    path: ../database
+
+dev_dependencies:
+  lints: ^6.0.0
