@@ -41,12 +41,15 @@ final class AppServices: Sendable {
 
     static var databaseURL: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("Ledger", isDirectory: true).appendingPathComponent("ledger.sqlite")
+        // 截图模式用独立目录，不碰真实账本
+        let folder = ScreenshotMode.isActive ? "Ledger-Screenshot" : "Ledger"
+        return base.appendingPathComponent(folder, isDirectory: true).appendingPathComponent("ledger.sqlite")
     }
 
     private static func openBackend() throws -> LedgerBackend {
         let url = databaseURL
         let directory = url.deletingLastPathComponent()
+        if ScreenshotMode.isActive { try? FileManager.default.removeItem(at: directory) }
         // 数据保护：首次解锁后可访问。锁屏状态下（首次解锁之后）自动化仍可写入；
         // 开机后从未解锁时文件不可读写，入账会明确失败而不是静默丢失。
         let protection: [FileAttributeKey: Any] = [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]

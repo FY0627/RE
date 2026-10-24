@@ -54,6 +54,13 @@ jobs:
           set -o pipefail
           bash ios-swift/ci/package-ipa.sh "$OUT" 2>&1 | tee "$OUT/logs/package-ipa.log"
 
+      # 模拟器截图写入 ci-out/ipa/screenshots/，随 IPA 一起上传。截图失败只留警告，不影响 IPA。
+      - name: Simulator screenshots
+        id: screenshots
+        continue-on-error: true
+        timeout-minutes: 20
+        run: bash ios-swift/ci/screenshots.sh "$OUT"
+
       - name: Report errors as annotations
         if: failure()
         run: bash ios-swift/ci/annotate-failure.sh "$OUT"
@@ -79,6 +86,14 @@ jobs:
               cat "$OUT/ipa-verification.txt"
               echo '```'
             fi
+            if [ -n "${{ steps.screenshots.outcome }}" ] && [ "${{ steps.screenshots.outcome }}" != "skipped" ]; then
+              echo "### Screenshots"
+              if [ "${{ steps.screenshots.outcome }}" = "success" ]; then
+                echo "${{ steps.screenshots.outputs.count }} 张（${{ steps.screenshots.outputs.device }}），在 IPA 产物的 \`screenshots/\` 目录。"
+              else
+                echo "截图失败（IPA 不受影响），日志见 diagnostics 产物的 \`logs/screenshots-build.log\` 与本步骤输出。"
+              fi
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload IPA
@@ -91,6 +106,7 @@ jobs:
             ci-out/ipa/*.sha256
             ci-out/ipa/build-info.txt
             ci-out/ipa/ipa-verification.txt
+            ci-out/ipa/screenshots/*.png
           if-no-files-found: error
           retention-days: 30
 

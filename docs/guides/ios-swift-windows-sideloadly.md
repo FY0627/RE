@@ -10,7 +10,7 @@
 
 1. 打开仓库的 Actions 页面：`https://github.com/FY0627/RE/actions/workflows/ios-swift-build.yml`，进入最新一次绿色（成功）的运行。
 2. 页面底部 **Artifacts** 里下载名为 `Bookkeeping-<版本>-b<构建号>-<提交前8位>` 的产物（需要登录 GitHub）。
-3. 解压得到 `.ipa`、`.ipa.sha256`、`build-info.txt`、`ipa-verification.txt`。
+3. 解压得到 `.ipa`、`.ipa.sha256`、`build-info.txt`、`ipa-verification.txt`，以及 `screenshots/` 目录（模拟器上用演示数据截的浅色 / 深色界面图，可在安装前预览本次构建；某次截图失败时这个目录可能缺失，不影响 IPA）。
 4. 在 PowerShell 中校验：
 
    ```powershell

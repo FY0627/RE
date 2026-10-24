@@ -33,7 +33,8 @@ ios-swift/
 2. `swift test`（macOS 主机）+ `xcodebuild test`（iOS 模拟器）运行 BKCore 测试；
 3. 构建 Release / iphoneos / arm64、不签名的 `Bookkeeping.app`；
 4. 校验可执行文件、Mach-O 平台、Info.plist、依赖、资源与 App Intents 元数据，打包为 `Payload/Bookkeeping.app` 的 IPA；
-5. 上传 IPA（含 SHA-256 与 build-info）和诊断产物。
+5. 在 iOS 模拟器上运行 Debug 版，浅色 / 深色各截首页、资产、统计、我的、待处理（[`ci/screenshots.sh`](ci/screenshots.sh)；App 以截图模式启动，使用独立的临时账本和虚构演示数据，见 [`ScreenshotMode.swift`](Bookkeeping/Diagnostics/ScreenshotMode.swift)，Release 构建中不生效）。截图失败只留警告，不影响 IPA；
+6. 上传 IPA（含 SHA-256、build-info 与 `screenshots/`）和诊断产物。
 
 推送 `ios-swift` 分支或在 Actions 页面手动运行（可选指定 Xcode 路径）。
 

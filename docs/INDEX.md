@@ -27,6 +27,7 @@
 | iOS Swift 版：卡包、详情转场、加号上拉、底栏 | [ios-swift/README.md](../ios-swift/README.md) | `ios-swift/Bookkeeping/UI/{Assets,Shell}/` |
 | iOS Swift 版：卡顿、性能开关、帧率指标 | [guides/ios-swift-device-checklist.md](guides/ios-swift-device-checklist.md) | `ios-swift/Bookkeeping/Diagnostics/` |
 | iOS Swift 版：CI 构建、IPA、Sideloadly 安装与续签 | [guides/ios-swift-windows-sideloadly.md](guides/ios-swift-windows-sideloadly.md)、[decisions/0009](decisions/0009-ios-swift-ci-sideloadly.md) | `.github/workflows/ios-swift-build.yml`、`ios-swift/ci/` |
+| iOS Swift 版：CI 模拟器截图、演示数据 | [ios-swift/README.md](../ios-swift/README.md) | `ios-swift/ci/screenshots.sh`、`ios-swift/Bookkeeping/Diagnostics/ScreenshotMode.swift` |
 
 ## 按目录查
 
