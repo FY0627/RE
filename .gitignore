@@ -42,3 +42,10 @@ app.*.map.json
 
 # DevTools performance recordings
 dart_devtools_*.json
+
+# iOS Swift (ios-swift/)
+ios-swift/**/xcuserdata/
+ios-swift/**/*.xcuserstate
+ios-swift/**/DerivedData/
+ios-swift/Packages/BKCore/.build/
+ios-swift/Packages/BKCore/Package.resolved
