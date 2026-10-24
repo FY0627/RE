@@ -1,40 +1,50 @@
 import UIKit
 
-/// 找到系统标签栏右侧那个独立圆形按钮（`Tab(role: .search)`）在窗口中的位置，
-/// 好把上拉手势精确盖在它上面。系统没有公开这个位置，所以：
-/// 1. 先按无障碍标签（标签的标题）找；
-/// 2. 找不到时，在 `UITabBar` 范围内找右侧的正圆形视图。
-/// 两种都找不到就返回 nil：界面退回系统按钮本身（轻点直接打开），功能不受影响。
+/// 找到系统标签栏右侧那个独立圆形按钮（`Tab(role: .search)`）在窗口中的位置和大小，
+/// 好把上拉手势精确盖在它上面。系统没有公开这个位置，所以按无障碍标签（标签的标题）去找，并且确认：
+/// - 它确实被系统单独画成了圆形（正方形外框），而不是排在胶囊里的普通标签；
+/// - 它和左边胶囊里的最后一个标签之间有空隙。
+/// 任何一条不满足就返回 nil：不接管，界面保持系统按钮本身（轻点直接打开），功能不受影响。
 @MainActor
 enum TabBarProbe {
-    static func addButtonFrame(title: String) -> CGRect? {
+    /// - Parameters:
+    ///   - title: 「+」标签的标题
+    ///   - lastTabTitle: 胶囊里最后一个普通标签的标题（用来确认「+」和胶囊是分开的）
+    static func addButtonFrame(title: String, lastTabTitle: String) -> CGRect? {
         guard let window = keyWindow else { return nil }
         let bounds = window.bounds
+        let bottomBand = bounds.height * 0.75
 
-        func plausible(_ rect: CGRect) -> Bool {
-            rect.width >= 36 && rect.width <= 96 && abs(rect.width - rect.height) <= 6
-                && rect.midY > bounds.height * 0.75 && rect.midX > bounds.width * 0.6
+        func isCircle(_ rect: CGRect) -> Bool {
+            rect.width >= 40 && rect.width <= 100 && abs(rect.width - rect.height) <= 4
         }
 
-        var labelled: CGRect?
-        var tabBar: CGRect?
+        var buttons: [CGRect] = []
+        var lastTab: CGRect?
         visit(window) { view in
+            guard let label = view.accessibilityLabel, label == title || label == lastTabTitle else { return }
             let rect = view.convert(view.bounds, to: window)
-            if view is UITabBar, tabBar == nil { tabBar = rect }
-            if view.accessibilityLabel == title, plausible(rect) {
-                if labelled == nil || rect.width > labelled!.width { labelled = rect }
+            guard rect.midY > bottomBand else { return }
+            if label == title {
+                buttons.append(rect)
+            } else if lastTab == nil || rect.width > lastTab!.width {
+                lastTab = rect
             }
         }
-        if let labelled { return labelled }
+        guard let button = buttons.filter(isCircle).max(by: { $0.width < $1.width }) else { return nil }
+        // 排在胶囊里时和左边的标签紧挨着；单独的圆形按钮和胶囊之间有空隙
+        if let lastTab, button.minX < lastTab.maxX + 2 { return nil }
 
-        guard let bar = tabBar else { return nil }
-        var best: CGRect?
+        // 玻璃底可能比可点按的按钮本身大：取包含按钮中心的最大圆形视图，作为水滴的大小
+        var circle = button
+        let center = CGPoint(x: button.midX, y: button.midY)
         visit(window) { view in
             let rect = view.convert(view.bounds, to: window)
-            guard plausible(rect), rect.midY >= bar.minY - 12, rect.midY <= bar.maxY + 12 else { return }
-            if best == nil || rect.width > best!.width || (rect.width == best!.width && rect.midX > best!.midX) { best = rect }
+            if isCircle(rect), rect.contains(center), rect.width > circle.width, abs(rect.midX - button.midX) <= 2, abs(rect.midY - button.midY) <= 2 {
+                circle = rect
+            }
         }
-        return best
+        return circle
     }
 
     private static var keyWindow: UIWindow? {
@@ -49,7 +59,4 @@ enum TabBarProbe {
         body(view)
         for subview in view.subviews { visit(subview, body) }
     }
-
-    /// 透明的标签图标：上拉层接管「+」的绘制时，系统按钮只保留玻璃底。
-    static let blankIcon: UIImage = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24)).image { _ in }
 }

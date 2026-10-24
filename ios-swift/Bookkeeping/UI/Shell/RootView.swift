@@ -82,14 +82,16 @@ struct RootView: View {
             Tab(AppTab.profile.title, systemImage: AppTab.profile.symbol, value: AppTab.profile) {
                 ProfileView()
             }
-            Tab(value: AppTab.add, role: .search) {
-                Color.clear
-            } label: {
-                // 上拉层接管「+」的绘制时，系统按钮只保留玻璃底，避免拉动时出现两个「+」
-                if addFrame == nil {
-                    Label(Self.addTitle, systemImage: AppTab.add.symbol)
-                } else {
-                    Label { Text(Self.addTitle) } icon: { Image(uiImage: TabBarProbe.blankIcon) }
+            // 必须用标准的「标题 + 图标 + value + role」写法：自定义 label 的写法会让系统不再把它单独画成圆形按钮。
+            // 上拉层接管「+」的绘制后换成透明图标（同样是标准写法），系统按钮只保留玻璃底，拉动时不会出现两个「+」。
+            if addFrame == nil {
+                Tab(Self.addTitle, systemImage: AppTab.add.symbol, value: AppTab.add, role: .search) {
+                    Color.clear
+                }
+            }
+            if addFrame != nil {
+                Tab(Self.addTitle, image: "TabAddBlank", value: AppTab.add, role: .search) {
+                    Color.clear
                 }
             }
         }
@@ -167,7 +169,7 @@ struct RootView: View {
         for attempt in 0..<10 {
             try? await Task.sleep(for: .milliseconds(attempt == 0 ? 350 : 500))
             if Task.isCancelled { return }
-            if let frame = TabBarProbe.addButtonFrame(title: Self.addTitle) {
+            if let frame = TabBarProbe.addButtonFrame(title: Self.addTitle, lastTabTitle: AppTab.profile.title) {
                 if frame != addFrame { addFrame = frame }
                 return
             }
