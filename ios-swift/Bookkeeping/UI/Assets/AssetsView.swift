@@ -81,11 +81,7 @@ struct AssetsView: View {
 
         return ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 0) {
-                header
-                    .modifier(OverviewExit(progress: motion.progress, distance: overviewExit, active: selectedIndex != nil))
-                    .padding(.top, 8)
-
-                OverviewCard(hideBalance: hideBalance)
+                OverviewCard(hideBalance: $hideBalance)
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("assets")) } action: { geometry.overview = $0 }
                     .modifier(OverviewExit(progress: motion.progress, distance: overviewExit, active: selectedIndex != nil))
                     .padding(.top, 12)
@@ -131,33 +127,6 @@ struct AssetsView: View {
         }
         .scrollDisabled(selectedIndex != nil)
         .scrollIndicators(.hidden)
-    }
-
-    /// 页面标题与右上角按钮（系统液态玻璃按钮）。资产页没有导航栏，保留卡包转场的整页空间。
-    private var header: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text("资产").font(.largeTitle.weight(.bold))
-            Spacer()
-            Button {
-                hideBalance.toggle()
-            } label: {
-                Image(systemName: hideBalance ? "eye.slash" : "eye")
-                    .font(.title3)
-                    .frame(width: 30, height: 30)
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .accessibilityLabel(hideBalance ? "显示金额" : "隐藏金额")
-            Button(action: openAddAccount) {
-                Image(systemName: "plus")
-                    .font(.title3)
-                    .frame(width: 30, height: 30)
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .accessibilityLabel("添加银行卡")
-        }
-        .controlSize(.large)
     }
 
     private func flyingCard(account: Account, index: Int, size: CGSize) -> some View {
@@ -358,68 +327,84 @@ private struct FlightCard<Card: View>: View, Animatable {
 
 // MARK: - 总览与空状态
 
+/// 净资产卡：只显示净资产、总资产、总负债，右上角是隐藏金额按钮。
+/// 每张卡取推算余额（银行通知余额或初始余额起算）；正数计入总资产，负数（欠款）计入总负债。
+/// 信用卡通知里的「余额」含义因银行而异，只有填了初始余额的信用卡才计入。多币种时显示卡最多的币种。
 private struct OverviewCard: View {
-    let hideBalance: Bool
+    @Binding var hideBalance: Bool
     @Environment(LedgerStore.self) private var store
 
     var body: some View {
-        let summary = Self.summarize(store.accounts, store.balances)
+        let totals = Self.totals(store.accounts, store.balances)
         VStack(alignment: .leading, spacing: 0) {
-            Text("净资产").font(.subheadline).foregroundStyle(.secondary)
-            Text(hideBalance ? "••••••" : summary.primary)
+            HStack(alignment: .firstTextBaseline) {
+                Text("净资产").font(.subheadline).foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    hideBalance.toggle()
+                } label: {
+                    Image(systemName: hideBalance ? "eye.slash" : "eye")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.vertical, -12)
+                .padding(.trailing, -10)
+                .accessibilityLabel(hideBalance ? "显示金额" : "隐藏金额")
+            }
+            Text(amount(totals?.net, totals?.currency))
                 .font(.system(.largeTitle, design: .rounded).weight(.bold))
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
                 .padding(.top, 2)
-            if !summary.others.isEmpty, !hideBalance {
-                Text(summary.others).font(.subheadline).foregroundStyle(.secondary).padding(.top, 2)
-            }
-            HStack(spacing: 24) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("已知余额").font(.footnote).foregroundStyle(.secondary)
-                    Text("\(summary.known) 张卡").font(.headline)
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("余额未知").font(.footnote).foregroundStyle(.secondary)
-                    Text("\(summary.unknown) 张卡").font(.headline).foregroundStyle(summary.unknown > 0 ? AppTheme.debt : Color.primary)
-                }
-                Spacer()
+            HStack(spacing: 0) {
+                figure("总资产", amount(totals?.assets, totals?.currency))
+                figure("总负债", amount(totals?.liabilities, totals?.currency))
             }
             .padding(.top, 14)
-            Text("按银行通知余额或你填写的初始余额推算。信用卡只在填写了初始余额（欠款）时计入；余额未知的卡不参与汇总。")
-                .font(.footnote).foregroundStyle(.secondary).padding(.top, 12)
         }
         .padding(18)
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+
+    private func amount(_ minor: Int64?, _ currency: CurrencyCode?) -> String {
+        if hideBalance { return "••••" }
+        guard let minor, let currency else { return "—" }
+        return Fmt.money(minor, currency)
+    }
+
+    private func figure(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.footnote).foregroundStyle(.secondary)
+            Text(value).font(.headline).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
     }
 
-    struct Summary {
-        var primary: String
-        var others: String
-        var known: Int
-        var unknown: Int
+    struct Totals {
+        var currency: CurrencyCode
+        var assets: Int64
+        var liabilities: Int64
+        var net: Int64 { assets - liabilities }
     }
 
-    static func summarize(_ accounts: [Account], _ balances: [String: AccountBalanceSummary]) -> Summary {
-        var totals: [CurrencyCode: Int64] = [:]
-        var known = 0, unknown = 0
+    static func totals(_ accounts: [Account], _ balances: [String: AccountBalanceSummary]) -> Totals? {
+        var byCurrency: [CurrencyCode: (assets: Int64, liabilities: Int64, cards: Int)] = [:]
         for account in accounts {
-            let summary = balances[account.id]
-            // 信用卡通知里的「余额」含义因银行而异；只有用户自己填了初始余额（欠款为负）时才计入
-            if account.cardType == .credit, summary?.base != .opening { continue }
-            if let amount = summary?.ledgerDerivedMinor, let currency = summary?.ledgerDerivedCurrency {
-                totals[currency, default: 0] += amount
-                known += 1
-            } else {
-                unknown += 1
-            }
+            guard let summary = balances[account.id] else { continue }
+            if account.cardType == .credit, summary.base != .opening { continue }
+            guard let amount = summary.ledgerDerivedMinor, let currency = summary.ledgerDerivedCurrency else { continue }
+            var entry = byCurrency[currency] ?? (assets: 0, liabilities: 0, cards: 0)
+            if amount >= 0 { entry.assets += amount } else { entry.liabilities += -amount }
+            entry.cards += 1
+            byCurrency[currency] = entry
         }
-        let sorted = totals.sorted { $0.key.rawValue < $1.key.rawValue }
-        guard let first = sorted.first else { return Summary(primary: "—", others: "", known: known, unknown: unknown) }
-        let others = sorted.dropFirst().map { Fmt.money($0.value, $0.key) }.joined(separator: " · ")
-        return Summary(primary: Fmt.money(first.value, first.key), others: others, known: known, unknown: unknown)
+        guard let main = byCurrency.max(by: { $0.value.cards == $1.value.cards ? $0.key > $1.key : $0.value.cards < $1.value.cards }) else { return nil }
+        return Totals(currency: main.key, assets: main.value.assets, liabilities: main.value.liabilities)
     }
 }
 
@@ -430,9 +415,7 @@ private struct EmptyWalletCard: View {
         Button(action: action) {
             VStack(spacing: 10) {
                 Image(systemName: "creditcard.and.123").font(.largeTitle).foregroundStyle(.secondary)
-                Text("还没有银行卡").font(.headline)
-                Text("点这里，或点右上角的「+」添加银行卡")
-                    .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                Text("添加银行卡").font(.headline)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 40)

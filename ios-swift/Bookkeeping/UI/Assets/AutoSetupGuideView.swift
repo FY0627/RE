@@ -25,7 +25,7 @@ struct AutoSetupGuideView: View {
             Section {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("只需设置一次").font(.title2.weight(.bold))
-                    Text("一个自动化覆盖所有银行卡。收到含「\(Self.keyword)」的短信时，快捷指令在后台把它交给日常记账，不会打开 App。")
+                    Text("一个自动化覆盖所有银行卡，不会打开 App。")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 4)
@@ -57,8 +57,6 @@ struct AutoSetupGuideView: View {
                 }
             } header: {
                 Text("5 步完成")
-            } footer: {
-                Text("完成后不用再打开 App。收到下一条银行短信后，下方状态会变成「已验证」。")
             }
 
             statusSection
@@ -68,11 +66,7 @@ struct AutoSetupGuideView: View {
                     ForEach(Array(Self.emailSteps.enumerated()), id: \.offset) { index, step in
                         StepRow(number: index + 1, text: step)
                     }
-                    Text("邮件要进入 iPhone 自带的「邮件」App；邮件自动化只能按发件人、主题筛选，不能按正文筛选。")
-                        .font(.footnote).foregroundStyle(.secondary)
                 }
-            } footer: {
-                Text("银行短信里没有「\(Self.keyword)」两个字时，再建一个同样的自动化，把关键词换成短信里固定出现的字（例如「尾号」）。重复触发不会重复记账。")
             }
         }
         .navigationTitle("设置自动记账")
@@ -109,8 +103,6 @@ struct AutoSetupGuideView: View {
             )
         } header: {
             Text("当前状态")
-        } footer: {
-            Text("App 读不到自动化是否已开启，只能显示是否真的收到过通知。")
         }
     }
 
@@ -170,29 +162,20 @@ private struct StatusRow: View {
 struct HelpView: View {
     var body: some View {
         List {
-            Section("支持记录的资金变动") {
-                Text("消费、工资及其他入账、转入转出、退款、还款、扣息、手续费（含「含手续费」拆分）、存取款、利息、冲正/撤销，以及写明方向和金额的其他变动。")
-                Text("预授权、冻结单独显示状态，不计入收支；支付失败保留记录但不计入。")
+            Section("会记录") {
+                Text("消费、收入、转账、退款、还款、利息、手续费、存取款、冲正。")
             }
-            Section("不会记成交易") {
-                Text("验证码（正文不保存）、营销信息、还款/账单/扣款提醒、电子账单、信用额度变化、只有余额没有交易的通知（只更新银行通知余额）、既没有金额也没有尾号的普通短信（只记在接收日志里）。")
+            Section("不会记录") {
+                Text("验证码、营销、提醒、账单、额度变化、只有余额的通知。")
             }
-            Section("通知格式") {
-                Text("规则基于中国大陆主要银行短信的常见写法（尾号、金额、余额、摘要等字段）和常见英文银行通知格式，测试样例为按公开格式构造的脱敏文本，尚未用每家银行的真实通知逐一验证。识别不了的通知进入待处理。")
-            }
-            Section("余额") {
-                Text("「银行通知余额」只来自银行通知；「初始余额」是你在卡片详情里填写的数。推算余额从两者中较晚的一个出发，加上之后入账的流水。两者都没有时显示余额未知。")
-            }
-            Section("自动化的运行方式") {
-                Text("成功入账默认静默，不会打开 App、不会切换你当前正在用的 App，锁屏时也不会点亮界面。快捷指令可能显示系统自己的运行通知，可在该自动化中关闭「运行时通知」。")
-                Text("App 只能处理系统实际交给它的内容：关机、系统未触发或邮件未同步时收不到，事后也无法自动补回。")
-                Text("使用免费 Apple 账户签名时，App 约 7 天到期；到期后 App 打不开，自动化也会失败，续签后恢复。")
+            Section("识别不了的") {
+                Text("进入「待处理」，由你确认或忽略。")
             }
             Section("数据") {
-                Text("账户、流水、规则和设置只保存在本机 SQLite 数据库，无服务器、无云同步、无需注册登录。日志不包含正文与金额。")
+                Text("只保存在这台 iPhone，不联网。")
             }
         }
-        .navigationTitle("使用说明与限制")
+        .navigationTitle("使用说明")
         .navigationBarTitleDisplayMode(.inline)
     }
 }

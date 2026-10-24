@@ -56,11 +56,16 @@ enum ActiveSheet: Identifiable {
 
 /// 系统原生 `TabView`：iOS 26 起标签栏自动使用液态玻璃，尺寸、字号、动效和无障碍都由系统提供。
 /// 「+」用 `role: .search` 的标签显示成标签栏右侧独立的圆形按钮（系统布局），点按时拦截选择，不切换页面。
+/// 上拉手势（`PullAddButton`）盖在这个系统按钮上；找不到按钮位置时退回系统按钮的轻点打开。
 struct RootView: View {
     @Environment(LedgerStore.self) private var store
     @State private var tab: AppTab = .home
     @State private var detail = DetailMotionState()
     @State private var sheet: ActiveSheet?
+    @State private var addFrame: CGRect?
+    @State private var addInteracting = false
+
+    static let addTitle = "添加"
 
     var body: some View {
         TabView(selection: selection) {
@@ -77,17 +82,27 @@ struct RootView: View {
             Tab(AppTab.profile.title, systemImage: AppTab.profile.symbol, value: AppTab.profile) {
                 ProfileView()
             }
-            Tab(tab == .assets ? "添加银行卡" : "记一笔", systemImage: AppTab.add.symbol, value: AppTab.add, role: .search) {
+            Tab(value: AppTab.add, role: .search) {
                 Color.clear
+            } label: {
+                // 上拉层接管「+」的绘制时，系统按钮只保留玻璃底，避免拉动时出现两个「+」
+                if addFrame == nil {
+                    Label(Self.addTitle, systemImage: AppTab.add.symbol)
+                } else {
+                    Label { Text(Self.addTitle) } icon: { Image(uiImage: TabBarProbe.blankIcon) }
+                }
             }
         }
+        .tabBarMinimizeBehavior(.never)
+        .overlay { pullLayer }
+        .task(id: ProbeKey(detailOpen: detail.isOpen, tab: tab)) { await probeAddButton() }
         .sheet(item: $sheet) { sheet in
             switch sheet {
             case .addAccount:
                 AddAccountView()
             case .manualEntryUnavailable:
                 ManualEntryUnavailableView()
-                    .presentationDetents([.medium])
+                    .presentationDetents([.height(180)])
             case .pending:
                 PendingView()
             }
@@ -122,8 +137,48 @@ struct RootView: View {
                 tab = newValue
                 return
             }
-            guard !detail.isOpen, sheet == nil else { return }
-            sheet = tab == .assets ? .addAccount : .manualEntryUnavailable
+            triggerAdd()
+        }
+    }
+
+    private func triggerAdd() {
+        guard !detail.isOpen, sheet == nil else { return }
+        sheet = tab == .assets ? .addAccount : .manualEntryUnavailable
+    }
+
+    /// 盖在系统「+」上的上拉层。只有按钮本身接收触摸，其余区域透明不拦截。
+    private var pullLayer: some View {
+        GeometryReader { proxy in
+            if let frame = addFrame, !detail.isOpen {
+                let origin = proxy.frame(in: .global).origin
+                PullAddButton(
+                    diameter: frame.width,
+                    screenHeight: proxy.size.height,
+                    sheetActive: sheet != nil,
+                    isInteracting: $addInteracting,
+                    onTrigger: triggerAdd
+                )
+                .position(x: frame.midX - origin.x, y: frame.midY - origin.y)
+            }
+        }
+        .ignoresSafeArea()
+    }
+
+    private struct ProbeKey: Hashable {
+        let detailOpen: Bool
+        let tab: AppTab
+    }
+
+    /// 标签栏布局完成后读取系统「+」的位置；详情展开（标签栏隐藏）时不显示上拉层。
+    private func probeAddButton() async {
+        guard !detail.isOpen else { return }
+        for attempt in 0..<10 {
+            try? await Task.sleep(for: .milliseconds(attempt == 0 ? 350 : 500))
+            if Task.isCancelled { return }
+            if let frame = TabBarProbe.addButtonFrame(title: Self.addTitle) {
+                if frame != addFrame { addFrame = frame }
+                return
+            }
         }
     }
 }
@@ -134,9 +189,7 @@ struct ManualEntryUnavailableView: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 16) {
-                Text("当前版本只记录银行卡通知带来的资金变动。手动记一笔会在以后的版本开放，这里不会创建任何账单。")
-                Text("想记录某张卡的流水：到「资产」添加这张卡，再按「设置自动记账」的步骤设置一次即可。")
-                    .foregroundStyle(.secondary)
+                Text("手动记账将在以后的版本开放。")
                 Spacer(minLength: 0)
             }
             .font(.body)

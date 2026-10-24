@@ -114,15 +114,10 @@ struct StatsView: View {
         .accessibilityElement(children: .combine)
     }
 
+    @ViewBuilder
     private func footnote(holds: Int, failed: Int) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if holds + failed > 0 {
-                Text("另有冻结/预授权 \(holds) 笔、失败 \(failed) 笔，不计入收支。")
-            }
-            Text("""
-            口径：支出 = 已入账的流出（不含内部转账、还款）；收入 = 已入账的流入（不含内部转账、还款、退款、冲正）；\
-            净支出 = 支出 − 退款/冲正。冻结、预授权和失败交易单独显示，不计入。不同币种分别汇总，不做汇率换算。
-            """)
+        if holds + failed > 0 {
+            Text("冻结/预授权 \(holds) 笔、失败 \(failed) 笔未计入")
         }
     }
 }

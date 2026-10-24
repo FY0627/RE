@@ -61,8 +61,6 @@ struct AddAccountView: View {
                     TextField("账户名称（可选）", text: $name)
                 } header: {
                     Text("卡片")
-                } footer: {
-                    Text("只保存后四位，用来匹配通知里的「尾号」。不要输入完整卡号。")
                 }
                 Section {
                     Picker("币种", selection: $currency) {
@@ -73,15 +71,11 @@ struct AddAccountView: View {
                     }
                 } header: {
                     Text("记账币种")
-                } footer: {
-                    Text("通知没有写明币种时按这里的币种入账。App 不会根据手机地区自动假定欧元或人民币。")
                 }
                 Section {
                     OpeningBalanceFields(text: $balanceText, isDebt: $balanceIsDebt, currency: currency)
                 } header: {
                     Text("初始余额（选填）")
-                } footer: {
-                    Text("填这张卡现在的余额，之后收到的流水会在它的基础上推算；信用卡可选「欠款」。不填也可以：收到带余额的银行通知后会自动显示。")
                 }
                 Section("卡面") {
                     PaletteGrid(selection: Binding(get: { paletteID }, set: { paletteID = $0; paletteTouched = true }))

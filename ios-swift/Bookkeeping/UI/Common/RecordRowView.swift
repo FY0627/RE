@@ -143,11 +143,11 @@ struct RecordDetailView: View {
             if let peer = detail.transferPeer {
                 Section("内部转账") {
                     LabeledContent("对方账户", value: "\(peer.bankName) ·\(peer.last4)")
-                    Text("两边流水都保留，不计入收支统计。").font(.footnote).foregroundStyle(.secondary)
+                    Text("不计入收支").font(.footnote).foregroundStyle(.secondary)
                 }
             } else if r.isInternalTransfer {
                 Section("内部转账") {
-                    Text("通知写明对方是你自己的另一张卡，对方卡的通知尚未收到。不计入收支统计。").font(.footnote).foregroundStyle(.secondary)
+                    Text("转到你自己的另一张卡，不计入收支").font(.footnote).foregroundStyle(.secondary)
                 }
             }
             if let related = detail.related {
@@ -161,8 +161,6 @@ struct RecordDetailView: View {
                 if let saveError { Text(saveError).font(.footnote).foregroundStyle(.red) }
             } header: {
                 Text("备注")
-            } footer: {
-                Text("账单里只有备注可以修改；金额、时间、账户等由银行通知决定。")
             }
             Section {
                 DisclosureGroup("原始通知（仅本机保存）", isExpanded: $showRaw) {

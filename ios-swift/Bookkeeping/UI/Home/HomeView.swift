@@ -13,7 +13,7 @@ struct HomeView: View {
                 Section {
                     summary
                 } header: {
-                    Text("本地账本 · \(Self.monthTitle)")
+                    Text(Self.monthTitle)
                 }
                 if store.pendingCount > 0 {
                     Section { pendingBanner }
@@ -90,7 +90,6 @@ struct HomeView: View {
                 Image(systemName: "tray.full").font(.title3).foregroundStyle(AppTheme.debt)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("\(store.pendingCount) 条通知待处理").font(.headline).foregroundStyle(.primary)
-                    Text("信息有歧义或不完整，没有自动入账").font(.subheadline).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
@@ -103,7 +102,7 @@ struct HomeView: View {
         ContentUnavailableView {
             Label("还没有流水", systemImage: "list.bullet.rectangle")
         } description: {
-            Text("到「资产」添加银行卡，再按「设置自动记账」设置一次。之后收到的银行短信会在后台自动记到这里。")
+            Text("添加银行卡并设置自动记账后，流水会出现在这里。")
         }
     }
 

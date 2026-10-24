@@ -73,7 +73,7 @@ struct AccountDetailView: View {
                 Task { await store.setArchived(accountID: account.id, archived: true) }
             }
         } message: {
-            Text("隐藏后不再参与匹配新通知，已有流水保留在首页。")
+            Text("已有流水会保留。")
         }
     }
 
@@ -100,39 +100,45 @@ struct AccountDetailView: View {
 
     // MARK: 顶部按钮
 
+    /// 与系统导航栏按钮同尺寸：44pt 圆形 / 胶囊，17pt 图标；右侧两个按钮共用一个玻璃胶囊（iOS 26 工具栏分组样式）。
     private var topBar: some View {
-        HStack(spacing: 12) {
+        HStack {
             Button(action: close) {
-                Image(systemName: "chevron.left").font(.title3.weight(.semibold)).frame(width: 30, height: 30)
+                toolbarIcon("chevron.left")
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
+            .buttonStyle(.plain)
+            .glassEffect(.regular.interactive(), in: Circle())
             .accessibilityLabel("返回卡包")
             .modifier(CenteredControlScale(progress: progress, circular: true, stage: DetailMotion.topButtons))
 
             Spacer()
 
-            Button { showGuide = true } label: {
-                Image(systemName: "bolt.badge.automatic").font(.title3).frame(width: 30, height: 30)
+            HStack(spacing: 0) {
+                Button { showGuide = true } label: {
+                    toolbarIcon("bolt.badge.automatic")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("设置自动记账")
+                Menu {
+                    Button("初始余额", systemImage: "banknote") { showOpeningBalance = true }
+                    Button("卡面外观", systemImage: "paintpalette") { showAppearance = true }
+                    Button("隐藏这张卡", systemImage: "eye.slash", role: .destructive) { confirmHide = true }
+                } label: {
+                    toolbarIcon("ellipsis")
+                }
+                .accessibilityLabel("更多")
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .accessibilityLabel("设置自动记账")
-            .modifier(CenteredControlScale(progress: progress, circular: true, stage: DetailMotion.topButtons))
-
-            Menu {
-                Button("初始余额", systemImage: "banknote") { showOpeningBalance = true }
-                Button("卡面外观", systemImage: "paintpalette") { showAppearance = true }
-                Button("隐藏这张卡", systemImage: "eye.slash", role: .destructive) { confirmHide = true }
-            } label: {
-                Image(systemName: "ellipsis").font(.title3).frame(width: 30, height: 30)
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .accessibilityLabel("更多")
-            .modifier(CenteredControlScale(progress: progress, circular: true, stage: DetailMotion.topButtons))
+            .glassEffect(.regular.interactive(), in: Capsule())
+            .modifier(CenteredControlScale(progress: progress, circular: false, stage: DetailMotion.topButtons))
         }
-        .controlSize(.large)
+    }
+
+    private func toolbarIcon(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 17, weight: .medium))
+            .foregroundStyle(.primary)
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
     }
 
     // MARK: 内容
@@ -150,7 +156,7 @@ struct AccountDetailView: View {
             .padding(.top, 24)
             .padding(.bottom, 10)
             if rows.isEmpty {
-                Text("这张卡还没有流水。设置好自动记账后，收到的银行短信会出现在这里。")
+                Text("暂无流水")
                     .font(.subheadline).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(.vertical, 28)
                     .multilineTextAlignment(.center)
@@ -178,9 +184,9 @@ struct AccountDetailView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("自动记账").font(.headline).foregroundStyle(.primary)
                     if let last = status?.lastSuccessAt {
-                        Text("已验证 · 最近一次接收 \(Fmt.dateTime(last))").font(.subheadline).foregroundStyle(.secondary)
+                        Text("已验证 · \(Fmt.dateTime(last))").font(.subheadline).foregroundStyle(.secondary)
                     } else {
-                        Text("待验证 · 点这里查看设置步骤").font(.subheadline).foregroundStyle(.secondary)
+                        Text("未验证").font(.subheadline).foregroundStyle(.secondary)
                     }
                 }
                 Spacer()
@@ -213,11 +219,8 @@ struct AccountDetailView: View {
                     .foregroundStyle(derived < 0 ? AppTheme.debt : Color.primary)
                     .lineLimit(1).minimumScaleFactor(0.6)
                     .padding(.top, 2)
-                Text(derivedExplanation(summary))
-                    .font(.footnote).foregroundStyle(.secondary)
             } else {
                 Text("未知").font(.system(.largeTitle, design: .rounded).weight(.bold)).foregroundStyle(.secondary).padding(.top, 2)
-                Text("还没有收到带余额的通知，也没有填写初始余额。").font(.footnote).foregroundStyle(.secondary)
             }
 
             Divider().padding(.vertical, 12)
@@ -226,7 +229,6 @@ struct AccountDetailView: View {
                 if let reported = summary?.bankReported {
                     VStack(alignment: .trailing, spacing: 1) {
                         Text(hideBalance ? "••••" : Fmt.money(reported.amountMinor, reported.currency)).monospacedDigit().foregroundStyle(.primary)
-                        Text("截至 \(reported.transactionTime?.displayText ?? Fmt.dateTime(reported.observedAt))").font(.footnote)
                     }
                 } else {
                     Text("未收到")
@@ -255,16 +257,6 @@ struct AccountDetailView: View {
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
-    private func derivedExplanation(_ summary: AccountBalanceSummary?) -> String {
-        guard let summary else { return "" }
-        let count = summary.recordsAfterBase
-        switch summary.base {
-        case .opening:
-            return count == 0 ? "按你填写的初始余额" : "初始余额 + 之后 \(count) 笔流水推算"
-        case .bankReported, .none:
-            return count == 0 ? "与最新银行通知余额一致" : "银行通知余额 + 之后 \(count) 笔流水推算"
-        }
-    }
 
     private var quickActions: some View {
         HStack(spacing: 8) {
@@ -330,8 +322,6 @@ struct OpeningBalanceEditor: View {
                     OpeningBalanceFields(text: $text, isDebt: $isDebt, currency: account.currency)
                 } header: {
                     Text("\(account.bankName) ·\(account.last4) · \(account.currency.chineseName)")
-                } footer: {
-                    Text("填这张卡现在的余额。之后收到的流水会在它的基础上推算；更早的流水和银行通知余额不受影响。收到更新的银行通知余额时，以银行通知为准。")
                 }
                 if account.openingBalanceMinor != nil {
                     Section {

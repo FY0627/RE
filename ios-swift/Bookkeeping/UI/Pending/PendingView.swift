@@ -29,8 +29,6 @@ struct PendingView: View {
                     }
                 } header: {
                     Text("待处理")
-                } footer: {
-                    Text("这些通知已经保存在本机，但信息不完整或有歧义，没有自动入账。")
                 }
                 Section {
                     ForEach(log.filter { $0.outcome == .filtered }.prefix(30)) { entry in
@@ -44,8 +42,6 @@ struct PendingView: View {
                     }
                 } header: {
                     Text("最近已过滤（未入账）")
-                } footer: {
-                    Text("验证码、营销、还款提醒、账单、额度变化、只有余额的通知不会记成交易。验证码正文不保存。")
                 }
             }
             .navigationTitle("待处理")
@@ -93,7 +89,7 @@ private struct PendingItemCard: View {
                 Text(raw).font(.caption).foregroundStyle(.secondary).lineLimit(5)
             }
             if item.reason == .possibleDuplicate {
-                Text("与另一来源（短信 / 邮件）的已有流水金额、账户一致，但证据不足以确定是同一笔。").font(.caption2).foregroundStyle(.secondary)
+                Text("可能与已有流水重复").font(.caption2).foregroundStyle(.secondary)
             }
             if item.reason.allowsConfirmation, item.draft != nil {
                 ForEach(candidates) { account in

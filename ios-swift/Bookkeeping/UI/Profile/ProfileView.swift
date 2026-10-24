@@ -19,7 +19,7 @@ struct ProfileView: View {
                             .background(Color.accentColor.gradient, in: Circle())
                         VStack(alignment: .leading, spacing: 2) {
                             Text("本地账本").font(.title3.weight(.semibold))
-                            Text("无需登录 · 数据只保存在这台 iPhone").font(.subheadline).foregroundStyle(.secondary)
+                            Text("数据只保存在本机").font(.subheadline).foregroundStyle(.secondary)
                         }
                     }
                     .padding(.vertical, 4)
@@ -48,7 +48,7 @@ struct ProfileView: View {
                     NavigationLink {
                         HelpView()
                     } label: {
-                        Label("使用说明与限制", systemImage: "questionmark.circle")
+                        Label("使用说明", systemImage: "questionmark.circle")
                     }
                 }
 
@@ -62,8 +62,6 @@ struct ProfileView: View {
                     }
                 } header: {
                     Text("隐私与数据")
-                } footer: {
-                    Text("短信 / 邮件原文只保存在本机，用于核对和处理待处理项；到期后自动清空正文，流水和去重指纹保留。验证码正文从不保存。")
                 }
 
                 Section("开发与调试") {
@@ -105,13 +103,6 @@ struct AutomationStatusView: View {
 
     var body: some View {
         List {
-            Section {
-                Label("已提供 App 动作「记录银行动账通知」", systemImage: "checkmark.circle.fill")
-                Label("快捷指令里的自动化是否已创建、已启用：iOS 不向 App 提供查询接口，请在「快捷指令 › 自动化」中查看", systemImage: "questionmark.circle")
-                    .font(.subheadline)
-            } header: {
-                Text("App 能确认的事实")
-            }
             Section("各卡最近一次成功接收") {
                 if store.accounts.isEmpty { Text("还没有添加银行卡").foregroundStyle(.secondary) }
                 ForEach(store.accounts) { account in
@@ -142,8 +133,6 @@ struct AutomationStatusView: View {
                 }
             } header: {
                 Text("接收日志（最近 100 条）")
-            } footer: {
-                Text("每次快捷指令把内容交给 App 都会在这里留下一条记录，包括被过滤、重复和空输入。日志只在本机。")
             }
         }
         .navigationTitle("自动记账状态")
@@ -164,13 +153,9 @@ struct PerformanceSettingsView: View {
                 Toggle("转场遮挡遮罩", isOn: $flags.flightMask)
             } header: {
                 Text("单变量开关")
-            } footer: {
-                Text("一次只改一个开关，其余保持默认，在同一台 iPhone 上重复同一操作并录屏对照。标签栏、导航栏和按钮都是系统原生控件，液态玻璃由系统渲染。")
             }
             Section {
                 Toggle("显示帧率与内存", isOn: $flags.showMetrics)
-            } footer: {
-                Text("读数是 App 内的粗略统计（CADisplayLink 帧间隔与内存占用），不能替代 Instruments；没有真机测量记录前，不宣称达到任何帧率或功耗目标。")
             }
             Section {
                 Button("恢复默认") { flags.resetToDefaults() }
