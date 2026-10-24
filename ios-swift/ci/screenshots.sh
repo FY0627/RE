@@ -2,7 +2,8 @@
 # 在 iOS 模拟器上运行 Debug 版 App，浅色 / 深色各截一组主要页面，和 IPA 放进同一个产物。
 # App 以截图模式启动（见 Bookkeeping/Diagnostics/ScreenshotMode.swift）：独立的临时账本 + 虚构演示数据。
 # 用法：bash ios-swift/ci/screenshots.sh <输出目录>
-set -euo pipefail
+set -Eeuo pipefail
+# -E：shoot() 等函数里的失败也触发 ERR，并报出行号
 trap 'echo "::error title=screenshots.sh::screenshots.sh line $LINENO failed: $BASH_COMMAND"' ERR
 
 OUT="${1:?output dir}"
@@ -11,7 +12,8 @@ SHOTS="$OUT/ipa/screenshots"
 mkdir -p "$OUT/logs" "$SHOTS"
 rm -f "$SHOTS"/*.png
 
-DEVICE_ID=$(bash ios-swift/ci/pick-simulator.sh)
+# 只用单屏的常规 Pro 机型：双屏机型（如 iPhone Duo）上 simctl 截图需要指定屏幕，且不代表常见设备
+DEVICE_ID=$(bash ios-swift/ci/pick-simulator.sh '^iPhone [0-9]+ Pro$')
 echo "simulator: $DEVICE_ID"
 # 前面的模拟器测试可能已经启动了它
 xcrun simctl boot "$DEVICE_ID" 2>/dev/null || true
@@ -52,7 +54,7 @@ shoot() {
   # App 写入标记表示数据已加载、页面已到位；首次启动较慢，最多等 60 秒
   local ready=0
   for _ in $(seq 1 120); do
-    if [[ "$(cat "$MARKER" 2>/dev/null)" == "$token" ]]; then ready=1; break; fi
+    if [[ "$(cat "$MARKER" 2>/dev/null || true)" == "$token" ]]; then ready=1; break; fi
     sleep 0.5
   done
   if [[ $ready -eq 0 ]]; then
