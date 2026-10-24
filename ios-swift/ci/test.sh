@@ -22,7 +22,7 @@ set +e
 STATUS=${PIPESTATUS[0]}
 set -e
 if [[ $STATUS -ne 0 ]]; then
-  echo "::error title=swift test::macOS 主机上的核心业务测试失败（退出码 $STATUS）"
+  echo "::error title=SwiftTest::macOS 主机上的核心业务测试失败（退出码 $STATUS）"
   exit $STATUS
 fi
 
@@ -59,7 +59,7 @@ set +e
 STATUS=${PIPESTATUS[0]}
 set -e
 if [[ $STATUS -ne 0 ]]; then
-  echo "::error title=iOS Simulator tests::模拟器上的核心业务测试失败（退出码 $STATUS）"
+  echo "::error title=SimulatorTests::模拟器上的核心业务测试失败（退出码 $STATUS）"
   exit $STATUS
 fi
 

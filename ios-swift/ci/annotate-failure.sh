@@ -19,7 +19,14 @@ for log in "$OUT"/logs/*.log; do
     count=$((count + 1))
   done < <(echo "$matches" | cut -c1-400 | awk 'BEGIN{ORS=""} {gsub(/%/,"%25"); print $0 "%0A"} NR%20==0 {print "\n"} END{print "\n"}')
 done
+if [[ -f "$OUT/ipa-verification.txt" ]]; then
+  echo "::error title=IPAReport::$(tail -n 40 "$OUT/ipa-verification.txt" | cut -c1-300 | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}')"
+fi
 if [[ $count -eq 0 ]]; then
-  echo "::error title=CI::步骤失败，但日志中没有匹配到错误行；请下载 diagnostics artifact 查看完整日志"
+  # 没有匹配到错误行时，附上每个日志的最后 15 行
+  for log in "$OUT"/logs/*.log; do
+    [[ -f "$log" ]] || continue
+    echo "::error title=Tail-$(basename "$log")::$(tail -n 15 "$log" | cut -c1-300 | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}')"
+  done
 fi
 exit 0

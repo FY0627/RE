@@ -49,7 +49,10 @@ jobs:
 
       - name: Package and verify IPA
         id: package
-        run: bash ios-swift/ci/package-ipa.sh "$OUT"
+        run: |
+          mkdir -p "$OUT/logs"
+          set -o pipefail
+          bash ios-swift/ci/package-ipa.sh "$OUT" 2>&1 | tee "$OUT/logs/package-ipa.log"
 
       - name: Report errors as annotations
         if: failure()

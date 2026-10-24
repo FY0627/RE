@@ -3,7 +3,7 @@
 # 用法：bash ios-swift/ci/package-ipa.sh <输出目录>
 set -euo pipefail
 # 任何未被 fail() 捕获的命令失败也要在运行页面上留下行号
-trap 'echo "::error title=IPA verification::package-ipa.sh 第 $LINENO 行命令失败：$BASH_COMMAND"' ERR
+trap 'echo "::error title=IPAVerification::package-ipa.sh 第 $LINENO 行命令失败：$BASH_COMMAND"' ERR
 
 OUT="${1:?output dir}"
 APP="$OUT/derived-app/Build/Products/Release-iphoneos/Bookkeeping.app"
@@ -12,7 +12,7 @@ REPORT="$OUT/ipa-verification.txt"
 mkdir -p "$OUT/ipa" "$OUT/stage"
 : > "$REPORT"
 
-fail() { echo "::error title=IPA verification::$1"; echo "FAIL: $1" >> "$REPORT"; exit 1; }
+fail() { echo "::error title=IPAVerification::$1"; echo "FAIL: $1" >> "$REPORT"; exit 1; }
 ok() { echo "OK: $1" | tee -a "$REPORT"; }
 
 [[ -d "$APP" ]] || fail "找不到 $APP"
@@ -50,7 +50,8 @@ otool -l "$APP/$EXECUTABLE" > "$OUT/load-commands.txt"
 BUILD_PLATFORM=$(awk '/LC_BUILD_VERSION/{f=1} f&&/platform/&&!done{print $2; done=1}' "$OUT/load-commands.txt")
 MINOS=$(awk '/LC_BUILD_VERSION/{f=1} f&&/minos/&&!done{print $2; done=1}' "$OUT/load-commands.txt")
 echo "LC_BUILD_VERSION platform=$BUILD_PLATFORM minos=$MINOS" >> "$REPORT"
-[[ "$BUILD_PLATFORM" == "2" || "$BUILD_PLATFORM" == "IOS" ]] || fail "Mach-O 平台是 $BUILD_PLATFORM，不是 iOS 真机（模拟器产物不能打包）"
+PLATFORM_UPPER=$(echo "$BUILD_PLATFORM" | tr '[:lower:]' '[:upper:]')
+[[ "$PLATFORM_UPPER" == "2" || "$PLATFORM_UPPER" == "IOS" || "$PLATFORM_UPPER" == "PLATFORM_IOS" ]] || fail "Mach-O 平台是 $BUILD_PLATFORM，不是 iOS 真机（模拟器产物不能打包）"
 ok "Mach-O 平台 iOS 真机（$BUILD_PLATFORM）"
 
 # 依赖：系统库或包内 Frameworks
