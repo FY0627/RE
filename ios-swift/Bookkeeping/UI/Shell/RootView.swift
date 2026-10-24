@@ -113,14 +113,6 @@ struct RootView: View {
                 MetricsOverlay().padding(.trailing, 8)
             }
         }
-        .task(id: store.state) {
-            // CI 截图：数据就绪后停到指定页面，等转场和材质渲染完成再通知脚本
-            guard ScreenshotMode.isActive, store.state == .ready else { return }
-            if let page = ScreenshotMode.tab { tab = page }
-            if ScreenshotMode.opensPending { sheet = .pending }
-            try? await Task.sleep(for: .milliseconds(1500))
-            ScreenshotMode.markReady()
-        }
         .overlay {
             if case .failed(let message) = store.state {
                 StorageErrorView(message: message) { Task { await store.retryStart() } }

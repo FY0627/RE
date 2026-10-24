@@ -35,7 +35,6 @@ final class LedgerStore {
         do {
             // 打开数据库（含迁移）放在后台线程
             backend = try await Task.detached(priority: .userInitiated) { try AppServices.shared.backend() }.value
-            if ScreenshotMode.isActive, let backend { await ScreenshotMode.seed(backend) }
             await refresh()
             _ = try? await backend?.purgeExpiredRawContent()
         } catch {
