@@ -12,8 +12,7 @@ SHOTS="$OUT/ipa/screenshots"
 mkdir -p "$OUT/logs" "$SHOTS"
 rm -f "$SHOTS"/*.png
 
-# 只用单屏的常规 Pro 机型：双屏机型（如 iPhone Duo）上 simctl 截图需要指定屏幕，且不代表常见设备
-DEVICE_ID=$(bash ios-swift/ci/pick-simulator.sh '^iPhone [0-9]+ Pro$')
+DEVICE_ID=$(bash ios-swift/ci/pick-simulator.sh)
 echo "simulator: $DEVICE_ID"
 # 前面的模拟器测试可能已经启动了它
 xcrun simctl boot "$DEVICE_ID" 2>/dev/null || true
