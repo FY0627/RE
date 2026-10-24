@@ -3,7 +3,7 @@
 /// 规则：
 /// - 只追加新的迁移，不修改已发布的迁移；
 /// - 每个迁移在一个事务里执行，失败整体回滚，版本号不变；
-/// - 每次修改表结构都要在 `MigrationTests` 里补测试。
+/// - 每次修改表结构都要在 `DatabaseTests` 里补迁移测试。
 public enum Migrations {
     public static let latestVersion = 1
 

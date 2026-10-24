@@ -22,6 +22,7 @@ AI 编程助手的入口文件。Claude Code 通过 `CLAUDE.md` 引用本文件�
 | `backend/` | 后端：运行在手机内的业务层，纯 Dart | `bk_backend` |
 | `database/` | 数据库：SQLite + drift，纯 Dart | `bk_database` |
 | `native/` | 原生能力：Flutter 插件（Kotlin / Swift） | `bk_native` |
+| `ios-swift/` | iOS 原生 Swift 版（独立工程，不依赖 Flutter；见 ADR 0006–0009） | `BKModel` / `BKDatabase` / `BKBackend` |
 
 详细说明见 [docs/architecture/overview.md](docs/architecture/overview.md)。
 
