@@ -29,16 +29,16 @@ PLATFORM=$(read_key CFBundleSupportedPlatforms:0)
 
 [[ -n "$EXECUTABLE" && -f "$APP/$EXECUTABLE" ]] || fail "可执行文件缺失：$EXECUTABLE"
 ok "可执行文件 $EXECUTABLE"
-[[ "$BUNDLE_ID" == "$EXPECTED_BUNDLE_ID" ]] || fail "Bundle ID 是 $BUNDLE_ID，期望 $EXPECTED_BUNDLE_ID"
+[[ "$BUNDLE_ID" == "$EXPECTED_BUNDLE_ID" ]] || fail "Bundle ID 是 ${BUNDLE_ID}，期望 $EXPECTED_BUNDLE_ID"
 ok "Bundle ID $BUNDLE_ID"
-[[ "$PLATFORM" == "iPhoneOS" ]] || fail "CFBundleSupportedPlatforms 是 $PLATFORM，不是真机 iPhoneOS"
+[[ "$PLATFORM" == "iPhoneOS" ]] || fail "CFBundleSupportedPlatforms 是 ${PLATFORM}，不是真机 iPhoneOS"
 ok "平台 $PLATFORM"
 python3 - "$MIN_OS" <<'PY' || fail "MinimumOSVersion 高于 27.0.1"
 import sys
 v = tuple(int(x) for x in sys.argv[1].split('.'))
 sys.exit(0 if v <= (27, 0, 1) else 1)
 PY
-ok "MinimumOSVersion $MIN_OS（不高于 27.0.1）"
+ok "MinimumOSVersion ${MIN_OS}（不高于 27.0.1）"
 
 ARCHS=$(lipo -archs "$APP/$EXECUTABLE")
 [[ "$ARCHS" == "arm64" ]] || fail "架构是 '$ARCHS'，期望仅 arm64"
@@ -51,8 +51,8 @@ BUILD_PLATFORM=$(awk '/LC_BUILD_VERSION/{f=1} f&&/platform/&&!done{print $2; don
 MINOS=$(awk '/LC_BUILD_VERSION/{f=1} f&&/minos/&&!done{print $2; done=1}' "$OUT/load-commands.txt")
 echo "LC_BUILD_VERSION platform=$BUILD_PLATFORM minos=$MINOS" >> "$REPORT"
 PLATFORM_UPPER=$(echo "$BUILD_PLATFORM" | tr '[:lower:]' '[:upper:]')
-[[ "$PLATFORM_UPPER" == "2" || "$PLATFORM_UPPER" == "IOS" || "$PLATFORM_UPPER" == "PLATFORM_IOS" ]] || fail "Mach-O 平台是 $BUILD_PLATFORM，不是 iOS 真机（模拟器产物不能打包）"
-ok "Mach-O 平台 iOS 真机（$BUILD_PLATFORM）"
+[[ "$PLATFORM_UPPER" == "2" || "$PLATFORM_UPPER" == "IOS" || "$PLATFORM_UPPER" == "PLATFORM_IOS" ]] || fail "Mach-O 平台是 ${BUILD_PLATFORM}，不是 iOS 真机（模拟器产物不能打包）"
+ok "Mach-O 平台 iOS 真机（${BUILD_PLATFORM}）"
 
 # 依赖：系统库或包内 Frameworks
 while read -r dep; do

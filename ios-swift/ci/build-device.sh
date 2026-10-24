@@ -32,7 +32,7 @@ STATUS=${PIPESTATUS[0]}
 set -e
 
 if [[ $STATUS -ne 0 ]]; then
-  echo "::error title=DeviceBuild::Release iphoneos 构建失败（退出码 $STATUS）"
+  echo "::error title=DeviceBuild::Release iphoneos 构建失败（退出码 ${STATUS}）"
   exit $STATUS
 fi
 
