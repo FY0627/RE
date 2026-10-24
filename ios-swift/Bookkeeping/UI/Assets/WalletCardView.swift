@@ -33,27 +33,27 @@ struct WalletCardView: View {
                     HStack(spacing: 7) {
                         Circle()
                             .fill(palette.textColor.opacity(0.15))
-                            .frame(width: 26, height: 26)
-                            .overlay(Text(String(account.bankName.prefix(1))).font(.system(size: 12, weight: .bold)))
+                            .frame(width: 30, height: 30)
+                            .overlay(Text(String(account.bankName.prefix(1))).font(.system(size: 14, weight: .bold)))
                         VStack(alignment: .leading, spacing: 0) {
-                            Text(account.name).font(.system(size: 11.5, weight: .bold)).lineLimit(1)
+                            Text(account.name).font(.system(size: 14, weight: .bold)).lineLimit(1)
                             Text("\(account.bankName) · \(account.cardType.displayName)")
-                                .font(.system(size: 9, weight: .medium))
+                                .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(palette.subtextColor)
                                 .lineLimit(1)
                         }
                     }
                     Spacer(minLength: 8)
                     HStack(spacing: 4) {
-                        Image(systemName: "wave.3.right").font(.system(size: 11)).opacity(0.8)
-                        Text(hideBalance ? "••••" : balanceText).font(.system(size: 11.5, weight: .bold)).lineLimit(1)
+                        Image(systemName: "wave.3.right").font(.system(size: 13)).opacity(0.8)
+                        Text(hideBalance ? "••••" : balanceText).font(.system(size: 14, weight: .bold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
                     }
                 }
                 Spacer(minLength: 0)
                 HStack(alignment: .lastTextBaseline) {
-                    Text("•••• \(account.last4)").font(.system(size: 12.5, weight: .semibold)).tracking(1.2)
+                    Text("•••• \(account.last4)").font(.system(size: 15, weight: .semibold)).tracking(1.2)
                     Spacer()
-                    Text(account.currency.rawValue).font(.system(size: 10.5, weight: .bold)).italic().opacity(0.8)
+                    Text(account.currency.rawValue).font(.system(size: 12, weight: .bold)).italic().opacity(0.8)
                 }
             }
             .padding(.horizontal, 18)
@@ -73,9 +73,18 @@ private struct CardRasterization: ViewModifier {
 }
 
 extension AccountBalanceSummary {
-    /// 卡面上显示的余额：只显示银行通知余额；没有就显示「余额未知」，不用部分流水冒充。
-    func cardText(currency: CurrencyCode) -> String {
-        guard let reported = bankReported else { return "余额未知" }
-        return Fmt.money(reported.amountMinor, reported.currency)
+    /// 卡面上显示的余额：银行通知余额，或从你填写的初始余额推算的余额；
+    /// 两者都没有时显示「余额未知」，不用部分流水冒充。
+    var cardText: String {
+        switch base {
+        case .bankReported:
+            guard let reported = bankReported else { return "余额未知" }
+            return Fmt.money(reported.amountMinor, reported.currency)
+        case .opening:
+            guard let derived = ledgerDerivedMinor, let currency = ledgerDerivedCurrency else { return "余额未知" }
+            return Fmt.money(derived, currency)
+        case .none:
+            return "余额未知"
+        }
     }
 }

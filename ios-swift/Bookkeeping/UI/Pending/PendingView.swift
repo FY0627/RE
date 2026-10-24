@@ -50,7 +50,7 @@ struct PendingView: View {
             }
             .navigationTitle("待处理")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成", systemImage: "checkmark") { dismiss() } } }
             .task { await reload() }
             .refreshable { await reload() }
         }

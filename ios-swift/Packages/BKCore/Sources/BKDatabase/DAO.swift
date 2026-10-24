@@ -3,14 +3,15 @@ import BKModel
 
 /// 数据访问函数。全部接收 `SQLiteConnection`，只能在 `Database.read/write` 的闭包里调用。
 public enum AccountDAO {
-    static let columns = "id, name, bank_id, bank_name, last4, card_type, currency, palette_id, sort_order, created_at, archived"
+    static let columns = "id, name, bank_id, bank_name, last4, card_type, currency, palette_id, sort_order, created_at, archived, opening_balance_minor, opening_balance_at"
 
     static func map(_ row: SQLiteConnection.Row) -> Account {
         Account(
             id: row.string(0), name: row.string(1), bankID: row.optionalString(2), bankName: row.string(3),
             last4: row.string(4), cardType: CardType(rawValue: row.string(5)) ?? .other,
             currency: CurrencyCode(row.string(6)), paletteID: row.string(7), sortOrder: Int(row.int(8)),
-            createdAt: row.date(9), archived: row.bool(10)
+            createdAt: row.date(9), archived: row.bool(10),
+            openingBalanceMinor: row.optionalInt(11), openingBalanceAt: row.optionalDate(12)
         )
     }
 
@@ -25,8 +26,9 @@ public enum AccountDAO {
 
     public static func insert(_ db: SQLiteConnection, _ a: Account) throws {
         try db.run(
-            "INSERT INTO accounts (\(columns)) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [a.id, a.name, a.bankID, a.bankName, a.last4, a.cardType.rawValue, a.currency.rawValue, a.paletteID, a.sortOrder, a.createdAt, a.archived]
+            "INSERT INTO accounts (\(columns)) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [a.id, a.name, a.bankID, a.bankName, a.last4, a.cardType.rawValue, a.currency.rawValue, a.paletteID, a.sortOrder, a.createdAt, a.archived,
+             a.openingBalanceMinor, a.openingBalanceAt]
         )
     }
 
@@ -40,6 +42,15 @@ public enum AccountDAO {
 
     public static func setArchived(_ db: SQLiteConnection, id: String, archived: Bool) throws {
         try db.run("UPDATE accounts SET archived = ? WHERE id = ?", [archived, id])
+    }
+
+    /// 设置或清除初始余额。清除时两个字段一起置空。
+    @discardableResult
+    public static func setOpeningBalance(_ db: SQLiteConnection, id: String, amountMinor: Int64?, at date: Date?) throws -> Bool {
+        try db.run(
+            "UPDATE accounts SET opening_balance_minor = ?, opening_balance_at = ? WHERE id = ?",
+            [amountMinor, amountMinor == nil ? nil : date, id]
+        ) > 0
     }
 
     public static func noteSuccess(_ db: SQLiteConnection, id: String, at date: Date, source: SourceKind) throws {

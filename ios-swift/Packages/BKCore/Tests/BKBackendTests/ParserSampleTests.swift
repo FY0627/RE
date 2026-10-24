@@ -235,7 +235,11 @@ final class ParserSampleTests: XCTestCase {
     }
 
     func testUnrecognizedGoesToPending() {
-        XCTAssertEqual(parse("【某银行】您的账户信息已更新。").classification, .unrecognized)
+        // 有尾号但没有可识别的交易：可能是新格式，进入待处理
+        XCTAssertEqual(parse("【某银行】您尾号0427的账户信息已更新。").classification, .unrecognized)
+        // 没有金额也没有尾号：不是动账通知（例如按关键词误触发的聊天短信）
+        XCTAssertEqual(parse("【某银行】您的账户信息已更新。").classification, .noFinancialContent)
+        XCTAssertEqual(parse("明天下午我要去银行办点事").classification, .noFinancialContent)
     }
 
     // MARK: 金额歧义、币种

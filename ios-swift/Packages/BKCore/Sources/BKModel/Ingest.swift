@@ -30,6 +30,8 @@ public enum MessageClassification: String, Sendable, Codable, CaseIterable {
     case statement
     case balanceSnapshot
     case creditLimitChange
+    /// 既没有金额也没有卡号尾号：不是动账通知（例如自动化按关键词误触发的普通短信），只记在接收日志里
+    case noFinancialContent
     case unrecognized
     case empty
 
@@ -42,6 +44,7 @@ public enum MessageClassification: String, Sendable, Codable, CaseIterable {
         case .statement: "账单/对账单（不重复入账）"
         case .balanceSnapshot: "余额通知（无交易）"
         case .creditLimitChange: "信用额度变化"
+        case .noFinancialContent: "没有金额和尾号（不是动账通知）"
         case .unrecognized: "未能识别"
         case .empty: "空输入（快捷指令未传入内容）"
         }
@@ -270,19 +273,46 @@ public struct BalanceObservation: Hashable, Sendable {
 
 /// 账户余额：银行通知余额与账本推算余额分开展示。
 public struct AccountBalanceSummary: Hashable, Sendable {
+    /// 推算余额的起点
+    public enum Base: String, Hashable, Sendable {
+        /// 最新的银行通知余额
+        case bankReported
+        /// 用户填写的初始余额（晚于所有银行通知余额时才作为起点）
+        case opening
+    }
+
     public var accountID: String
-    /// 最新（按通知内时间排序）的银行通知余额；没有就是未知
+    /// 最新（按通知内时间排序）的银行通知余额；没有就是未知。与用户填写的初始余额分开保存、分开显示。
     public var bankReported: BalanceObservation?
-    /// 银行余额 + 之后已入账流水；没有银行余额基准时为 nil（未知）
+    /// 用户填写的初始余额及其时间点
+    public var openingBalanceMinor: Int64?
+    public var openingBalanceAt: Date?
+    /// 起点 + 之后已入账的流水；既没有银行余额也没有初始余额时为 nil（未知）
     public var ledgerDerivedMinor: Int64?
-    /// 推算用到的、晚于基准的流水笔数
+    /// 推算余额的币种（起点的币种）
+    public var ledgerDerivedCurrency: CurrencyCode?
+    public var base: Base?
+    /// 推算用到的、晚于起点的流水笔数
     public var recordsAfterBase: Int
 
-    public init(accountID: String, bankReported: BalanceObservation?, ledgerDerivedMinor: Int64?, recordsAfterBase: Int) {
+    public init(
+        accountID: String,
+        bankReported: BalanceObservation?,
+        ledgerDerivedMinor: Int64?,
+        recordsAfterBase: Int,
+        base: Base? = nil,
+        ledgerDerivedCurrency: CurrencyCode? = nil,
+        openingBalanceMinor: Int64? = nil,
+        openingBalanceAt: Date? = nil
+    ) {
         self.accountID = accountID
         self.bankReported = bankReported
         self.ledgerDerivedMinor = ledgerDerivedMinor
         self.recordsAfterBase = recordsAfterBase
+        self.base = base ?? (bankReported != nil ? .bankReported : nil)
+        self.ledgerDerivedCurrency = ledgerDerivedCurrency ?? bankReported?.currency
+        self.openingBalanceMinor = openingBalanceMinor
+        self.openingBalanceAt = openingBalanceAt
     }
 }
 

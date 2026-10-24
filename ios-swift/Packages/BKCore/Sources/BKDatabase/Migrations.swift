@@ -5,7 +5,7 @@
 /// - 每个迁移在一个事务里执行，失败整体回滚，版本号不变；
 /// - 每次修改表结构都要在 `DatabaseTests` 里补迁移测试。
 public enum Migrations {
-    public static let latestVersion = 1
+    public static let latestVersion = 2
 
     static let steps: [(version: Int, sql: String)] = [
         (1, """
@@ -116,6 +116,11 @@ public enum Migrations {
             key TEXT PRIMARY KEY NOT NULL,
             value TEXT NOT NULL
         );
+        """),
+        // 用户填写的初始余额：没有银行通知余额时作为推算余额的起点
+        (2, """
+        ALTER TABLE accounts ADD COLUMN opening_balance_minor INTEGER;
+        ALTER TABLE accounts ADD COLUMN opening_balance_at REAL;
         """),
     ]
 

@@ -121,6 +121,15 @@ final class LedgerStore {
         await refresh()
     }
 
+    func setOpeningBalance(accountID: String, amountMinor: Int64?) async throws {
+        guard let backend else { throw BackendError.notFound }
+        try await backend.setOpeningBalance(accountID: accountID, amountMinor: amountMinor)
+        await refresh()
+    }
+
+    /// 至少有一张卡收到过自动输入：说明自动化已经在工作，新卡不需要再设置
+    var automationVerified: Bool { automation.values.contains { $0.lastSuccessAt != nil } }
+
     func setArchived(accountID: String, archived: Bool) async {
         try? await backend?.setArchived(accountID: accountID, archived: archived)
         await refresh()

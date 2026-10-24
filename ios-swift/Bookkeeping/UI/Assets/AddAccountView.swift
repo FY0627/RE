@@ -2,7 +2,7 @@ import SwiftUI
 import BKModel
 import BKBackend
 
-/// 添加银行卡：只要银行、后四位、卡类型和币种。不收集完整卡号、密码或邮箱凭据。
+/// 添加银行卡：银行、后四位、卡类型、币种，以及选填的初始余额。不收集完整卡号、密码或邮箱凭据。
 struct AddAccountView: View {
     @Environment(LedgerStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -14,6 +14,8 @@ struct AddAccountView: View {
     @State private var currency: CurrencyCode?
     @State private var paletteID = "ocean"
     @State private var paletteTouched = false
+    @State private var balanceText = ""
+    @State private var balanceIsDebt = false
     @State private var saving = false
     @State private var errorText: String?
     @State private var created: Account?
@@ -25,7 +27,11 @@ struct AddAccountView: View {
     }
 
     private var isValid: Bool {
-        !bankName.isEmpty && Account.isValidLast4(last4) && currency != nil
+        !bankName.isEmpty && Account.isValidLast4(last4) && currency != nil && openingBalance != .invalid
+    }
+
+    private var openingBalance: MoneyInput.Value {
+        MoneyInput.parse(balanceText, negative: balanceIsDebt, currency: currency)
     }
 
     var body: some View {
@@ -70,6 +76,13 @@ struct AddAccountView: View {
                 } footer: {
                     Text("通知没有写明币种时按这里的币种入账。App 不会根据手机地区自动假定欧元或人民币。")
                 }
+                Section {
+                    OpeningBalanceFields(text: $balanceText, isDebt: $balanceIsDebt, currency: currency)
+                } header: {
+                    Text("初始余额（选填）")
+                } footer: {
+                    Text("填这张卡现在的余额，之后收到的流水会在它的基础上推算；信用卡可选「欠款」。不填也可以：收到带余额的银行通知后会自动显示。")
+                }
                 Section("卡面") {
                     PaletteGrid(selection: Binding(get: { paletteID }, set: { paletteID = $0; paletteTouched = true }))
                         .padding(.vertical, 4)
@@ -81,10 +94,13 @@ struct AddAccountView: View {
             .navigationTitle("添加银行卡")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button("取消", systemImage: "xmark") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") { Task { await save() } }.disabled(!isValid || saving)
+                    Button("保存", systemImage: "checkmark") { Task { await save() } }.disabled(!isValid || saving)
                 }
+            }
+            .onChange(of: cardType) { _, type in
+                if balanceText.isEmpty { balanceIsDebt = type == .credit }
             }
             .onChange(of: bankChoice) { _, id in
                 if !paletteTouched, let profile = BankDirectory.profile(id: id) { paletteID = profile.defaultPaletteID }
@@ -99,13 +115,18 @@ struct AddAccountView: View {
         guard let currency else { return }
         saving = true
         defer { saving = false }
+        var opening: Int64?
+        if case .valid(let minor) = openingBalance { opening = minor }
         let draft = AccountDraft(
             name: name, bankID: bankChoice == Self.customTag ? nil : bankChoice, bankName: bankName,
-            last4: last4, cardType: cardType, currency: currency, paletteID: paletteID
+            last4: last4, cardType: cardType, currency: currency, paletteID: paletteID, openingBalanceMinor: opening
         )
         do {
-            created = try await store.addAccount(draft)
+            let alreadyAutomated = store.automationVerified
+            let account = try await store.addAccount(draft)
             errorText = nil
+            // 自动化已经在工作：一个自动化覆盖所有卡，新卡不用再设置
+            if alreadyAutomated { dismiss() } else { created = account }
         } catch BackendError.invalidAccount(let reason) {
             switch reason {
             case .duplicateAccount: errorText = "已经添加过这张卡（同一银行、同一尾号、同一卡类型）。"

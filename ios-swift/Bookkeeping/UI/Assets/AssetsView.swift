@@ -16,7 +16,6 @@ struct AssetsView: View {
 
     @Environment(LedgerStore.self) private var store
     @Environment(DetailMotionState.self) private var motion
-    @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var geometry = AssetsGeometryBox()
@@ -55,6 +54,9 @@ struct AssetsView: View {
             }
             .coordinateSpace(.named("assets"))
         }
+        // 详情展开时标签栏隐藏；忽略底部安全区，避免标签栏显隐改变页面尺寸、打断转场
+        .ignoresSafeArea(.container, edges: .bottom)
+        .background(Color(.systemGroupedBackground))
         .onChange(of: store.accounts.map(\.id)) { _, ids in
             // 卡片被隐藏后关闭详情
             if let index = selectedIndex, !ids.indices.contains(index) || motion.selectedAccountID != ids[index] {
@@ -70,7 +72,6 @@ struct AssetsView: View {
     // MARK: 卡包
 
     private func stack(size: CGSize) -> some View {
-        let palette = Theme(scheme: scheme)
         let cardHeight = AppLayout.stackedHeight(size.width)
         let peek = AppLayout.peek(size.width)
         let accounts = store.accounts
@@ -80,18 +81,22 @@ struct AssetsView: View {
 
         return ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 0) {
-                OverviewCard(hideBalance: $hideBalance)
-                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("assets")) } action: { geometry.overview = $0 }
+                header
                     .modifier(OverviewExit(progress: motion.progress, distance: overviewExit, active: selectedIndex != nil))
                     .padding(.top, 8)
 
-                HStack {
-                    Text("资金账户与卡包").font(.system(size: 13, weight: .semibold)).foregroundStyle(palette.muted)
+                OverviewCard(hideBalance: hideBalance)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("assets")) } action: { geometry.overview = $0 }
+                    .modifier(OverviewExit(progress: motion.progress, distance: overviewExit, active: selectedIndex != nil))
+                    .padding(.top, 12)
+
+                HStack(alignment: .firstTextBaseline) {
+                    Text("银行卡").font(.title3.weight(.semibold))
                     Spacer()
-                    Text("共 \(accounts.count) 张").font(.system(size: 11)).foregroundStyle(palette.muted.opacity(0.8))
+                    Text("共 \(accounts.count) 张").font(.subheadline).foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 4)
-                .padding(.top, 22)
+                .padding(.top, 24)
                 .padding(.bottom, 10)
                 .modifier(OverviewExit(progress: motion.progress, distance: overviewExit, active: selectedIndex != nil))
 
@@ -102,7 +107,7 @@ struct AssetsView: View {
                         ForEach(Array(accounts.enumerated()), id: \.element.id) { index, account in
                             WalletCardView(
                                 account: account,
-                                balanceText: store.balances[account.id]?.cardText(currency: account.currency) ?? "余额未知",
+                                balanceText: store.balances[account.id]?.cardText ?? "余额未知",
                                 hideBalance: hideBalance,
                                 height: cardHeight
                             )
@@ -119,12 +124,40 @@ struct AssetsView: View {
                         }
                     }
                 }
-                Color.clear.frame(height: 105)
+                // 标签栏下方留白（页面忽略了底部安全区）
+                Color.clear.frame(height: 120)
             }
             .padding(.horizontal, AppLayout.cardInset)
         }
         .scrollDisabled(selectedIndex != nil)
         .scrollIndicators(.hidden)
+    }
+
+    /// 页面标题与右上角按钮（系统液态玻璃按钮）。资产页没有导航栏，保留卡包转场的整页空间。
+    private var header: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text("资产").font(.largeTitle.weight(.bold))
+            Spacer()
+            Button {
+                hideBalance.toggle()
+            } label: {
+                Image(systemName: hideBalance ? "eye.slash" : "eye")
+                    .font(.title3)
+                    .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .accessibilityLabel(hideBalance ? "显示金额" : "隐藏金额")
+            Button(action: openAddAccount) {
+                Image(systemName: "plus")
+                    .font(.title3)
+                    .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .accessibilityLabel("添加银行卡")
+        }
+        .controlSize(.large)
     }
 
     private func flyingCard(account: Account, index: Int, size: CGSize) -> some View {
@@ -140,7 +173,7 @@ struct AssetsView: View {
         ) { height, elevation in
             WalletCardView(
                 account: account,
-                balanceText: store.balances[account.id]?.cardText(currency: account.currency) ?? "余额未知",
+                balanceText: store.balances[account.id]?.cardText ?? "余额未知",
                 hideBalance: hideBalance,
                 height: height,
                 elevation: elevation
@@ -162,7 +195,7 @@ struct AssetsView: View {
         geometry.detailScrollOffset = 0
         detailOpen = false
         selectedIndex = index
-        motion.selectedAccountID = account.id
+        withAnimation(.easeInOut(duration: 0.3)) { motion.selectedAccountID = account.id }
         let signpost = AppServices.signposter.beginInterval("DetailOpen")
         if reduceMotion {
             motion.progress = 1
@@ -189,7 +222,7 @@ struct AssetsView: View {
         let signpost = AppServices.signposter.beginInterval("DetailClose")
         let finish = {
             selectedIndex = nil
-            motion.selectedAccountID = nil
+            withAnimation(.easeInOut(duration: 0.3)) { motion.selectedAccountID = nil }
             motion.isAnimating = false
             AppServices.signposter.endInterval("DetailClose", signpost)
         }
@@ -326,57 +359,39 @@ private struct FlightCard<Card: View>: View, Animatable {
 // MARK: - 总览与空状态
 
 private struct OverviewCard: View {
-    @Binding var hideBalance: Bool
+    let hideBalance: Bool
     @Environment(LedgerStore.self) private var store
-    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        let palette = Theme(scheme: scheme)
         let summary = Self.summarize(store.accounts, store.balances)
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("净资产（按银行通知余额）").font(.system(size: 12, weight: .medium)).foregroundStyle(palette.muted)
-                Spacer()
-                Button {
-                    hideBalance.toggle()
-                } label: {
-                    Image(systemName: hideBalance ? "eye.slash" : "eye")
-                        .font(.system(size: 14))
-                        .foregroundStyle(palette.ink)
-                        .frame(width: 32, height: 32)
-                        .background(palette.ink.opacity(0.06), in: Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(hideBalance ? "显示金额" : "隐藏金额")
-            }
-            Text(hideBalance ? "••••••••" : summary.primary)
-                .font(.system(size: 32, weight: .bold))
-                .tracking(-1)
-                .foregroundStyle(palette.ink)
+            Text("净资产").font(.subheadline).foregroundStyle(.secondary)
+            Text(hideBalance ? "••••••" : summary.primary)
+                .font(.system(.largeTitle, design: .rounded).weight(.bold))
+                .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
-                .padding(.top, 8)
+                .padding(.top, 2)
             if !summary.others.isEmpty, !hideBalance {
-                Text(summary.others).font(.system(size: 11)).foregroundStyle(palette.muted).padding(.top, 2)
+                Text(summary.others).font(.subheadline).foregroundStyle(.secondary).padding(.top, 2)
             }
-            HStack(spacing: 16) {
+            HStack(spacing: 24) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("已知余额").font(.system(size: 10)).foregroundStyle(palette.muted)
-                    Text("\(summary.known) 张卡").font(.system(size: 13, weight: .semibold)).foregroundStyle(palette.ink)
+                    Text("已知余额").font(.footnote).foregroundStyle(.secondary)
+                    Text("\(summary.known) 张卡").font(.headline)
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("余额未知").font(.system(size: 10)).foregroundStyle(palette.muted)
-                    Text("\(summary.unknown) 张卡").font(.system(size: 13, weight: .semibold)).foregroundStyle(summary.unknown > 0 ? AppTheme.debt : palette.ink)
+                    Text("余额未知").font(.footnote).foregroundStyle(.secondary)
+                    Text("\(summary.unknown) 张卡").font(.headline).foregroundStyle(summary.unknown > 0 ? AppTheme.debt : Color.primary)
                 }
                 Spacer()
             }
             .padding(.top, 14)
-            Text("信用卡通知中的余额含义因银行而异，不计入净资产。余额未知的卡不参与汇总。")
-                .font(.system(size: 10)).foregroundStyle(palette.muted).padding(.top, 10)
+            Text("按银行通知余额或你填写的初始余额推算。信用卡只在填写了初始余额（欠款）时计入；余额未知的卡不参与汇总。")
+                .font(.footnote).foregroundStyle(.secondary).padding(.top, 12)
         }
         .padding(18)
-        .background(palette.card, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(palette.isDark ? Color(hex: 0x2C2C2E) : Color(hex: 0xE5E5EA), lineWidth: 1))
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .accessibilityElement(children: .combine)
     }
 
@@ -391,9 +406,11 @@ private struct OverviewCard: View {
         var totals: [CurrencyCode: Int64] = [:]
         var known = 0, unknown = 0
         for account in accounts {
-            guard account.cardType != .credit else { continue }
-            if let reported = balances[account.id]?.bankReported {
-                totals[reported.currency, default: 0] += reported.amountMinor
+            let summary = balances[account.id]
+            // 信用卡通知里的「余额」含义因银行而异；只有用户自己填了初始余额（欠款为负）时才计入
+            if account.cardType == .credit, summary?.base != .opening { continue }
+            if let amount = summary?.ledgerDerivedMinor, let currency = summary?.ledgerDerivedCurrency {
+                totals[currency, default: 0] += amount
                 known += 1
             } else {
                 unknown += 1
@@ -408,20 +425,19 @@ private struct OverviewCard: View {
 
 private struct EmptyWalletCard: View {
     let action: () -> Void
-    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        let palette = Theme(scheme: scheme)
         Button(action: action) {
-            VStack(spacing: 8) {
-                Image(systemName: "creditcard.and.123").font(.system(size: 28)).foregroundStyle(palette.muted)
-                Text("还没有银行卡").font(.system(size: 15, weight: .semibold)).foregroundStyle(palette.ink)
-                Text("点这里，或上拉右下角的加号添加银行卡")
-                    .font(.system(size: 12)).foregroundStyle(palette.muted).multilineTextAlignment(.center)
+            VStack(spacing: 10) {
+                Image(systemName: "creditcard.and.123").font(.largeTitle).foregroundStyle(.secondary)
+                Text("还没有银行卡").font(.headline)
+                Text("点这里，或点右上角的「+」添加银行卡")
+                    .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 36)
-            .background(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(palette.muted.opacity(0.4), style: StrokeStyle(lineWidth: 1, dash: [5, 4])))
+            .padding(.vertical, 40)
+            .background(RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(Color.secondary.opacity(0.4), style: StrokeStyle(lineWidth: 1, dash: [5, 4])))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }

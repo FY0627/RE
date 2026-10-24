@@ -24,7 +24,7 @@
 | **iOS Swift 版**：整体结构、分层 | [ios-swift/README.md](../ios-swift/README.md)、[decisions/0006](decisions/0006-ios-native-swift.md) | `ios-swift/` |
 | iOS Swift 版：短信 / 邮件自动记账、解析、去重、待处理 | [features/ios-swift-auto-bookkeeping.md](features/ios-swift-auto-bookkeeping.md)、[decisions/0008](decisions/0008-ios-swift-shortcuts-app-intent.md) | `ios-swift/Bookkeeping/Intents/` → `ios-swift/Packages/BKCore/Sources/BKBackend/` |
 | iOS Swift 版：表结构、迁移、事务、并发 | [decisions/0007](decisions/0007-ios-swift-sqlite.md) | `ios-swift/Packages/BKCore/Sources/BKDatabase/` |
-| iOS Swift 版：卡包、详情转场、加号上拉、底栏 | [ios-swift/README.md](../ios-swift/README.md) | `ios-swift/Bookkeeping/UI/{Assets,Shell}/` |
+| iOS Swift 版：卡包、详情转场、标签栏与「+」、初始余额 | [ios-swift/README.md](../ios-swift/README.md) | `ios-swift/Bookkeeping/UI/{Assets,Shell}/` |
 | iOS Swift 版：卡顿、性能开关、帧率指标 | [guides/ios-swift-device-checklist.md](guides/ios-swift-device-checklist.md) | `ios-swift/Bookkeeping/Diagnostics/` |
 | iOS Swift 版：CI 构建、IPA、Sideloadly 安装与续签 | [guides/ios-swift-windows-sideloadly.md](guides/ios-swift-windows-sideloadly.md)、[decisions/0009](decisions/0009-ios-swift-ci-sideloadly.md) | `.github/workflows/ios-swift-build.yml`、`ios-swift/ci/` |
 | iOS Swift 版：CI 模拟器截图、演示数据 | [ios-swift/README.md](../ios-swift/README.md) | `ios-swift/ci/screenshots.sh`、`ios-swift/Bookkeeping/Diagnostics/ScreenshotMode.swift` |

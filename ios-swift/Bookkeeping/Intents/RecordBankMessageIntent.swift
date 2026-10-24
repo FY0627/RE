@@ -21,7 +21,13 @@ struct RecordBankMessageIntent: AppIntent {
     static let authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
     static let isDiscoverable = true
 
-    @Parameter(title: "通知内容", description: "在自动化里选择「快捷指令输入」，或其中的「内容」。")
+    /// 自动连接上一步的输出：作为自动化的第一个动作时，快捷指令会尽量自动填入「快捷指令输入」，
+    /// 用户只需确认（是否自动填入由系统决定，设置步骤里仍保留「确认」这一步）。
+    @Parameter(
+        title: "通知内容",
+        description: "在自动化里选择「快捷指令输入」，或其中的「内容」。",
+        inputConnectionBehavior: .connectToPreviousIntentResult
+    )
     var content: String?
 
     @Parameter(title: "来源", default: .sms)

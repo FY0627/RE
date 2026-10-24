@@ -76,7 +76,8 @@ public final class LedgerBackend: Sendable {
             let account = Account(
                 id: id, name: name.isEmpty ? "\(bankName)\(draft.cardType.displayName)" : name, bankID: draft.bankID, bankName: bankName,
                 last4: draft.last4, cardType: draft.cardType, currency: draft.currency, paletteID: draft.paletteID,
-                sortOrder: try AccountDAO.nextSortOrder(db), createdAt: now
+                sortOrder: try AccountDAO.nextSortOrder(db), createdAt: now,
+                openingBalanceMinor: draft.openingBalanceMinor, openingBalanceAt: draft.openingBalanceMinor == nil ? nil : now
             )
             try AccountDAO.insert(db, account)
             // 账户添加之前收到的、因「没有匹配账户」而待处理的通知：现在能唯一匹配就入账
@@ -87,6 +88,14 @@ public final class LedgerBackend: Sendable {
 
     public func updateAppearance(accountID: String, paletteID: String) async throws {
         try await database.write { try AccountDAO.updateAppearance($0, id: accountID, paletteID: paletteID) }
+    }
+
+    /// 设置这张卡「现在」的余额（最小货币单位，账户币种）；传 nil 清除。
+    /// 之后到达的流水会加到这个数上；更早的流水和银行通知余额不受影响。
+    public func setOpeningBalance(accountID: String, amountMinor: Int64?) async throws {
+        let now = clock()
+        let updated = try await database.write { try AccountDAO.setOpeningBalance($0, id: accountID, amountMinor: amountMinor, at: now) }
+        if !updated { throw BackendError.notFound }
     }
 
     /// 隐藏账户（保留其历史流水）。
@@ -212,20 +221,47 @@ public final class LedgerBackend: Sendable {
         }
     }
 
+    /// 推算余额：从「最新的银行通知余额」和「用户填写的初始余额」中较晚的一个出发，
+    /// 加上之后已入账的流水。两者都没有时余额未知，不用部分流水冒充。
+    ///
+    /// 银行通知余额之间按通知内时间排序（银行所在地的时间）；初始余额是用户在手机上填写的时刻，
+    /// 和通知内时间不在同一个时区，所以和初始余额比较时一律用「通知到达手机的时间」。
     static func balanceSummary(_ db: SQLiteConnection, account: Account, calendar: Calendar) throws -> AccountBalanceSummary {
-        guard let base = try BalanceDAO.latest(db, accountID: account.id) else {
+        let reported = try BalanceDAO.latest(db, accountID: account.id)
+        var opening: (amount: Int64, at: Date)?
+        if let amount = account.openingBalanceMinor, let at = account.openingBalanceAt { opening = (amount, at) }
+
+        var total: Int64
+        var count = 0
+        let base: AccountBalanceSummary.Base
+        let currency: CurrencyCode
+        if let reported, opening == nil || reported.observedAt >= opening!.at {
+            base = .bankReported
+            currency = reported.currency
+            total = reported.amountMinor
+            let engine = IngestEngine(db: db, now: Date(), calendar: calendar, newID: { "" })
+            for record in try RecordDAO.postedAfter(db, accountID: account.id, currency: currency) where record.id != reported.recordID {
+                guard engine.orderKey(time: record.transactionTime, fallback: record.effectiveAt) > reported.orderKey else { continue }
+                total += record.direction == .inflow ? record.amountMinor : -record.amountMinor
+                count += 1
+            }
+        } else if let opening {
+            base = .opening
+            currency = account.currency
+            total = opening.amount
+            for record in try RecordDAO.postedAfter(db, accountID: account.id, currency: currency) {
+                guard (record.receivedAt ?? record.processedAt) > opening.at else { continue }
+                total += record.direction == .inflow ? record.amountMinor : -record.amountMinor
+                count += 1
+            }
+        } else {
             return AccountBalanceSummary(accountID: account.id, bankReported: nil, ledgerDerivedMinor: nil, recordsAfterBase: 0)
         }
-        let engine = IngestEngine(db: db, now: Date(), calendar: calendar, newID: { "" })
-        var total = base.amountMinor
-        var count = 0
-        for record in try RecordDAO.postedAfter(db, accountID: account.id, currency: base.currency) where record.id != base.recordID {
-            let key = engine.orderKey(time: record.transactionTime, fallback: record.effectiveAt)
-            guard key > base.orderKey else { continue }
-            total += record.direction == .inflow ? record.amountMinor : -record.amountMinor
-            count += 1
-        }
-        return AccountBalanceSummary(accountID: account.id, bankReported: base, ledgerDerivedMinor: total, recordsAfterBase: count)
+        return AccountBalanceSummary(
+            accountID: account.id, bankReported: reported, ledgerDerivedMinor: total, recordsAfterBase: count,
+            base: base, ledgerDerivedCurrency: currency,
+            openingBalanceMinor: account.openingBalanceMinor, openingBalanceAt: account.openingBalanceAt
+        )
     }
 
     // MARK: 统计

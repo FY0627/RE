@@ -15,8 +15,6 @@ enum DetailMotion {
 
     /// 选中卡片移动（0 – 0.70）
     static func cardTravel(_ t: Double) -> Double { interval(t, 0, secondStageEnd, travelCurve) }
-    /// 底部导航与加号收起（0 – 0.24）
-    static func dockCollapse(_ t: Double) -> Double { interval(t, 0, firstStageEnd, easeInOutCubic) }
     /// 其余卡片离场（0 – 0.70）
     static func stackExit(_ t: Double) -> Double { interval(t, 0, secondStageEnd, exitCurve) }
     /// 顶部按钮出现（0.24 – 0.70）

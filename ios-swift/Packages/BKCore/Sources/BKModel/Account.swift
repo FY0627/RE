@@ -31,6 +31,10 @@ public struct Account: Identifiable, Hashable, Sendable, Codable {
     public var sortOrder: Int
     public var createdAt: Date
     public var archived: Bool
+    /// 用户填写的初始余额（最小货币单位，账户币种）。没有银行通知余额时，以它为起点推算余额。
+    public var openingBalanceMinor: Int64?
+    /// 初始余额对应的时间点：只有晚于这个时间的流水才加到初始余额上。
+    public var openingBalanceAt: Date?
 
     public init(
         id: String,
@@ -43,7 +47,9 @@ public struct Account: Identifiable, Hashable, Sendable, Codable {
         paletteID: String,
         sortOrder: Int,
         createdAt: Date,
-        archived: Bool = false
+        archived: Bool = false,
+        openingBalanceMinor: Int64? = nil,
+        openingBalanceAt: Date? = nil
     ) {
         self.id = id
         self.name = name
@@ -56,6 +62,8 @@ public struct Account: Identifiable, Hashable, Sendable, Codable {
         self.sortOrder = sortOrder
         self.createdAt = createdAt
         self.archived = archived
+        self.openingBalanceMinor = openingBalanceMinor
+        self.openingBalanceAt = openingBalanceAt
     }
 
     public static func isValidLast4(_ value: String) -> Bool {
@@ -74,8 +82,10 @@ public struct AccountDraft: Sendable, Hashable {
     public var cardType: CardType
     public var currency: CurrencyCode
     public var paletteID: String
+    /// 选填：添加时这张卡的当前余额（最小货币单位，可为负，例如信用卡欠款）。
+    public var openingBalanceMinor: Int64?
 
-    public init(name: String, bankID: String?, bankName: String, last4: String, cardType: CardType, currency: CurrencyCode, paletteID: String) {
+    public init(name: String, bankID: String?, bankName: String, last4: String, cardType: CardType, currency: CurrencyCode, paletteID: String, openingBalanceMinor: Int64? = nil) {
         self.name = name
         self.bankID = bankID
         self.bankName = bankName
@@ -83,6 +93,7 @@ public struct AccountDraft: Sendable, Hashable {
         self.cardType = cardType
         self.currency = currency
         self.paletteID = paletteID
+        self.openingBalanceMinor = openingBalanceMinor
     }
 }
 

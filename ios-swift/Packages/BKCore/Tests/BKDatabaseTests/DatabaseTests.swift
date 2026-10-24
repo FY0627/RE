@@ -31,6 +31,34 @@ final class DatabaseTests: XCTestCase {
         }
     }
 
+    func testMigrationFromVersion1KeepsAccountsAndAddsOpeningBalance() throws {
+        let path = tempPath()
+        do {
+            // 模拟已经装了旧版本的账本：只有第 1 版表结构和一张卡
+            let old = try SQLiteConnection(path: path)
+            try old.execute(Migrations.steps[0].sql)
+            try old.setUserVersion(1)
+            try old.run(
+                "INSERT INTO accounts (id, name, bank_id, bank_name, last4, card_type, currency, palette_id, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ["a1", "测试卡", "cmb", "招商银行", "0427", "debit", "CNY", "ocean", 0, Date(timeIntervalSince1970: 1_790_000_000)]
+            )
+        }
+        let db = try Database(path: path)
+        XCTAssertEqual(try db.readSync { $0.userVersion }, Migrations.latestVersion)
+        let stored = try XCTUnwrap(try db.readSync { try AccountDAO.find($0, id: "a1") })
+        XCTAssertEqual(stored.last4, "0427")
+        XCTAssertNil(stored.openingBalanceMinor)
+        let at = Date(timeIntervalSince1970: 1_790_000_100)
+        XCTAssertTrue(try db.writeSync { try AccountDAO.setOpeningBalance($0, id: "a1", amountMinor: -12_345, at: at) })
+        let updated = try XCTUnwrap(try db.readSync { try AccountDAO.find($0, id: "a1") })
+        XCTAssertEqual(updated.openingBalanceMinor, -12_345)
+        XCTAssertEqual(updated.openingBalanceAt, at)
+        XCTAssertTrue(try db.writeSync { try AccountDAO.setOpeningBalance($0, id: "a1", amountMinor: nil, at: at) })
+        let cleared = try XCTUnwrap(try db.readSync { try AccountDAO.find($0, id: "a1") })
+        XCTAssertNil(cleared.openingBalanceMinor)
+        XCTAssertNil(cleared.openingBalanceAt, "清除时时间一起清除")
+    }
+
     func testLeadingZeroLast4SurvivesReopen() throws {
         let path = tempPath()
         do {

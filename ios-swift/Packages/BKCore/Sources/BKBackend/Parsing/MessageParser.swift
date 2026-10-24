@@ -43,7 +43,7 @@ public struct ParsedMessage: Sendable {
 
 /// 规则解析器：纯函数，不访问数据库，不依赖网络。
 public enum MessageParser {
-    public static let version = 1
+    public static let version = 2
 
     // MARK: 识别用正则
 
@@ -413,6 +413,9 @@ public enum MessageParser {
         if !balances.isEmpty, !Lexicon.marketing.test(cleaned) || !tails.isEmpty { return result(.balanceSnapshot, [], balances) }
         if Lexicon.marketing.test(cleaned) { return result(.marketing) }
         if Lexicon.reminder.test(cleaned) || amounts.contains(where: { $0.role == .due }) { return result(.reminder) }
+        // 没有任何金额、也没有尾号：不是动账通知。自动化按「银行」等关键词触发时，普通聊天短信会走到这里，
+        // 不放进待处理（否则会被无关短信淹没），只在接收日志里留一条。
+        if amounts.isEmpty, tails.isEmpty { return result(.noFinancialContent) }
         return result(.unrecognized)
     }
 

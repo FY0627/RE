@@ -237,7 +237,7 @@ final class IngestTests: XCTestCase {
         } catch BackendError.accountNotACandidate {}
         _ = a
         // 无法识别的通知只能忽略
-        _ = try await backend.ingest(IngestRequest(text: "【某银行】您的账户信息已更新。", source: .sms))
+        _ = try await backend.ingest(IngestRequest(text: "【某银行】您尾号0427的账户信息已更新。", source: .sms))
         let unrecognized = try await backend.openPendingItems().first { $0.reason == .unrecognized }!
         do {
             try await backend.confirmPending(id: unrecognized.id, accountID: a.id)
@@ -313,6 +313,71 @@ final class IngestTests: XCTestCase {
         XCTAssertEqual(summary?.bankReported?.amountMinor, 90_000)
         XCTAssertEqual(summary?.ledgerDerivedMinor, 95_000)
         XCTAssertEqual(summary?.recordsAfterBase, 1)
+    }
+
+    func testOpeningBalanceIsBaseUntilBankReportsBalance() async throws {
+        let backend = try makeBackend()
+        let account = try await backend.addAccount(AccountDraft(
+            name: "", bankID: "cmb", bankName: "招商银行", last4: "0427", cardType: .debit, currency: .cny, paletteID: "ocean", openingBalanceMinor: 100_000
+        ))
+        XCTAssertEqual(account.openingBalanceMinor, 100_000)
+        XCTAssertEqual(account.openingBalanceAt, now)
+        // 填写初始余额之前就到达的通知不重复计入
+        _ = try await backend.ingest(IngestRequest(text: "您尾号0427账户10月24日08:00消费20.00元【招商银行】", source: .sms, receivedAt: now.addingTimeInterval(-3600)))
+        _ = try await backend.ingest(IngestRequest(text: "您尾号0427账户10月24日14:30消费10.00元【招商银行】", source: .sms, receivedAt: now.addingTimeInterval(60)))
+        _ = try await backend.ingest(IngestRequest(text: "您尾号0427账户10月24日14:40收入人民币50.00元【招商银行】", source: .sms, receivedAt: now.addingTimeInterval(120)))
+        var summaries = try await backend.balanceSummaries()
+        var summary = try XCTUnwrap(summaries[account.id])
+        XCTAssertNil(summary.bankReported, "初始余额不冒充银行通知余额")
+        XCTAssertEqual(summary.base, .opening)
+        XCTAssertEqual(summary.ledgerDerivedMinor, 104_000)
+        XCTAssertEqual(summary.ledgerDerivedCurrency, .cny)
+        XCTAssertEqual(summary.recordsAfterBase, 2)
+
+        // 之后收到带余额的通知：银行余额更新，成为新的起点
+        _ = try await backend.ingest(IngestRequest(text: "您尾号0427账户10月24日15:00消费5.00元，余额1,035.00元【招商银行】", source: .sms, receivedAt: now.addingTimeInterval(180)))
+        summaries = try await backend.balanceSummaries()
+        summary = try XCTUnwrap(summaries[account.id])
+        XCTAssertEqual(summary.base, .bankReported)
+        XCTAssertEqual(summary.bankReported?.amountMinor, 103_500)
+        XCTAssertEqual(summary.ledgerDerivedMinor, 103_500)
+        XCTAssertEqual(summary.openingBalanceMinor, 100_000, "初始余额仍单独保留")
+    }
+
+    func testOpeningBalanceSetLaterReplacesOlderBankBalanceAndCanBeCleared() async throws {
+        let backend = try makeBackend()
+        let account = try await addAccount(backend, last4: "0427")
+        _ = try await backend.ingest(IngestRequest(text: "您尾号0427账户10月24日09:00消费10.00元，余额900.00元【招商银行】", source: .sms, receivedAt: now.addingTimeInterval(-7200)))
+        try await backend.setOpeningBalance(accountID: account.id, amountMinor: -50_000)
+        var summaries = try await backend.balanceSummaries()
+        var summary = try XCTUnwrap(summaries[account.id])
+        XCTAssertEqual(summary.base, .opening, "比银行余额更晚填写的初始余额作为起点")
+        XCTAssertEqual(summary.bankReported?.amountMinor, 90_000, "银行通知余额照常保留")
+        XCTAssertEqual(summary.ledgerDerivedMinor, -50_000)
+
+        try await backend.setOpeningBalance(accountID: account.id, amountMinor: nil)
+        summaries = try await backend.balanceSummaries()
+        summary = try XCTUnwrap(summaries[account.id])
+        XCTAssertEqual(summary.base, .bankReported)
+        XCTAssertEqual(summary.ledgerDerivedMinor, 90_000)
+        XCTAssertNil(summary.openingBalanceMinor)
+
+        do {
+            try await backend.setOpeningBalance(accountID: "missing", amountMinor: 1)
+            XCTFail("不存在的账户")
+        } catch BackendError.notFound {}
+    }
+
+    func testMessageWithoutMoneyOrTailIsFilteredNotPending() async throws {
+        let backend = try makeBackend()
+        try await addAccount(backend, last4: "0427")
+        let result = try await backend.ingest(IngestRequest(text: "明天下午我要去银行办点事，晚点回你", source: .sms))
+        XCTAssertEqual(result.classification, .noFinancialContent)
+        XCTAssertEqual(result.outcome, .filtered)
+        let pending = try await backend.pendingCount()
+        XCTAssertEqual(pending, 0, "关键词误触发的普通短信不进待处理")
+        let log = try await backend.ingestLog()
+        XCTAssertEqual(log.first?.classification, .noFinancialContent, "但会留在接收日志里")
     }
 
     func testBalanceOnlyMessageCreatesNoRecord() async throws {

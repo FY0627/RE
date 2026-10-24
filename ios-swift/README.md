@@ -12,7 +12,7 @@ ios-swift/
 ├── Bookkeeping/                   App target（文件夹同步，新增 .swift 文件无需改工程）
 │   ├── App/                       入口、共享服务 AppServices、界面状态 LedgerStore
 │   ├── Intents/                   App Intent「记录银行动账通知」、AccountEntity、AppShortcuts
-│   ├── UI/                        Shell（翻页、玻璃底栏、加号上拉）、Home、Assets、Stats、Profile、Pending
+│   ├── UI/                        Shell（系统 TabView + 「+」）、Home、Assets（卡包与详情转场）、Stats、Profile、Pending
 │   ├── Diagnostics/               单变量性能开关、帧率/内存指标
 │   └── Assets.xcassets
 ├── Packages/BKCore/               纯 Swift 业务核心（无 UI 依赖）

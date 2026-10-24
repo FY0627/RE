@@ -1,45 +1,51 @@
 import SwiftUI
 import BKModel
 
-/// 流水行（原型 `_buildTransactionRow`）：金额、方向、交易对方、尾号、时间、备注。
+/// 流水行：金额、方向、交易对方、尾号、时间、备注。字号用系统文字样式，跟随「更大字体」设置。
+/// 在系统列表里直接使用；在自定义滚动页面里用 `boxed: true` 自带卡片背景。
 struct RecordRowView: View {
     let row: RecordRow
     var showAccount = true
-    @Environment(\.colorScheme) private var scheme
+    var boxed = false
 
     var body: some View {
-        let palette = Theme(scheme: scheme)
         let r = row.record
         let counted = r.status == .posted
         HStack(spacing: 12) {
             Image(systemName: r.kind.symbolName)
-                .font(.system(size: 17))
-                .foregroundStyle(palette.ink)
-                .frame(width: 38, height: 38)
-                .background(palette.ink.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .font(.body)
+                .foregroundStyle(.primary)
+                .frame(width: 40, height: 40)
+                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(r.counterparty ?? r.kind.displayName)
-                        .font(.system(size: 13, weight: .medium)).foregroundStyle(palette.ink).lineLimit(1)
-                    if r.status != .posted { badge(r.status.displayName, palette) }
-                    if r.isInternalTransfer { badge("内部转账", palette) }
+                        .font(.body.weight(.medium)).foregroundStyle(.primary).lineLimit(1)
+                    if r.status != .posted { badge(r.status.displayName) }
+                    if r.isInternalTransfer { badge("内部转账") }
                 }
                 Text(subtitle(r))
-                    .font(.system(size: 11)).foregroundStyle(palette.muted).lineLimit(1)
+                    .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 if !r.note.isEmpty {
-                    Text(r.note).font(.system(size: 11)).foregroundStyle(palette.ink.opacity(0.75)).lineLimit(1)
+                    Text(r.note).font(.subheadline).foregroundStyle(Color.primary.opacity(0.8)).lineLimit(1)
                 }
             }
             Spacer(minLength: 8)
             Text(Fmt.signed(r))
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(r.direction == .inflow ? AppTheme.income : palette.ink)
+                .font(.body.weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(r.direction == .inflow ? AppTheme.income : Color.primary)
                 .strikethrough(r.status == .failed)
                 .opacity(counted ? 1 : 0.55)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(palette.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.vertical, boxed ? 12 : 2)
+        .padding(.horizontal, boxed ? 14 : 0)
+        .background {
+            if boxed {
+                RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color(.secondarySystemGroupedBackground))
+            }
+        }
+        .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
     }
 
@@ -49,12 +55,29 @@ struct RecordRowView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func badge(_ text: String, _ palette: Theme) -> some View {
+    private func badge(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(palette.muted)
-            .padding(.horizontal, 5).padding(.vertical, 1.5)
-            .background(palette.ink.opacity(0.07), in: Capsule())
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(Color.primary.opacity(0.08), in: Capsule())
+    }
+}
+
+/// 以面板方式打开流水详情（没有导航栈的页面使用）。
+struct RecordDetailSheet: View {
+    let recordID: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            RecordDetailView(recordID: recordID)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("关闭", systemImage: "xmark") { dismiss() }
+                    }
+                }
+        }
     }
 }
 
@@ -62,7 +85,6 @@ struct RecordRowView: View {
 struct RecordDetailView: View {
     let recordID: String
     @Environment(LedgerStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
     @State private var detail: RecordDetail?
     @State private var note = ""
     @State private var saving = false
@@ -70,22 +92,19 @@ struct RecordDetailView: View {
     @State private var showRaw = false
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if let detail {
-                    form(detail)
-                } else {
-                    ProgressView()
-                }
+        Group {
+            if let detail {
+                form(detail)
+            } else {
+                ProgressView()
             }
-            .navigationTitle("流水详情")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("保存备注") { Task { await save() } }
-                        .disabled(saving || detail == nil || note == detail?.row.record.note)
-                }
+        }
+        .navigationTitle("流水详情")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("保存备注") { Task { await save() } }
+                    .disabled(saving || detail == nil || note == detail?.row.record.note)
             }
         }
         .task {
@@ -98,7 +117,14 @@ struct RecordDetailView: View {
         let r = detail.row.record
         return Form {
             Section {
-                LabeledContent("金额", value: Fmt.signed(r))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(r.counterparty ?? r.kind.displayName).font(.headline)
+                    Text(Fmt.signed(r))
+                        .font(.largeTitle.weight(.bold))
+                        .monospacedDigit()
+                        .foregroundStyle(r.direction == .inflow ? AppTheme.income : Color.primary)
+                }
+                .padding(.vertical, 4)
                 LabeledContent("方向", value: r.direction.displayName)
                 LabeledContent("交易性质", value: r.kind.displayName)
                 LabeledContent("状态", value: r.status.displayName)
@@ -126,7 +152,7 @@ struct RecordDetailView: View {
             }
             if let related = detail.related {
                 Section("关联的原交易") {
-                    RecordRowView(row: related).listRowInsets(EdgeInsets())
+                    RecordRowView(row: related)
                 }
             }
             Section {

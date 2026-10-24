@@ -45,7 +45,7 @@ enum ScreenshotMode {
         guard isActive else { return }
         let accounts = [
             AccountDraft(name: "", bankID: "cmb", bankName: "招商银行", last4: "0427", cardType: .debit, currency: .cny, paletteID: "graphite-gold"),
-            AccountDraft(name: "", bankID: "boc", bankName: "中国银行", last4: "8810", cardType: .credit, currency: .cny, paletteID: "autumn-gold"),
+            AccountDraft(name: "", bankID: "boc", bankName: "中国银行", last4: "8810", cardType: .credit, currency: .cny, paletteID: "autumn-gold", openingBalanceMinor: -320_000),
             AccountDraft(name: "", bankID: "icbc", bankName: "工商银行", last4: "6621", cardType: .debit, currency: .cny, paletteID: "crimson"),
         ]
         // {T} 替换为「M月d日HH:mm」
