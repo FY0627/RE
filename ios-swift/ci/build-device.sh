@@ -4,6 +4,7 @@
 # 所以直接构建真机 .app，再由 package-ipa.sh 按 Payload/<App>.app 结构打包。
 # 用法：bash ios-swift/ci/build-device.sh <输出目录> <构建号>
 set -euo pipefail
+trap 'echo "::error title=build-device.sh::build-device.sh line $LINENO failed: $BASH_COMMAND"' ERR
 
 OUT="${1:?output dir}"
 BUILD_NUMBER="${2:-1}"

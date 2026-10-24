@@ -2,6 +2,7 @@
 # 选择 Xcode 并记录真实工具链版本。不写死版本号：以 runner 实际安装的为准。
 # 用法：bash ios-swift/ci/toolchain.sh <输出目录>
 set -euo pipefail
+trap 'echo "::error title=toolchain.sh::toolchain.sh line $LINENO failed: $BASH_COMMAND"' ERR
 
 OUT="${1:?output dir}"
 mkdir -p "$OUT/logs"

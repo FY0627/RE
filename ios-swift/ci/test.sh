@@ -4,6 +4,7 @@
 #   2. iOS 模拟器上同一套测试（iOS 的 Foundation / SQLite 行为）
 # 用法：bash ios-swift/ci/test.sh <输出目录>
 set -euo pipefail
+trap 'echo "::error title=test.sh::test.sh line $LINENO failed: $BASH_COMMAND"' ERR
 
 OUT="${1:?output dir}"
 PACKAGE_DIR="ios-swift/Packages/BKCore"
@@ -62,7 +63,12 @@ if [[ $STATUS -ne 0 ]]; then
   exit $STATUS
 fi
 
-HOST_CASES=$(grep -o '<testcase ' "$OUT/results/swift-test.xml" 2>/dev/null | wc -l | tr -d ' ')
-HOST_FAILS=$(grep -o '<failure' "$OUT/results/swift-test.xml" 2>/dev/null | wc -l | tr -d ' ')
+# 统计只用于展示，任何一步取不到都不影响结果
+trap - ERR
+set +e +o pipefail
+ls "$OUT/results" > "$OUT/logs/results-listing.txt" 2>&1
+HOST_CASES=$(cat "$OUT"/results/swift-test*.xml 2>/dev/null | grep -o '<testcase ' | wc -l | tr -d ' ')
+HOST_FAILS=$(cat "$OUT"/results/swift-test*.xml 2>/dev/null | grep -o '<failure' | wc -l | tr -d ' ')
 SIM_SUMMARY=$(grep -E "Executed [0-9]+ tests?, with [0-9]+ failures?" "$OUT/logs/simulator-test.log" | tail -n 1 | sed 's/^[[:space:]]*//')
+set -e -o pipefail
 echo "::notice title=Tests::macOS swift test: ${HOST_CASES} cases, ${HOST_FAILS} failures; iOS Simulator: ${SIM_SUMMARY:-see log}"
