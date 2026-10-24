@@ -62,5 +62,7 @@ if [[ $STATUS -ne 0 ]]; then
   exit $STATUS
 fi
 
-PASSED=$(grep -cE "Test [Cc]ase .* passed" "$OUT/logs/swift-test.log" || true)
-echo "::notice title=Tests::swift test 通过 ${PASSED} 个用例；iOS 模拟器测试通过"
+HOST_CASES=$(grep -o '<testcase ' "$OUT/results/swift-test.xml" 2>/dev/null | wc -l | tr -d ' ')
+HOST_FAILS=$(grep -o '<failure' "$OUT/results/swift-test.xml" 2>/dev/null | wc -l | tr -d ' ')
+SIM_SUMMARY=$(grep -E "Executed [0-9]+ tests?, with [0-9]+ failures?" "$OUT/logs/simulator-test.log" | tail -n 1 | sed 's/^[[:space:]]*//')
+echo "::notice title=Tests::macOS swift test: ${HOST_CASES} cases, ${HOST_FAILS} failures; iOS Simulator: ${SIM_SUMMARY:-see log}"

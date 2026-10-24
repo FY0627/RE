@@ -2,6 +2,8 @@
 # 把真机 .app 打包成可由 Sideloadly 重新签名的 IPA，并校验完整性。
 # 用法：bash ios-swift/ci/package-ipa.sh <输出目录>
 set -euo pipefail
+# 任何未被 fail() 捕获的命令失败也要在运行页面上留下行号
+trap 'echo "::error title=IPA verification::package-ipa.sh 第 $LINENO 行命令失败：$BASH_COMMAND"' ERR
 
 OUT="${1:?output dir}"
 APP="$OUT/derived-app/Build/Products/Release-iphoneos/Bookkeeping.app"
@@ -43,7 +45,11 @@ ARCHS=$(lipo -archs "$APP/$EXECUTABLE")
 ok "架构 $ARCHS"
 
 # LC_BUILD_VERSION platform 2 = iOS 真机，7 = iOS 模拟器
-BUILD_PLATFORM=$(otool -l "$APP/$EXECUTABLE" | awk '/LC_BUILD_VERSION/{f=1} f&&/platform/{print $2; exit}')
+# awk 读完全部输入（不提前 exit），避免 pipefail 下 otool 收到 SIGPIPE
+otool -l "$APP/$EXECUTABLE" > "$OUT/load-commands.txt"
+BUILD_PLATFORM=$(awk '/LC_BUILD_VERSION/{f=1} f&&/platform/&&!done{print $2; done=1}' "$OUT/load-commands.txt")
+MINOS=$(awk '/LC_BUILD_VERSION/{f=1} f&&/minos/&&!done{print $2; done=1}' "$OUT/load-commands.txt")
+echo "LC_BUILD_VERSION platform=$BUILD_PLATFORM minos=$MINOS" >> "$REPORT"
 [[ "$BUILD_PLATFORM" == "2" || "$BUILD_PLATFORM" == "IOS" ]] || fail "Mach-O 平台是 $BUILD_PLATFORM，不是 iOS 真机（模拟器产物不能打包）"
 ok "Mach-O 平台 iOS 真机（$BUILD_PLATFORM）"
 
@@ -65,7 +71,8 @@ ok "资源 Assets.car"
 
 INTENTS="$APP/Metadata.appintents"
 [[ -d "$INTENTS" ]] || fail "缺少 Metadata.appintents：App Intents 元数据未生成，快捷指令将找不到动作"
-ACTIONS=$(find "$INTENTS" -name 'extract.actionsdata' | head -n 1)
+ACTIONS=$(find "$INTENTS" -name 'extract.actionsdata' -print -quit)
+find "$INTENTS" -type f >> "$REPORT"
 [[ -n "$ACTIONS" ]] || fail "缺少 extract.actionsdata"
 grep -q "RecordBankMessageIntent" "$ACTIONS" || fail "App Intents 元数据里没有 RecordBankMessageIntent"
 grep -q "AccountEntity" "$ACTIONS" || fail "App Intents 元数据里没有 AccountEntity"
