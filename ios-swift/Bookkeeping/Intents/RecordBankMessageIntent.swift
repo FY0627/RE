@@ -84,6 +84,8 @@ struct RecordBankMessageIntent: AppIntent {
         // 日志只记录结果类别，不记录正文、金额、发件人
         AppServices.logger.info("ingest outcome=\(result.outcome.rawValue, privacy: .public) class=\(result.classification.rawValue, privacy: .public) recorded=\(result.recordedCount) pending=\(result.pendingCount)")
         await MainActor.run { NotificationCenter.default.post(name: .ledgerDidChange, object: nil) }
+        // 记账结果通知（「我的」里打开后才发）
+        await IngestNotifier.post(result)
         return .result(value: result.summary)
     }
 }

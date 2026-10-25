@@ -73,8 +73,10 @@ public struct IngestResult: Sendable, Hashable {
     public var mergedCount: Int
     public var pendingCount: Int
     public var summary: String
+    /// 每一笔交易的处理结果（用于记账结果通知），顺序与通知里的交易一致
+    public var items: [IngestItem]
 
-    public init(ingestID: String?, outcome: IngestOutcome, classification: MessageClassification, recordedCount: Int, mergedCount: Int, pendingCount: Int, summary: String) {
+    public init(ingestID: String?, outcome: IngestOutcome, classification: MessageClassification, recordedCount: Int, mergedCount: Int, pendingCount: Int, summary: String, items: [IngestItem] = []) {
         self.ingestID = ingestID
         self.outcome = outcome
         self.classification = classification
@@ -82,6 +84,40 @@ public struct IngestResult: Sendable, Hashable {
         self.mergedCount = mergedCount
         self.pendingCount = pendingCount
         self.summary = summary
+        self.items = items
+    }
+}
+
+/// 一笔交易的处理结果：哪张卡、什么动作、多少钱、是否入账。
+public struct IngestItem: Sendable, Hashable {
+    public enum Result: Sendable, Hashable {
+        /// 新入账
+        case recorded
+        /// 与已有流水是同一笔（另一来源），只合并为来源证据
+        case merged
+        /// 没能自动入账，进入待处理
+        case pending(PendingReason)
+    }
+
+    /// 入账时是账户的尾号；待处理时是通知里写的尾号（可能没有）
+    public var cardTail: String?
+    public var kind: TransactionKind?
+    public var status: SettlementStatus?
+    /// 入账时是确定的金额和币种
+    public var amountMinor: Int64?
+    public var currency: CurrencyCode?
+    /// 待处理时是通知里的金额原文，例如 `1,234.56`
+    public var amountText: String?
+    public var result: Result
+
+    public init(cardTail: String?, kind: TransactionKind?, status: SettlementStatus?, amountMinor: Int64?, currency: CurrencyCode?, amountText: String?, result: Result) {
+        self.cardTail = cardTail
+        self.kind = kind
+        self.status = status
+        self.amountMinor = amountMinor
+        self.currency = currency
+        self.amountText = amountText
+        self.result = result
     }
 }
 

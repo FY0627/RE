@@ -243,32 +243,32 @@ struct AssetsView: View {
     }
 
     /// 卡包状态：管理银行卡（启用 / 停用）；详情状态：这张卡的菜单。
-    @ViewBuilder
+    ///
+    /// 始终是同一个 Menu，图标不变；卡包状态在上面盖一层透明按钮直接打开「管理银行卡」。
+    /// 如果两种状态用两个不同的视图，切换时图标会交叉淡入淡出，看起来闪一下。
     private var moreButton: some View {
-        if isOpen {
-            Menu {
-                Button("卡片信息", systemImage: "creditcard") { sheet = .info }
-                Button("编辑卡面", systemImage: "paintbrush") { sheet = .face }
-                Button(cardPendingCount > 0 ? "待处理账单（\(cardPendingCount)）" : "待处理账单", systemImage: "tray") { sheet = .pending }
-            } label: {
-                ToolbarIcon("ellipsis")
-            }
-            .tint(Color.primary)
-            .accessibilityLabel("更多")
-        } else {
-            Button { sheet = .manage } label: {
-                ToolbarIcon("ellipsis")
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("管理银行卡")
+        Menu {
+            Button("卡片信息", systemImage: "creditcard") { sheet = .info }
+            Button("编辑卡面", systemImage: "paintbrush") { sheet = .face }
+            Button(cardPendingCount > 0 ? "待处理账单（\(cardPendingCount)）" : "待处理账单", systemImage: "tray") { sheet = .pending }
+        } label: {
+            ToolbarIcon("ellipsis")
         }
+        .tint(Color.primary)
+        .overlay {
+            if !isOpen {
+                Button { sheet = .manage } label: {
+                    Color.clear.contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .accessibilityLabel(isOpen ? "更多" : "管理银行卡")
     }
 
     // MARK: 转场
 
-    private var transition: Animation {
-        reduceMotion ? .easeInOut(duration: 0.25) : .spring(response: 0.5, dampingFraction: 0.86)
-    }
+    private var transition: Animation { DetailMotionState.transition(reduceMotion: reduceMotion) }
 
     /// 详情内容等下面的卡落出屏幕后再从下往上进入
     private var contentEntrance: Animation {

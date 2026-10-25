@@ -53,6 +53,29 @@ final class IngestTests: XCTestCase {
         XCTAssertEqual(status[account.id]?.lastSuccessSource, .sms)
     }
 
+    func testIngestResultListsEachTransactionForNotifications() async throws {
+        let backend = try makeBackend()
+        // 还没有这张卡：进入待处理，只有通知里写的尾号和金额原文
+        let pending = try await backend.ingest(IngestRequest(text: purchase, source: .sms, sender: "95555"))
+        let item = try XCTUnwrap(pending.items.first)
+        XCTAssertEqual(pending.items.count, 1)
+        XCTAssertEqual(item.cardTail, "0427")
+        XCTAssertEqual(item.kind, .purchase)
+        XCTAssertNil(item.amountMinor)
+        XCTAssertEqual(item.amountText, "38.00")
+        XCTAssertEqual(item.result, .pending(.noMatchingAccount))
+
+        try await addAccount(backend, last4: "0427")
+        let text = "【招商银行】您尾号0427的储蓄卡于10月24日15:10在全家消费人民币12.50元。"
+        let recorded = try await backend.ingest(IngestRequest(text: text, source: .sms, sender: "95555"))
+        XCTAssertEqual(recorded.items, [
+            IngestItem(cardTail: "0427", kind: .purchase, status: .posted, amountMinor: 1250, currency: .cny, amountText: nil, result: .recorded),
+        ])
+
+        let unrecognized = try await backend.ingest(IngestRequest(text: "【招商银行】您尾号0427的账户有一笔变动，详情请查看App", source: .sms, sender: "95555"))
+        XCTAssertTrue(unrecognized.items.allSatisfy { $0.result != .recorded })
+    }
+
     func testAccountCurrencyUsedWhenMessageHasNone() async throws {
         let backend = try makeBackend()
         try await addAccount(backend, bank: "x", bankName: "Example Bank", last4: "3305", currency: .eur)
@@ -125,6 +148,7 @@ final class IngestTests: XCTestCase {
         _ = try await backend.ingest(IngestRequest(text: "您尾号0427的储蓄卡于2026年10月24日14:30消费人民币38.00元。【招商银行】", source: .sms, sender: "95555"))
         let email = try await backend.ingest(IngestRequest(text: "<p>您尾号0427的储蓄卡于2026-10-24 14:30在星巴克咖啡消费人民币38.00元。</p>", source: .email, sender: "notice@cmbchina.com", subject: "交易提醒"))
         XCTAssertEqual(email.outcome, .mergedDuplicate)
+        XCTAssertEqual(email.items.map(\.result), [.merged], "合并的一笔不再发「记账成功」通知")
         let rows = try await backend.records()
         XCTAssertEqual(rows.count, 1)
         let detail = try await backend.recordDetail(id: rows[0].id)

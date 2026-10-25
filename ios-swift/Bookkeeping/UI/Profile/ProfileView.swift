@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import BKModel
 import BKBackend
 
@@ -8,7 +9,10 @@ struct ProfileView: View {
     @Environment(ExchangeRateStore.self) private var rates
     @AppStorage("appearance") private var appearance = AppearanceMode.system.rawValue
     @AppStorage(ExchangeRateStore.primaryKey) private var primaryCurrency = CurrencyCode.cny.rawValue
+    @AppStorage(IngestNotifier.modeKey) private var notifyMode = IngestNotifier.Mode.off.rawValue
     @State private var retention = 30
+    @State private var notifyDenied = false
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         NavigationStack {
@@ -66,6 +70,20 @@ struct ProfileView: View {
                     } label: {
                         Label("自动记账状态", systemImage: "checkmark.seal")
                     }
+                    Picker(selection: $notifyMode) {
+                        ForEach(IngestNotifier.Mode.allCases) { Text($0.title).tag($0.rawValue) }
+                    } label: {
+                        Label("记账结果通知", systemImage: "bell.badge")
+                    }
+                    .onChange(of: notifyMode) { _, mode in
+                        guard mode != IngestNotifier.Mode.off.rawValue else { return }
+                        Task {
+                            if !(await IngestNotifier.requestAuthorization()) {
+                                notifyMode = IngestNotifier.Mode.off.rawValue
+                                notifyDenied = true
+                            }
+                        }
+                    }
                     NavigationLink {
                         HelpView()
                     } label: {
@@ -98,6 +116,14 @@ struct ProfileView: View {
                     LabeledContent("版本", value: BuildInfo.summary)
                         .font(.subheadline.monospaced())
                 }
+            }
+            .alert("没有通知权限", isPresented: $notifyDenied) {
+                Button("去设置") {
+                    if let url = URL(string: UIApplication.openNotificationSettingsURLString) { openURL(url) }
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("在系统设置里允许日常记账发送通知。")
             }
             .navigationTitle("我的")
             .task { retention = await store.retentionDays() }

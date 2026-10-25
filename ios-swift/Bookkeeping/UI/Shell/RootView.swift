@@ -32,6 +32,11 @@ final class DetailMotionState {
     var selectedAccountID: String?
 
     var isOpen: Bool { selectedAccountID != nil }
+
+    /// 打开 / 关闭详情的动画；资产页的卡片、返回按钮和标签栏都用它，节奏一致
+    static func transition(reduceMotion: Bool) -> Animation {
+        reduceMotion ? .easeInOut(duration: 0.25) : .spring(response: 0.5, dampingFraction: 0.86)
+    }
 }
 
 enum ActiveSheet: Identifiable {
@@ -50,11 +55,14 @@ enum ActiveSheet: Identifiable {
 /// 添加银行卡的「+」在资产页右上角。
 struct RootView: View {
     @Environment(LedgerStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var tab: AppTab = .home
     @State private var detail = DetailMotionState()
     @State private var sheet: ActiveSheet?
     /// 离开「我的」时 +1，让它下次进入时重建：滚动位置回到最上方，二级页面也关闭
     @State private var profileVisit = 0
+    /// 找不到系统标签栏、无法做淡出缩放时，退回系统的隐藏方式
+    @State private var systemTabBarHide = false
 
     var body: some View {
         TabView(selection: $tab) {
@@ -63,7 +71,7 @@ struct RootView: View {
             }
             Tab(AppTab.assets.title, systemImage: AppTab.assets.symbol, value: AppTab.assets) {
                 AssetsView(openAddAccount: { sheet = .addAccount })
-                    .toolbarVisibility(detail.isOpen ? .hidden : .visible, for: .tabBar)
+                    .toolbarVisibility(systemTabBarHide && detail.isOpen ? .hidden : .visible, for: .tabBar)
             }
             Tab(AppTab.stats.title, systemImage: AppTab.stats.symbol, value: AppTab.stats) {
                 StatsView()
@@ -76,6 +84,12 @@ struct RootView: View {
         .tabBarMinimizeBehavior(.never)
         .onChange(of: tab) { old, _ in
             if old == .profile { profileVisit += 1 }
+        }
+        .onChange(of: detail.isOpen) { _, open in
+            // 标签栏和返回按钮一样淡出并缩小
+            if !TabBarFader.setVisible(!open, animation: DetailMotionState.transition(reduceMotion: reduceMotion)) {
+                systemTabBarHide = true
+            }
         }
         .sheet(item: $sheet) { sheet in
             switch sheet {

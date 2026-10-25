@@ -96,6 +96,7 @@ struct IngestEngine {
         let accounts = try AccountDAO.all(db)
 
         var recorded = 0, merged = 0, pending = 0
+        var items: [IngestItem] = []
         if parsed.classification == .transaction {
             for event in parsed.events {
                 let outcome: CommitOutcome
@@ -106,16 +107,22 @@ struct IngestEngine {
                     outcome = try commit(event.draft, meta: meta, boundAccountID: request.boundAccountID, accounts: accounts, forcedAccount: nil, duplicateCheck: true)
                 }
                 switch outcome {
-                case .recorded: recorded += 1
-                case .merged: merged += 1
+                case let .recorded(recordID):
+                    recorded += 1
+                    items.append(try item(recordID: recordID, draft: event.draft, result: .recorded, accounts: accounts))
+                case let .merged(recordID):
+                    merged += 1
+                    items.append(try item(recordID: recordID, draft: event.draft, result: .merged, accounts: accounts))
                 case let .pending(reason, candidates, duplicateOf):
                     try PendingDAO.insert(db, id: newID(), ingestID: ingestID, partIndex: event.draft.partIndex, reason: reason, draft: event.draft, candidates: candidates, duplicateOf: duplicateOf, now: now)
                     pending += 1
+                    items.append(Self.pendingItem(event.draft, reason: reason))
                 }
             }
         } else if parsed.classification == .unrecognized {
             try PendingDAO.insert(db, id: newID(), ingestID: ingestID, partIndex: 0, reason: .unrecognized, draft: nil, candidates: request.boundAccountID.map { [$0] } ?? [], duplicateOf: nil, now: now)
             pending += 1
+            items.append(IngestItem(cardTail: nil, kind: nil, status: nil, amountMinor: nil, currency: nil, amountText: nil, result: .pending(.unrecognized)))
         }
 
         // 只有余额、没有交易：保存余额快照，不凭差额编造交易
@@ -149,7 +156,27 @@ struct IngestEngine {
         let summary = parts.joined(separator: "，")
         // 待处理项的正文要保留到处理完；其余按保留期限清理
         try IngestDAO.updateResult(db, id: ingestID, classification: parsed.classification, outcome: outcome, detail: summary, rawPurgeAfter: purgeAfter)
-        return IngestResult(ingestID: ingestID, outcome: outcome, classification: parsed.classification, recordedCount: recorded, mergedCount: merged, pendingCount: pending, summary: summary)
+        return IngestResult(ingestID: ingestID, outcome: outcome, classification: parsed.classification, recordedCount: recorded, mergedCount: merged, pendingCount: pending, summary: summary, items: items)
+    }
+
+    /// 已入账 / 已合并的一笔：用流水本身的金额、币种和账户尾号
+    private func item(recordID: String, draft: EventDraft, result: IngestItem.Result, accounts: [Account]) throws -> IngestItem {
+        guard let record = try RecordDAO.find(db, id: recordID) else {
+            return Self.pendingItem(draft, result: result)
+        }
+        let tail = accounts.first { $0.id == record.accountID }?.last4 ?? draft.cardTail
+        return IngestItem(cardTail: tail, kind: record.kind, status: record.status, amountMinor: record.amountMinor, currency: record.currency, amountText: nil, result: result)
+    }
+
+    /// 没有入账的一笔：只有通知里写的尾号和金额原文
+    static func pendingItem(_ draft: EventDraft, reason: PendingReason) -> IngestItem {
+        pendingItem(draft, result: .pending(reason))
+    }
+
+    private static func pendingItem(_ draft: EventDraft, result: IngestItem.Result) -> IngestItem {
+        let candidates = draft.amount.currencyCandidates
+        let currency = draft.amount.preferredCurrency ?? (candidates.count == 1 ? candidates[0] : nil)
+        return IngestItem(cardTail: draft.cardTail, kind: draft.kind, status: draft.status, amountMinor: nil, currency: currency, amountText: draft.amount.digits, result: result)
     }
 
     func candidateIDs(for draft: EventDraft, request: IngestRequest, accounts: [Account]) -> [String] {
