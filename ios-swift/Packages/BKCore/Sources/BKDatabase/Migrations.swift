@@ -5,7 +5,7 @@
 /// - 每个迁移在一个事务里执行，失败整体回滚，版本号不变；
 /// - 每次修改表结构都要在 `DatabaseTests` 里补迁移测试。
 public enum Migrations {
-    public static let latestVersion = 3
+    public static let latestVersion = 4
 
     static let steps: [(version: Int, sql: String)] = [
         (1, """
@@ -128,6 +128,21 @@ public enum Migrations {
         ALTER TABLE accounts ADD COLUMN face_image_id TEXT;
         ALTER TABLE accounts ADD COLUMN face_text_color INTEGER;
         ALTER TABLE accounts ADD COLUMN face_text_scale REAL NOT NULL DEFAULT 1;
+        """),
+        // 多币种账户：其他币种；初始余额改为按币种保存（迁入原来主币种的初始余额，旧的两列不再使用）
+        (4, """
+        ALTER TABLE accounts ADD COLUMN extra_currencies TEXT NOT NULL DEFAULT '';
+        CREATE TABLE opening_balances (
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            currency TEXT NOT NULL,
+            amount_minor INTEGER NOT NULL,
+            set_at REAL NOT NULL,
+            PRIMARY KEY (account_id, currency)
+        );
+        INSERT INTO opening_balances (account_id, currency, amount_minor, set_at)
+            SELECT id, currency, opening_balance_minor, COALESCE(opening_balance_at, created_at)
+            FROM accounts WHERE opening_balance_minor IS NOT NULL;
+        UPDATE accounts SET opening_balance_minor = NULL, opening_balance_at = NULL;
         """),
     ]
 

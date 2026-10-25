@@ -73,11 +73,16 @@ public final class LedgerBackend: Sendable {
             if existing.contains(where: { $0.last4 == draft.last4 && $0.bankName == bankName && $0.cardType == draft.cardType }) {
                 throw BackendError.invalidAccount(.duplicateAccount)
             }
+            let extras = Account.normalizedExtras(draft.extraCurrencies, primary: draft.currency)
+            var openings: [OpeningBalance] = []
+            if let minor = draft.openingBalanceMinor { openings.append(OpeningBalance(currency: draft.currency, amountMinor: minor, at: now)) }
+            for currency in extras {
+                if let minor = draft.extraOpeningBalances[currency] { openings.append(OpeningBalance(currency: currency, amountMinor: minor, at: now)) }
+            }
             let account = Account(
                 id: id, name: name.isEmpty ? "\(bankName)\(draft.cardType.displayName)" : name, bankID: draft.bankID, bankName: bankName,
-                last4: draft.last4, cardType: draft.cardType, currency: draft.currency, paletteID: draft.paletteID,
-                sortOrder: try AccountDAO.nextSortOrder(db), createdAt: now,
-                openingBalanceMinor: draft.openingBalanceMinor, openingBalanceAt: draft.openingBalanceMinor == nil ? nil : now
+                last4: draft.last4, cardType: draft.cardType, currency: draft.currency, extraCurrencies: extras, paletteID: draft.paletteID,
+                sortOrder: try AccountDAO.nextSortOrder(db), createdAt: now, openingBalances: openings
             )
             try AccountDAO.insert(db, account)
             // 账户添加之前收到的、因「没有匹配账户」而待处理的通知：现在能唯一匹配就入账
@@ -95,9 +100,9 @@ public final class LedgerBackend: Sendable {
         if !updated { throw BackendError.notFound }
     }
 
-    /// 卡片信息里可改的字段：账户名称（留空恢复默认名称）和选填的完整卡号（nil 或空串清除）。
-    /// 银行、尾号、卡类型、币种决定自动记账的匹配，不在这里修改。
-    public func updateCardInfo(accountID: String, name: String, cardNumber: String?) async throws {
+    /// 卡片信息里可改的字段：账户名称（留空恢复默认名称）、选填的完整卡号（nil 或空串清除）、
+    /// 多币种账户的其他币种（nil 表示不修改）。银行、尾号、卡类型、主币种决定自动记账的匹配，不在这里修改。
+    public func updateCardInfo(accountID: String, name: String, cardNumber: String?, extraCurrencies: [CurrencyCode]? = nil) async throws {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let rawNumber = cardNumber?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         var number: String?
@@ -111,14 +116,21 @@ public final class LedgerBackend: Sendable {
             if let cardNumber, !cardNumber.hasSuffix(account.last4) { throw BackendError.invalidAccount(.invalidCardNumber) }
             let name = trimmedName.isEmpty ? "\(account.bankName)\(account.cardType.displayName)" : trimmedName
             try AccountDAO.updateInfo(db, id: accountID, name: name, cardNumber: cardNumber)
+            if let extraCurrencies {
+                let extras = Account.normalizedExtras(extraCurrencies, primary: account.currency)
+                try AccountDAO.updateExtraCurrencies(db, id: accountID, primary: account.currency, extras: extras)
+            }
         }
     }
 
-    /// 设置这张卡「现在」的余额（最小货币单位，账户币种）；传 nil 清除。
-    /// 之后到达的流水会加到这个数上；更早的流水和银行通知余额不受影响。
-    public func setOpeningBalance(accountID: String, amountMinor: Int64?) async throws {
+    /// 设置这张卡某个币种「现在」的余额（最小货币单位）；传 nil 清除。不指定币种时为主币种。
+    /// 之后到达的同币种流水会加到这个数上；更早的流水和银行通知余额不受影响。
+    public func setOpeningBalance(accountID: String, currency: CurrencyCode? = nil, amountMinor: Int64?) async throws {
         let now = clock()
-        let updated = try await database.write { try AccountDAO.setOpeningBalance($0, id: accountID, amountMinor: amountMinor, at: now) }
+        let updated = try await database.write { db -> Bool in
+            guard let account = try AccountDAO.find(db, id: accountID) else { return false }
+            return try AccountDAO.setOpeningBalance(db, id: accountID, currency: currency ?? account.currency, amountMinor: amountMinor, at: now)
+        }
         if !updated { throw BackendError.notFound }
     }
 
@@ -234,12 +246,18 @@ public final class LedgerBackend: Sendable {
 
     // MARK: 余额
 
-    public func balanceSummaries() async throws -> [String: AccountBalanceSummary] {
+    /// 每张卡每个币种的余额。币种顺序：账户持有的币种（主币种在前），再加上收到过银行余额的其他币种。
+    public func balanceSummaries() async throws -> [String: AccountBalances] {
         let calendar = calendar
         return try await database.read { db in
-            var result: [String: AccountBalanceSummary] = [:]
+            var result: [String: AccountBalances] = [:]
             for account in try AccountDAO.all(db, includeArchived: true) {
-                result[account.id] = try Self.balanceSummary(db, account: account, calendar: calendar)
+                var currencies = account.currencies
+                for observed in try BalanceDAO.currencies(db, accountID: account.id) where !currencies.contains(observed) {
+                    currencies.append(observed)
+                }
+                let items = try currencies.map { try Self.balanceSummary(db, account: account, currency: $0, calendar: calendar) }
+                result[account.id] = AccountBalances(accountID: account.id, items: items)
             }
             return result
         }
@@ -250,18 +268,16 @@ public final class LedgerBackend: Sendable {
     ///
     /// 银行通知余额之间按通知内时间排序（银行所在地的时间）；初始余额是用户在手机上填写的时刻，
     /// 和通知内时间不在同一个时区，所以和初始余额比较时一律用「通知到达手机的时间」。
-    static func balanceSummary(_ db: SQLiteConnection, account: Account, calendar: Calendar) throws -> AccountBalanceSummary {
-        let reported = try BalanceDAO.latest(db, accountID: account.id)
-        var opening: (amount: Int64, at: Date)?
-        if let amount = account.openingBalanceMinor, let at = account.openingBalanceAt { opening = (amount, at) }
+    static func balanceSummary(_ db: SQLiteConnection, account: Account, currency: CurrencyCode, calendar: Calendar) throws -> AccountBalanceSummary {
+        let reported = try BalanceDAO.latest(db, accountID: account.id, currency: currency)
+        let openingBalance = account.openingBalance(currency)
+        let opening = openingBalance.map { (amount: $0.amountMinor, at: $0.at) }
 
         var total: Int64
         var count = 0
         let base: AccountBalanceSummary.Base
-        let currency: CurrencyCode
         if let reported, opening == nil || reported.observedAt >= opening!.at {
             base = .bankReported
-            currency = reported.currency
             total = reported.amountMinor
             let engine = IngestEngine(db: db, now: Date(), calendar: calendar, newID: { "" })
             for record in try RecordDAO.postedAfter(db, accountID: account.id, currency: currency) where record.id != reported.recordID {
@@ -271,7 +287,6 @@ public final class LedgerBackend: Sendable {
             }
         } else if let opening {
             base = .opening
-            currency = account.currency
             total = opening.amount
             for record in try RecordDAO.postedAfter(db, accountID: account.id, currency: currency) {
                 guard (record.receivedAt ?? record.processedAt) > opening.at else { continue }
@@ -279,12 +294,12 @@ public final class LedgerBackend: Sendable {
                 count += 1
             }
         } else {
-            return AccountBalanceSummary(accountID: account.id, bankReported: nil, ledgerDerivedMinor: nil, recordsAfterBase: 0)
+            return AccountBalanceSummary(accountID: account.id, currency: currency, bankReported: nil, ledgerDerivedMinor: nil, recordsAfterBase: 0)
         }
         return AccountBalanceSummary(
-            accountID: account.id, bankReported: reported, ledgerDerivedMinor: total, recordsAfterBase: count,
+            accountID: account.id, currency: currency, bankReported: reported, ledgerDerivedMinor: total, recordsAfterBase: count,
             base: base, ledgerDerivedCurrency: currency,
-            openingBalanceMinor: account.openingBalanceMinor, openingBalanceAt: account.openingBalanceAt
+            openingBalanceMinor: openingBalance?.amountMinor, openingBalanceAt: openingBalance?.at
         )
     }
 

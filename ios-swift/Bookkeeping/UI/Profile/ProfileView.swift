@@ -4,7 +4,10 @@ import BKModel
 /// 「我的」：系统设置风格的分组列表，二级页面用导航推入。
 struct ProfileView: View {
     @Environment(LedgerStore.self) private var store
+    @Environment(ExchangeRateStore.self) private var rates
     @AppStorage("appearance") private var appearance = AppearanceMode.system.rawValue
+    @AppStorage(ExchangeRateStore.primaryKey) private var primaryCurrency = CurrencyCode.cny.rawValue
+    @AppStorage(ExchangeRateStore.enabledKey) private var ratesEnabled = false
     @State private var retention = 30
 
     var body: some View {
@@ -32,6 +35,30 @@ struct ProfileView: View {
                     .pickerStyle(.segmented)
                     .listRowBackground(Color.clear)
                     .listRowInsets(EdgeInsets())
+                }
+
+                Section {
+                    Picker(selection: $primaryCurrency) {
+                        ForEach(CurrencyCode.common, id: \.self) { code in
+                            Text("\(code.chineseName) \(code.rawValue)").tag(code.rawValue)
+                        }
+                    } label: {
+                        Label("主要币种", systemImage: "dollarsign.circle")
+                    }
+                    Toggle(isOn: $ratesEnabled) {
+                        Label("联网获取汇率", systemImage: "arrow.left.arrow.right.circle")
+                    }
+                    if ratesEnabled {
+                        LabeledContent("汇率", value: rateStatus)
+                        Button("立即更新") { Task { await rates.refreshIfNeeded(force: true) } }
+                            .disabled(rates.isUpdating)
+                    }
+                } header: {
+                    Text("币种与汇率")
+                } footer: {
+                    Text(ratesEnabled
+                         ? "资产页的净资产按主要币种换算合计。汇率约每 6 小时从 open.er-api.com 下载一次（数据每日更新），只发送币种代码，不上传任何账本数据。卡片和流水始终按原币种显示。"
+                         : "资产页先显示主要币种的净资产，其他币种分开列出。打开联网获取汇率后，可以按主要币种换算合计。")
                 }
 
                 Section("自动记账") {
@@ -79,9 +106,22 @@ struct ProfileView: View {
                 }
             }
             .navigationTitle("我的")
+            .onChange(of: ratesEnabled) { _, enabled in
+                if enabled { Task { await rates.refreshIfNeeded(force: true) } }
+            }
             .task { retention = await store.retentionDays() }
             .onChange(of: retention) { _, days in Task { await store.setRetentionDays(days) } }
         }
+    }
+}
+
+extension ProfileView {
+    private var rateStatus: String {
+        if rates.isUpdating { return "正在更新…" }
+        if let error = rates.lastError, rates.rates == nil { return error }
+        guard let current = rates.rates else { return "尚未获取" }
+        let updated = "更新于 \(Fmt.dateTime(current.updatedAt))"
+        return rates.lastError == nil ? updated : "\(updated)（最近一次更新失败）"
     }
 }
 

@@ -25,6 +25,7 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
 @main
 struct BookkeepingApp: App {
     @State private var store = LedgerStore()
+    @State private var rates = ExchangeRateStore()
     @AppStorage("appearance") private var appearance = AppearanceMode.system.rawValue
     @Environment(\.scenePhase) private var scenePhase
 
@@ -32,11 +33,15 @@ struct BookkeepingApp: App {
         WindowGroup {
             RootView()
                 .environment(store)
+                .environment(rates)
                 .preferredColorScheme(AppearanceMode(rawValue: appearance)?.colorScheme)
                 .task { await store.start() }
                 .onChange(of: scenePhase) { _, phase in
-                    // 自动化在后台入账后，用户下次打开 App 时刷新
-                    if phase == .active { store.scheduleRefresh() }
+                    // 自动化在后台入账后，用户下次打开 App 时刷新；开启了联网汇率时按需更新汇率
+                    if phase == .active {
+                        store.scheduleRefresh()
+                        Task { await rates.refreshIfNeeded() }
+                    }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .ledgerDidChange)) { _ in
                     store.scheduleRefresh()

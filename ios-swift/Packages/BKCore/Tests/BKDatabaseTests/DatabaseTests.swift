@@ -49,11 +49,11 @@ final class DatabaseTests: XCTestCase {
         XCTAssertEqual(stored.last4, "0427")
         XCTAssertNil(stored.openingBalanceMinor)
         let at = Date(timeIntervalSince1970: 1_790_000_100)
-        XCTAssertTrue(try db.writeSync { try AccountDAO.setOpeningBalance($0, id: "a1", amountMinor: -12_345, at: at) })
+        XCTAssertTrue(try db.writeSync { try AccountDAO.setOpeningBalance($0, id: "a1", currency: .cny, amountMinor: -12_345, at: at) })
         let updated = try XCTUnwrap(try db.readSync { try AccountDAO.find($0, id: "a1") })
         XCTAssertEqual(updated.openingBalanceMinor, -12_345)
         XCTAssertEqual(updated.openingBalanceAt, at)
-        XCTAssertTrue(try db.writeSync { try AccountDAO.setOpeningBalance($0, id: "a1", amountMinor: nil, at: at) })
+        XCTAssertTrue(try db.writeSync { try AccountDAO.setOpeningBalance($0, id: "a1", currency: .cny, amountMinor: nil, at: at) })
         let cleared = try XCTUnwrap(try db.readSync { try AccountDAO.find($0, id: "a1") })
         XCTAssertNil(cleared.openingBalanceMinor)
         XCTAssertNil(cleared.openingBalanceAt, "清除时时间一起清除")
@@ -86,6 +86,39 @@ final class DatabaseTests: XCTestCase {
         XCTAssertEqual(updated.face, face)
         XCTAssertEqual(updated.name, "工资卡")
         XCTAssertEqual(updated.cardNumber, "6225880112340427")
+    }
+
+    func testMigrationFromVersion3MovesOpeningBalanceToPerCurrencyTable() throws {
+        let path = tempPath()
+        let at = Date(timeIntervalSince1970: 1_790_000_500)
+        do {
+            let old = try SQLiteConnection(path: path)
+            for step in Migrations.steps where step.version <= 3 { try old.execute(step.sql) }
+            try old.setUserVersion(3)
+            try old.run(
+                "INSERT INTO accounts (id, name, bank_id, bank_name, last4, card_type, currency, palette_id, sort_order, created_at, opening_balance_minor, opening_balance_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ["a1", "测试卡", "cmb", "招商银行", "0427", "debit", "HKD", "ocean", 0, Date(timeIntervalSince1970: 1_790_000_000), -7_000, at]
+            )
+            try old.run(
+                "INSERT INTO accounts (id, name, bank_id, bank_name, last4, card_type, currency, palette_id, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ["a2", "测试卡", "cmb", "招商银行", "0428", "debit", "CNY", "ocean", 1, Date(timeIntervalSince1970: 1_790_000_000)]
+            )
+        }
+        let db = try Database(path: path)
+        XCTAssertEqual(try db.readSync { $0.userVersion }, Migrations.latestVersion)
+        let accounts = try db.readSync { try AccountDAO.all($0) }
+        let first = try XCTUnwrap(accounts.first { $0.id == "a1" })
+        XCTAssertEqual(first.extraCurrencies, [])
+        XCTAssertEqual(first.openingBalances, [OpeningBalance(currency: .hkd, amountMinor: -7_000, at: at)])
+        XCTAssertEqual(accounts.first { $0.id == "a2" }?.openingBalances, [])
+
+        try db.writeSync { try AccountDAO.updateExtraCurrencies($0, id: "a1", primary: .hkd, extras: [.usd, .cny]) }
+        XCTAssertTrue(try db.writeSync { try AccountDAO.setOpeningBalance($0, id: "a1", currency: .usd, amountMinor: 100, at: at) })
+        XCTAssertFalse(try db.writeSync { try AccountDAO.setOpeningBalance($0, id: "missing", currency: .usd, amountMinor: 100, at: at) })
+        let reloaded = try XCTUnwrap(try db.readSync { try AccountDAO.find($0, id: "a1") })
+        XCTAssertEqual(reloaded.currencies, [.hkd, .usd, .cny])
+        XCTAssertEqual(reloaded.openingBalance(.usd)?.amountMinor, 100)
+        XCTAssertEqual(reloaded.openingBalanceMinor, -7_000, "主币种的初始余额")
     }
 
     func testLeadingZeroLast4SurvivesReopen() throws {

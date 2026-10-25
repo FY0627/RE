@@ -271,7 +271,27 @@ public struct BalanceObservation: Hashable, Sendable {
     }
 }
 
-/// 账户余额：银行通知余额与账本推算余额分开展示。
+/// 一张卡全部币种的余额，顺序与账户币种一致（主币种在前）；收到过其他币种的银行余额时排在后面。
+public struct AccountBalances: Hashable, Sendable {
+    public var accountID: String
+    public var items: [AccountBalanceSummary]
+
+    public init(accountID: String, items: [AccountBalanceSummary]) {
+        self.accountID = accountID
+        self.items = items
+    }
+
+    /// 主币种
+    public var primary: AccountBalanceSummary? { items.first }
+    /// 卡面上显示的币种：主币种有余额就用主币种，否则用第一个有余额的币种
+    public var display: AccountBalanceSummary? { items.first { $0.ledgerDerivedMinor != nil } ?? items.first }
+
+    public func item(_ currency: CurrencyCode) -> AccountBalanceSummary? {
+        items.first { $0.currency == currency }
+    }
+}
+
+/// 某张卡某个币种的余额：银行通知余额与账本推算余额分开展示。
 public struct AccountBalanceSummary: Hashable, Sendable {
     /// 推算余额的起点
     public enum Base: String, Hashable, Sendable {
@@ -282,6 +302,7 @@ public struct AccountBalanceSummary: Hashable, Sendable {
     }
 
     public var accountID: String
+    public var currency: CurrencyCode
     /// 最新（按通知内时间排序）的银行通知余额；没有就是未知。与用户填写的初始余额分开保存、分开显示。
     public var bankReported: BalanceObservation?
     /// 用户填写的初始余额及其时间点
@@ -297,6 +318,7 @@ public struct AccountBalanceSummary: Hashable, Sendable {
 
     public init(
         accountID: String,
+        currency: CurrencyCode,
         bankReported: BalanceObservation?,
         ledgerDerivedMinor: Int64?,
         recordsAfterBase: Int,
@@ -306,6 +328,7 @@ public struct AccountBalanceSummary: Hashable, Sendable {
         openingBalanceAt: Date? = nil
     ) {
         self.accountID = accountID
+        self.currency = currency
         self.bankReported = bankReported
         self.ledgerDerivedMinor = ledgerDerivedMinor
         self.recordsAfterBase = recordsAfterBase

@@ -3,8 +3,8 @@ import UIKit
 import BKModel
 import BKBackend
 
-/// 卡片信息：银行、卡类型、币种、完整卡号（选填，默认遮住）。可以改账户名称和卡号，也可以隐藏这张卡。
-/// 银行、尾号、卡类型、币种决定自动记账的匹配，这里只显示不修改。
+/// 卡片信息：银行、卡类型、币种、完整卡号（选填，默认遮住）。可以改账户名称、卡号、多币种账户的其他币种，也可以隐藏这张卡。
+/// 银行、尾号、卡类型、主币种决定自动记账的匹配，这里只显示不修改。
 struct CardInfoView: View {
     let accountID: String
     /// 隐藏这张卡：由详情页关闭详情后归档
@@ -15,6 +15,8 @@ struct CardInfoView: View {
     @State private var editing = false
     @State private var name = ""
     @State private var number = ""
+    @State private var multiCurrency = false
+    @State private var extras: [CurrencyCode] = []
     @State private var revealed = false
     @State private var copied = false
     @State private var saving = false
@@ -40,7 +42,10 @@ struct CardInfoView: View {
                 }
                 LabeledContent("银行", value: account.bankName)
                 LabeledContent("卡类型", value: account.cardType.displayName)
-                LabeledContent("币种", value: "\(account.currency.chineseName) \(account.currency.rawValue)")
+                LabeledContent(account.isMultiCurrency ? "主币种" : "币种", value: "\(account.currency.chineseName) \(account.currency.rawValue)")
+                if account.isMultiCurrency, !editing {
+                    LabeledContent("其他币种", value: account.extraCurrencies.map(\.chineseName).joined(separator: "、"))
+                }
                 LabeledContent("添加时间", value: Fmt.dateTime(account.createdAt))
             }
 
@@ -68,6 +73,19 @@ struct CardInfoView: View {
                 Text(editing
                      ? "末四位必须是 \(account.last4)。完整卡号只保存在这台 iPhone，自动记账只用尾号匹配。"
                      : (account.cardNumber == nil ? "点「编辑」可以填写完整卡号，方便需要时查看。" : "完整卡号只保存在这台 iPhone。"))
+            }
+
+            if editing {
+                Section {
+                    Toggle("多币种账户", isOn: $multiCurrency)
+                    if multiCurrency {
+                        ExtraCurrencyList(primary: account.currency, selection: $extras)
+                    }
+                } header: {
+                    Text("币种")
+                } footer: {
+                    Text("一张卡里存多个币种的钱时打开，勾选其他币种。去掉的币种不再显示余额，它的初始余额会删除，已有流水保留。")
+                }
             }
 
             if let errorText {
@@ -101,6 +119,8 @@ struct CardInfoView: View {
                     Button("编辑") {
                         name = account.name
                         number = account.cardNumber ?? ""
+                        multiCurrency = account.isMultiCurrency
+                        extras = account.extraCurrencies
                         errorText = nil
                         editing = true
                     }
@@ -154,7 +174,7 @@ struct CardInfoView: View {
         saving = true
         defer { saving = false }
         do {
-            try await store.updateCardInfo(accountID: account.id, name: name, cardNumber: number)
+            try await store.updateCardInfo(accountID: account.id, name: name, cardNumber: number, extraCurrencies: multiCurrency ? extras : [])
             errorText = nil
             revealed = false
             editing = false

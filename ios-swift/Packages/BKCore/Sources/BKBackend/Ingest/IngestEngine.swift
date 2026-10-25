@@ -163,10 +163,14 @@ struct IngestEngine {
 
     // MARK: 草稿 → 记录
 
+    /// 通知没写币种、或只写了「元」这类含糊写法时记为账户主币种；
+    /// 否则优先取账户持有的币种（多币种账户里「¥」「$」等写法据此区分）。
     func resolveCurrency(_ amount: AmountText, account: Account) -> CurrencyCode? {
         let candidates = amount.currencyCandidates
-        if candidates.isEmpty { return account.currency }
-        if candidates.contains(account.currency) { return account.currency }
+        if candidates.isEmpty || candidates.contains(account.currency) { return account.currency }
+        let held = account.currencies
+        if let preferred = amount.preferredCurrency, candidates.contains(preferred), held.contains(preferred) { return preferred }
+        if let match = held.first(where: candidates.contains) { return match }
         if candidates.count == 1 { return candidates[0] }
         return amount.preferredCurrency
     }

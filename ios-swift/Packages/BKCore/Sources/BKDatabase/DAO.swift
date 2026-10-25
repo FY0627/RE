@@ -3,35 +3,60 @@ import BKModel
 
 /// 数据访问函数。全部接收 `SQLiteConnection`，只能在 `Database.read/write` 的闭包里调用。
 public enum AccountDAO {
-    static let columns = "id, name, bank_id, bank_name, last4, card_type, currency, palette_id, sort_order, created_at, archived, opening_balance_minor, opening_balance_at, card_number, face_image_id, face_text_color, face_text_scale"
+    static let columns = "id, name, bank_id, bank_name, last4, card_type, currency, palette_id, sort_order, created_at, archived, card_number, face_image_id, face_text_color, face_text_scale, extra_currencies"
 
     static func map(_ row: SQLiteConnection.Row) -> Account {
-        Account(
+        let currency = CurrencyCode(row.string(6))
+        return Account(
             id: row.string(0), name: row.string(1), bankID: row.optionalString(2), bankName: row.string(3),
             last4: row.string(4), cardType: CardType(rawValue: row.string(5)) ?? .other,
-            currency: CurrencyCode(row.string(6)), paletteID: row.string(7), sortOrder: Int(row.int(8)),
+            currency: currency, extraCurrencies: decodeCurrencies(row.string(15)),
+            paletteID: row.string(7), sortOrder: Int(row.int(8)),
             createdAt: row.date(9), archived: row.bool(10),
-            openingBalanceMinor: row.optionalInt(11), openingBalanceAt: row.optionalDate(12),
-            cardNumber: row.optionalString(13),
-            face: CardFace(imageID: row.optionalString(14), textColor: row.optionalInt(15).map { UInt32(truncatingIfNeeded: $0) }, textScale: row.double(16))
+            cardNumber: row.optionalString(11),
+            face: CardFace(imageID: row.optionalString(12), textColor: row.optionalInt(13).map { UInt32(truncatingIfNeeded: $0) }, textScale: row.double(14))
         )
+    }
+
+    /// 其他币种以逗号分隔保存，例如 `USD,CNY`
+    static func encodeCurrencies(_ codes: [CurrencyCode]) -> String { codes.map(\.rawValue).joined(separator: ",") }
+    static func decodeCurrencies(_ text: String) -> [CurrencyCode] {
+        text.split(separator: ",").map { CurrencyCode(String($0)) }
     }
 
     public static func all(_ db: SQLiteConnection, includeArchived: Bool = false) throws -> [Account] {
         let filter = includeArchived ? "" : "WHERE archived = 0"
-        return try db.query("SELECT \(columns) FROM accounts \(filter) ORDER BY sort_order, created_at", [], map)
+        var accounts = try db.query("SELECT \(columns) FROM accounts \(filter) ORDER BY sort_order, created_at", [], map)
+        let openings = Dictionary(grouping: try openingBalances(db, accountID: nil), by: \.accountID)
+        for index in accounts.indices {
+            accounts[index].openingBalances = openings[accounts[index].id]?.map(\.balance) ?? []
+        }
+        return accounts
     }
 
     public static func find(_ db: SQLiteConnection, id: String) throws -> Account? {
-        try db.queryOne("SELECT \(columns) FROM accounts WHERE id = ?", [id], map)
+        guard var account = try db.queryOne("SELECT \(columns) FROM accounts WHERE id = ?", [id], map) else { return nil }
+        account.openingBalances = try openingBalances(db, accountID: id).map(\.balance)
+        return account
+    }
+
+    private static func openingBalances(_ db: SQLiteConnection, accountID: String?) throws -> [(accountID: String, balance: OpeningBalance)] {
+        let sql = "SELECT account_id, currency, amount_minor, set_at FROM opening_balances" + (accountID == nil ? "" : " WHERE account_id = ?") + " ORDER BY rowid"
+        let values: [SQLBindable] = accountID.map { [$0] } ?? []
+        return try db.query(sql, values) { row in
+            (accountID: row.string(0), balance: OpeningBalance(currency: CurrencyCode(row.string(1)), amountMinor: row.int(2), at: row.date(3)))
+        }
     }
 
     public static func insert(_ db: SQLiteConnection, _ a: Account) throws {
         try db.run(
-            "INSERT INTO accounts (\(columns)) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO accounts (\(columns)) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [a.id, a.name, a.bankID, a.bankName, a.last4, a.cardType.rawValue, a.currency.rawValue, a.paletteID, a.sortOrder, a.createdAt, a.archived,
-             a.openingBalanceMinor, a.openingBalanceAt, a.cardNumber, a.face.imageID, a.face.textColor.map { Int64($0) }, a.face.textScale]
+             a.cardNumber, a.face.imageID, a.face.textColor.map { Int64($0) }, a.face.textScale, encodeCurrencies(a.extraCurrencies)]
         )
+        for opening in a.openingBalances {
+            try setOpeningBalance(db, id: a.id, currency: opening.currency, amountMinor: opening.amountMinor, at: opening.at)
+        }
     }
 
     public static func nextSortOrder(_ db: SQLiteConnection) throws -> Int {
@@ -51,17 +76,34 @@ public enum AccountDAO {
         try db.run("UPDATE accounts SET name = ?, card_number = ? WHERE id = ?", [name, cardNumber, id]) > 0
     }
 
+    /// 修改多币种账户的其他币种；不再持有的币种，其初始余额一起删除（已有流水保留）。
+    public static func updateExtraCurrencies(_ db: SQLiteConnection, id: String, primary: CurrencyCode, extras: [CurrencyCode]) throws {
+        try db.run("UPDATE accounts SET extra_currencies = ? WHERE id = ?", [encodeCurrencies(extras), id])
+        let kept = [primary] + extras
+        let placeholders = kept.map { _ in "?" }.joined(separator: ", ")
+        try db.run(
+            "DELETE FROM opening_balances WHERE account_id = ? AND currency NOT IN (\(placeholders))",
+            ([id] + kept.map(\.rawValue)) as [SQLBindable]
+        )
+    }
+
     public static func setArchived(_ db: SQLiteConnection, id: String, archived: Bool) throws {
         try db.run("UPDATE accounts SET archived = ? WHERE id = ?", [archived, id])
     }
 
-    /// 设置或清除初始余额。清除时两个字段一起置空。
+    /// 设置或清除某个币种的初始余额。账户不存在时返回 false。
     @discardableResult
-    public static func setOpeningBalance(_ db: SQLiteConnection, id: String, amountMinor: Int64?, at date: Date?) throws -> Bool {
-        try db.run(
-            "UPDATE accounts SET opening_balance_minor = ?, opening_balance_at = ? WHERE id = ?",
-            [amountMinor, amountMinor == nil ? nil : date, id]
-        ) > 0
+    public static func setOpeningBalance(_ db: SQLiteConnection, id: String, currency: CurrencyCode, amountMinor: Int64?, at date: Date) throws -> Bool {
+        guard try db.scalarInt("SELECT COUNT(*) FROM accounts WHERE id = ?", [id]) > 0 else { return false }
+        if let amountMinor {
+            try db.run(
+                "INSERT INTO opening_balances (account_id, currency, amount_minor, set_at) VALUES (?, ?, ?, ?) ON CONFLICT(account_id, currency) DO UPDATE SET amount_minor = excluded.amount_minor, set_at = excluded.set_at",
+                [id, currency.rawValue, amountMinor, date]
+            )
+        } else {
+            try db.run("DELETE FROM opening_balances WHERE account_id = ? AND currency = ?", [id, currency.rawValue])
+        }
+        return true
     }
 
     public static func noteSuccess(_ db: SQLiteConnection, id: String, at date: Date, source: SourceKind) throws {
@@ -357,17 +399,22 @@ public enum BalanceDAO {
         )
     }
 
-    /// 最新的银行余额：按通知内时间（order_key）排序，而不是按到达顺序，避免旧消息覆盖新余额。
-    public static func latest(_ db: SQLiteConnection, accountID: String) throws -> BalanceObservation? {
+    /// 某币种最新的银行余额：按通知内时间（order_key）排序，而不是按到达顺序，避免旧消息覆盖新余额。
+    public static func latest(_ db: SQLiteConnection, accountID: String, currency: CurrencyCode) throws -> BalanceObservation? {
         try db.queryOne(
-            "SELECT account_id, amount_minor, currency, order_key, txn_time, observed_at, record_id FROM balance_observations WHERE account_id = ? ORDER BY order_key DESC, observed_at DESC LIMIT 1",
-            [accountID]
+            "SELECT account_id, amount_minor, currency, order_key, txn_time, observed_at, record_id FROM balance_observations WHERE account_id = ? AND currency = ? ORDER BY order_key DESC, observed_at DESC LIMIT 1",
+            [accountID, currency.rawValue]
         ) { row in
             BalanceObservation(
                 accountID: row.string(0), amountMinor: row.int(1), currency: CurrencyCode(row.string(2)), orderKey: row.string(3),
                 transactionTime: row.optionalString(4).flatMap { WallClockCodec.decode($0, yearInferred: false) }, observedAt: row.date(5), recordID: row.optionalString(6)
             )
         }
+    }
+
+    /// 这张卡收到过银行余额的币种
+    public static func currencies(_ db: SQLiteConnection, accountID: String) throws -> [CurrencyCode] {
+        try db.query("SELECT DISTINCT currency FROM balance_observations WHERE account_id = ? ORDER BY currency", [accountID]) { CurrencyCode($0.string(0)) }
     }
 }
 

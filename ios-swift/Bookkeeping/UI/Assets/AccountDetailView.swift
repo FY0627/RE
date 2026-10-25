@@ -15,7 +15,7 @@ struct AccountDetailView: View {
     @State private var hasMore = true
     @State private var total = 0
     @State private var loading = false
-    @State private var showOpeningBalance = false
+    @State private var openingTarget: OpeningTarget?
     @State private var selectedRecord: RecordRow?
 
     var body: some View {
@@ -33,7 +33,7 @@ struct AccountDetailView: View {
             }
         )
         .task(id: TaskKey(account: account.id, revision: store.revision)) { await reload() }
-        .sheet(isPresented: $showOpeningBalance) { OpeningBalanceEditor(account: account) }
+        .sheet(item: $openingTarget) { target in OpeningBalanceEditor(account: account, currency: target.currency) }
         .sheet(item: $selectedRecord) { row in RecordDetailSheet(recordID: row.id) }
     }
 
@@ -107,47 +107,62 @@ struct AccountDetailView: View {
         .buttonStyle(.plain)
     }
 
+    /// 单币种：大字余额 + 银行通知余额 + 初始余额。多币种：每个币种一组，各自的余额、银行通知余额和初始余额，不做换算。
     private var balanceCard: some View {
-        let summary = store.balances[account.id]
-        let derivedCurrency = summary?.ledgerDerivedCurrency ?? account.currency
+        let items = store.balances[account.id]?.items ?? []
+        let currencies = items.isEmpty ? account.currencies : items.map(\.currency)
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
-                Text("余额").font(.subheadline).foregroundStyle(.secondary)
+                Text(account.isMultiCurrency ? "余额（多币种）" : "余额").font(.subheadline).foregroundStyle(.secondary)
                 Spacer()
                 Text(account.cardType.displayName)
                     .font(.footnote.weight(.medium))
                     .padding(.horizontal, 10).padding(.vertical, 4)
                     .background(Color.primary.opacity(0.06), in: Capsule())
             }
+            ForEach(Array(currencies.enumerated()), id: \.element) { index, currency in
+                if index > 0 { Divider().padding(.vertical, 12) }
+                currencyBalance(currency, summary: items.first { $0.currency == currency }, large: currencies.count == 1)
+            }
+        }
+        .padding(16)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func currencyBalance(_ currency: CurrencyCode, summary: AccountBalanceSummary?, large: Bool) -> some View {
+        let amountFont: Font = large ? .system(.largeTitle, design: .rounded).weight(.bold) : .system(.title2, design: .rounded).weight(.bold)
+        VStack(alignment: .leading, spacing: 0) {
+            if !large {
+                Text("\(currency.chineseName) \(currency.rawValue)").font(.subheadline.weight(.medium)).padding(.top, 2)
+            }
             if let derived = summary?.ledgerDerivedMinor {
-                Text(hideBalance ? "••••••" : Fmt.money(derived, derivedCurrency))
-                    .font(.system(.largeTitle, design: .rounded).weight(.bold))
+                Text(hideBalance ? "••••••" : Fmt.money(derived, currency))
+                    .font(amountFont)
                     .monospacedDigit()
                     .foregroundStyle(derived < 0 ? AppTheme.debt : Color.primary)
                     .lineLimit(1).minimumScaleFactor(0.6)
                     .padding(.top, 2)
             } else {
-                Text("未知").font(.system(.largeTitle, design: .rounded).weight(.bold)).foregroundStyle(.secondary).padding(.top, 2)
+                Text("未知").font(amountFont).foregroundStyle(.secondary).padding(.top, 2)
             }
 
-            Divider().padding(.vertical, 12)
+            if large { Divider().padding(.vertical, 12) }
 
             LabeledContent("银行通知余额") {
                 if let reported = summary?.bankReported {
-                    VStack(alignment: .trailing, spacing: 1) {
-                        Text(hideBalance ? "••••" : Fmt.money(reported.amountMinor, reported.currency)).monospacedDigit().foregroundStyle(.primary)
-                    }
+                    Text(hideBalance ? "••••" : Fmt.money(reported.amountMinor, reported.currency)).monospacedDigit().foregroundStyle(.primary)
                 } else {
                     Text("未收到")
                 }
             }
             .padding(.vertical, 4)
 
-            Button { showOpeningBalance = true } label: {
+            Button { openingTarget = OpeningTarget(currency: currency) } label: {
                 LabeledContent("初始余额") {
                     HStack(spacing: 6) {
-                        if let opening = account.openingBalanceMinor {
-                            Text(hideBalance ? "••••" : Fmt.money(opening, account.currency)).monospacedDigit()
+                        if let opening = account.openingBalance(currency) {
+                            Text(hideBalance ? "••••" : Fmt.money(opening.amountMinor, currency)).monospacedDigit()
                         } else {
                             Text("未填写")
                         }
@@ -158,16 +173,21 @@ struct AccountDetailView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityHint("填写或修改这张卡的初始余额")
+            .accessibilityHint("填写或修改这个币种的初始余额")
         }
-        .padding(16)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 }
 
-/// 填写或修改初始余额：记为「现在」的余额，之后到达的流水在它的基础上推算。
+/// 要编辑初始余额的币种（用作 sheet 的标识）
+struct OpeningTarget: Identifiable {
+    let currency: CurrencyCode
+    var id: String { currency.rawValue }
+}
+
+/// 填写或修改某个币种的初始余额：记为「现在」的余额，之后到达的同币种流水在它的基础上推算。
 struct OpeningBalanceEditor: View {
     let account: Account
+    let currency: CurrencyCode
     @Environment(LedgerStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
@@ -175,7 +195,7 @@ struct OpeningBalanceEditor: View {
     @State private var saving = false
     @State private var errorText: String?
 
-    private var value: MoneyInput.Value { MoneyInput.parse(text, negative: isDebt, currency: account.currency) }
+    private var value: MoneyInput.Value { MoneyInput.parse(text, negative: isDebt, currency: currency) }
 
     private var canSave: Bool {
         guard !saving, case .valid = value else { return false }
@@ -186,11 +206,11 @@ struct OpeningBalanceEditor: View {
         NavigationStack {
             Form {
                 Section {
-                    OpeningBalanceFields(text: $text, isDebt: $isDebt, currency: account.currency)
+                    OpeningBalanceFields(text: $text, isDebt: $isDebt, currency: currency)
                 } header: {
-                    Text("\(account.bankName) ·\(account.last4) · \(account.currency.chineseName)")
+                    Text("\(account.bankName) ·\(account.last4) · \(currency.chineseName)")
                 }
-                if account.openingBalanceMinor != nil {
+                if account.openingBalance(currency) != nil {
                     Section {
                         Button("清除初始余额", role: .destructive) { Task { await save(nil) } }
                     }
@@ -211,9 +231,9 @@ struct OpeningBalanceEditor: View {
                 }
             }
             .onAppear {
-                if let opening = account.openingBalanceMinor {
-                    isDebt = opening < 0
-                    text = MoneyInput.editingText(opening, currency: account.currency)
+                if let opening = account.openingBalance(currency) {
+                    isDebt = opening.amountMinor < 0
+                    text = MoneyInput.editingText(opening.amountMinor, currency: currency)
                 } else {
                     isDebt = account.cardType == .credit
                 }
@@ -226,7 +246,7 @@ struct OpeningBalanceEditor: View {
         saving = true
         defer { saving = false }
         do {
-            try await store.setOpeningBalance(accountID: account.id, amountMinor: minor)
+            try await store.setOpeningBalance(accountID: account.id, currency: currency, amountMinor: minor)
             dismiss()
         } catch {
             errorText = "保存失败：\(error)"

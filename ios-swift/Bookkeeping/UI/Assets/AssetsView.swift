@@ -161,11 +161,12 @@ struct AssetsView: View {
             hideBalance: hideBalance
         )
         .frame(height: height)
-        .modifier(CardPlacement(role: role, restY: CGFloat(index) * peek, openY: openShift, reduceMotion: reduceMotion))
+        // 点按区域要放在位移之前，才会跟着卡片移动；放在之后时所有卡的点按区域都叠在卡包顶部，总是点到最上面那张
         .contentShape(Rectangle())
         .onTapGesture {
             if role == .selected { close() } else { open(account) }
         }
+        .modifier(CardPlacement(role: role, restY: CGFloat(index) * peek, openY: openShift, reduceMotion: reduceMotion))
         .allowsHitTesting(role != .behind)
         .accessibilityHidden(role == .behind)
         .accessibilityAddTraits(.isButton)
@@ -289,15 +290,26 @@ private struct CardPlacement: ViewModifier {
 
 // MARK: - 总览与空状态
 
-/// 净资产卡：只显示净资产、总资产、总负债，右上角是隐藏金额按钮。
-/// 每张卡取推算余额（银行通知余额或初始余额起算）；正数计入总资产，负数（欠款）计入总负债。
-/// 信用卡通知里的「余额」含义因银行而异，只有填了初始余额的信用卡才计入。多币种时显示卡最多的币种。
+/// 净资产卡，右上角是隐藏金额按钮。
+///
+/// - 打开「联网获取汇率」且有汇率时：所有币种按汇率换算成主要币种合计，下面列出各币种的原币金额；
+/// - 否则：大字显示主要币种的净资产，其他币种各占一行，不做换算。
+///
+/// 每张卡每个币种取推算余额（银行通知余额或初始余额起算）；正数计入总资产，负数（欠款）计入总负债。
+/// 信用卡通知里的「余额」含义因银行而异，只有填了初始余额的信用卡币种才计入。
 private struct OverviewCard: View {
     @Binding var hideBalance: Bool
     @Environment(LedgerStore.self) private var store
+    @Environment(ExchangeRateStore.self) private var rates
+    @AppStorage(ExchangeRateStore.primaryKey) private var primaryCode = CurrencyCode.cny.rawValue
+    @AppStorage(ExchangeRateStore.enabledKey) private var ratesEnabled = false
 
     var body: some View {
-        let totals = Self.totals(store.accounts, store.balances)
+        let primary = CurrencyCode(primaryCode)
+        let totals = Self.totals(store.accounts, store.balances, primary: primary)
+        let converted = ratesEnabled ? rates.rates.flatMap { Self.convert(totals, to: primary, with: $0) } : nil
+        let main = converted?.total ?? totals.first(where: { $0.currency == primary }) ?? Totals(currency: primary)
+        let others = converted == nil ? totals.filter { $0.currency != primary } : totals
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
                 Text("净资产").font(.subheadline).foregroundStyle(.secondary)
@@ -316,26 +328,48 @@ private struct OverviewCard: View {
                 .padding(.trailing, -10)
                 .accessibilityLabel(hideBalance ? "显示金额" : "隐藏金额")
             }
-            Text(amount(totals?.net, totals?.currency))
+            Text(amount(main.net, main.currency))
                 .font(.system(.largeTitle, design: .rounded).weight(.bold))
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
                 .padding(.top, 2)
             HStack(spacing: 0) {
-                figure("总资产", amount(totals?.assets, totals?.currency))
-                figure("总负债", amount(totals?.liabilities, totals?.currency))
+                figure("总资产", amount(main.assets, main.currency))
+                figure("总负债", amount(main.liabilities, main.currency))
             }
             .padding(.top, 14)
+
+            if let note = note(converted: converted, totals: totals, primary: primary) {
+                Text(note).font(.footnote).foregroundStyle(.secondary).padding(.top, 10)
+            }
+
+            if !others.isEmpty, converted == nil || totals.count > 1 || totals.first?.currency != primary {
+                Divider().padding(.vertical, 12)
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(others, id: \.currency) { other in
+                        currencyRow(other, skipped: converted?.skipped.contains(other.currency) == true)
+                    }
+                }
+            }
         }
         .padding(18)
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
-    private func amount(_ minor: Int64?, _ currency: CurrencyCode?) -> String {
-        if hideBalance { return "••••" }
-        guard let minor, let currency else { return "—" }
-        return Fmt.money(minor, currency)
+    private func note(converted: Converted?, totals: [Totals], primary: CurrencyCode) -> String? {
+        if let converted {
+            var text = "按汇率换算为\(primary.chineseName) · 汇率更新于 \(Fmt.dateTime(converted.updatedAt))"
+            if !converted.skipped.isEmpty { text += " · 缺少汇率的币种未计入" }
+            return text
+        }
+        guard totals.contains(where: { $0.currency != primary }) else { return nil }
+        if ratesEnabled { return rates.isUpdating ? "正在获取汇率…" : "汇率暂不可用，其他币种分开列出" }
+        return nil
+    }
+
+    private func amount(_ minor: Int64, _ currency: CurrencyCode) -> String {
+        hideBalance ? "••••" : Fmt.money(minor, currency)
     }
 
     private func figure(_ title: String, _ value: String) -> some View {
@@ -347,26 +381,71 @@ private struct OverviewCard: View {
         .accessibilityElement(children: .combine)
     }
 
+    private func currencyRow(_ t: Totals, skipped: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(t.currency.chineseName).font(.subheadline.weight(.medium))
+                Spacer()
+                Text(amount(t.net, t.currency)).font(.headline).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+            }
+            Text("资产 \(amount(t.assets, t.currency)) · 负债 \(amount(t.liabilities, t.currency))" + (skipped ? " · 无汇率，未计入合计" : ""))
+                .font(.footnote).foregroundStyle(.secondary).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
     struct Totals {
         var currency: CurrencyCode
-        var assets: Int64
-        var liabilities: Int64
+        var assets: Int64 = 0
+        var liabilities: Int64 = 0
+        var cards = 0
         var net: Int64 { assets - liabilities }
     }
 
-    static func totals(_ accounts: [Account], _ balances: [String: AccountBalanceSummary]) -> Totals? {
-        var byCurrency: [CurrencyCode: (assets: Int64, liabilities: Int64, cards: Int)] = [:]
+    struct Converted {
+        var total: Totals
+        var skipped: Set<CurrencyCode>
+        var updatedAt: Date
+    }
+
+    /// 每个币种一项：主要币种在前，其余按有余额的卡多少、金额大小排序。
+    static func totals(_ accounts: [Account], _ balances: [String: AccountBalances], primary: CurrencyCode) -> [Totals] {
+        var byCurrency: [CurrencyCode: Totals] = [:]
         for account in accounts {
-            guard let summary = balances[account.id] else { continue }
-            if account.cardType == .credit, summary.base != .opening { continue }
-            guard let amount = summary.ledgerDerivedMinor, let currency = summary.ledgerDerivedCurrency else { continue }
-            var entry = byCurrency[currency] ?? (assets: 0, liabilities: 0, cards: 0)
-            if amount >= 0 { entry.assets += amount } else { entry.liabilities += -amount }
-            entry.cards += 1
-            byCurrency[currency] = entry
+            for item in balances[account.id]?.items ?? [] {
+                if account.cardType == .credit, item.base != .opening { continue }
+                guard let amount = item.ledgerDerivedMinor else { continue }
+                var entry = byCurrency[item.currency] ?? Totals(currency: item.currency)
+                if amount >= 0 { entry.assets += amount } else { entry.liabilities += -amount }
+                entry.cards += 1
+                byCurrency[item.currency] = entry
+            }
         }
-        guard let main = byCurrency.max(by: { $0.value.cards == $1.value.cards ? $0.key > $1.key : $0.value.cards < $1.value.cards }) else { return nil }
-        return Totals(currency: main.key, assets: main.value.assets, liabilities: main.value.liabilities)
+        return byCurrency.values.sorted { a, b in
+            if (a.currency == primary) != (b.currency == primary) { return a.currency == primary }
+            if a.cards != b.cards { return a.cards > b.cards }
+            let sizeA = a.assets + a.liabilities, sizeB = b.assets + b.liabilities
+            if sizeA != sizeB { return sizeA > sizeB }
+            return a.currency < b.currency
+        }
+    }
+
+    /// 资产和负债分别换算后相加；缺汇率的币种不计入并单独标出。
+    static func convert(_ totals: [Totals], to primary: CurrencyCode, with rates: ExchangeRates) -> Converted? {
+        guard rates.rate(primary) != nil else { return nil }
+        var sum = Totals(currency: primary)
+        var skipped: Set<CurrencyCode> = []
+        for t in totals {
+            guard let assets = rates.convert(t.assets, from: t.currency, to: primary),
+                  let liabilities = rates.convert(t.liabilities, from: t.currency, to: primary) else {
+                skipped.insert(t.currency)
+                continue
+            }
+            sum.assets += assets
+            sum.liabilities += liabilities
+            sum.cards += t.cards
+        }
+        return Converted(total: sum, skipped: skipped, updatedAt: rates.updatedAt)
     }
 }
 

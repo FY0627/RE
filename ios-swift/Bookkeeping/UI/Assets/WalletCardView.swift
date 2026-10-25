@@ -60,7 +60,7 @@ struct WalletCardView: View {
             HStack(alignment: .lastTextBaseline) {
                 Text("•••• \(account.last4)").font(.system(size: 15 * s, weight: .semibold)).tracking(1.2)
                 Spacer()
-                Text(account.currency.rawValue).font(.system(size: 12 * s, weight: .bold)).italic().opacity(0.8)
+                Text(Self.currencyLabel(account)).font(.system(size: 12 * s, weight: .bold)).italic().opacity(0.8)
             }
         }
         .padding(.horizontal, 18)
@@ -68,6 +68,11 @@ struct WalletCardView: View {
         .foregroundStyle(text)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background { background(palette, imageID: style.imageID) }
+    }
+
+    /// 单币种显示币种代码；多币种显示主币种和其他币种的数量，例如「HKD +2」。
+    static func currencyLabel(_ account: Account) -> String {
+        account.isMultiCurrency ? "\(account.currency.rawValue) +\(account.extraCurrencies.count)" : account.currency.rawValue
     }
 
     /// 自定义图片在后台解码完成之前先显示配色渐变。
@@ -90,6 +95,11 @@ private struct CardRasterization: ViewModifier {
     func body(content: Content) -> some View {
         if enabled { content.drawingGroup() } else { content }
     }
+}
+
+extension AccountBalances {
+    /// 卡面上显示一个币种的余额：主币种有余额就用主币种，否则用第一个有余额的币种。
+    var cardText: String { display?.cardText ?? "余额未知" }
 }
 
 extension AccountBalanceSummary {

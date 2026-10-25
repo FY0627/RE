@@ -16,7 +16,7 @@ final class LedgerStore {
 
     private(set) var state: LoadState = .loading
     private(set) var accounts: [Account] = []
-    private(set) var balances: [String: AccountBalanceSummary] = [:]
+    private(set) var balances: [String: AccountBalances] = [:]
     private(set) var automation: [String: AccountAutomationStatus] = [:]
     private(set) var pendingCount = 0
     private(set) var homeRows: [RecordRow] = []
@@ -121,15 +121,15 @@ final class LedgerStore {
         await refresh()
     }
 
-    func updateCardInfo(accountID: String, name: String, cardNumber: String?) async throws {
+    func updateCardInfo(accountID: String, name: String, cardNumber: String?, extraCurrencies: [CurrencyCode]?) async throws {
         guard let backend else { throw BackendError.notFound }
-        try await backend.updateCardInfo(accountID: accountID, name: name, cardNumber: cardNumber)
+        try await backend.updateCardInfo(accountID: accountID, name: name, cardNumber: cardNumber, extraCurrencies: extraCurrencies)
         await refresh()
     }
 
-    func setOpeningBalance(accountID: String, amountMinor: Int64?) async throws {
+    func setOpeningBalance(accountID: String, currency: CurrencyCode, amountMinor: Int64?) async throws {
         guard let backend else { throw BackendError.notFound }
-        try await backend.setOpeningBalance(accountID: accountID, amountMinor: amountMinor)
+        try await backend.setOpeningBalance(accountID: accountID, currency: currency, amountMinor: amountMinor)
         await refresh()
     }
 

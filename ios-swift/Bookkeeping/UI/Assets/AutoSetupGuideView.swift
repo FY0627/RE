@@ -172,7 +172,7 @@ struct HelpView: View {
                 Text("进入「待处理」，由你确认或忽略。")
             }
             Section("数据") {
-                Text("只保存在这台 iPhone，不联网。")
+                Text("只保存在这台 iPhone。默认不联网；打开「联网获取汇率」后只下载公开汇率。")
             }
         }
         .navigationTitle("使用说明")
