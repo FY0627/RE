@@ -2,7 +2,7 @@
 
 独立于 Flutter 的 iOS 版本（[ADR 0006](../docs/decisions/0006-ios-native-swift.md)）。只依赖用户自己的 iPhone：
 账户、流水、解析规则和设置保存在本机 SQLite；没有服务器、云数据库、远程解析或账号系统。
-汇率可以由快捷指令下载后导入（App 不联网）；唯一的联网功能是用户自愿开启的「App 联网获取汇率」，只下载公开汇率用于净资产换算显示（[ADR 0011](../docs/decisions/0011-ios-swift-multi-currency-and-rates.md)）。
+App 不联网；净资产换算用的汇率由快捷指令下载后导入（[ADR 0011](../docs/decisions/0011-ios-swift-multi-currency-and-rates.md)）。
 
 ## 目录
 
@@ -59,8 +59,7 @@ docker run --rm -v "<仓库>/ios-swift/Packages/BKCore:/pkg" -w /pkg bk-swift sw
 
 - 账户有一个主币种，多币种账户另有其他币种；余额按「卡 × 币种」分别推算，卡片和流水始终是原币种。
 - 「我的 › 币种与汇率」选择主要币种；有汇率时资产页净资产按主要币种换算合计（`App/ExchangeRateStore.swift`）。
-- 汇率来源：快捷指令自动化「获取 URL 内容」→ App 动作「导入汇率」（`Intents/ImportExchangeRatesIntent.swift`，App 不联网）；
-  或打开「App 联网获取汇率」。
+- 汇率来源：快捷指令自动化「获取 URL 内容」→ App 动作「导入汇率」（`Intents/ImportExchangeRatesIntent.swift`）。
 
 ## 卡片信息与卡面
 

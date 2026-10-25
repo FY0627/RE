@@ -37,11 +37,8 @@ struct BookkeepingApp: App {
                 .preferredColorScheme(AppearanceMode(rawValue: appearance)?.colorScheme)
                 .task { await store.start() }
                 .onChange(of: scenePhase) { _, phase in
-                    // 自动化在后台入账后，用户下次打开 App 时刷新；开启了联网汇率时按需更新汇率
-                    if phase == .active {
-                        store.scheduleRefresh()
-                        Task { await rates.refreshIfNeeded() }
-                    }
+                    // 自动化在后台入账后，用户下次打开 App 时刷新
+                    if phase == .active { store.scheduleRefresh() }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .ledgerDidChange)) { _ in
                     store.scheduleRefresh()

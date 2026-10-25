@@ -8,7 +8,6 @@ struct ProfileView: View {
     @Environment(ExchangeRateStore.self) private var rates
     @AppStorage("appearance") private var appearance = AppearanceMode.system.rawValue
     @AppStorage(ExchangeRateStore.primaryKey) private var primaryCurrency = CurrencyCode.cny.rawValue
-    @AppStorage(ExchangeRateStore.enabledKey) private var ratesEnabled = false
     @State private var retention = 30
 
     var body: some View {
@@ -48,13 +47,6 @@ struct ProfileView: View {
                         ExchangeRateGuideView()
                     } label: {
                         Label("用快捷指令更新汇率", systemImage: "arrow.triangle.2.circlepath")
-                    }
-                    Toggle(isOn: $ratesEnabled) {
-                        Label("App 联网获取汇率", systemImage: "network")
-                    }
-                    if ratesEnabled {
-                        Button("立即更新") { Task { await rates.refreshIfNeeded(force: true) } }
-                            .disabled(rates.isUpdating)
                     }
                     if rates.rates != nil {
                         Link(ExchangeRateFeed.attribution, destination: ExchangeRateFeed.attributionURL)
@@ -108,9 +100,6 @@ struct ProfileView: View {
                 }
             }
             .navigationTitle("我的")
-            .onChange(of: ratesEnabled) { _, enabled in
-                if enabled { Task { await rates.refreshIfNeeded(force: true) } }
-            }
             .task { retention = await store.retentionDays() }
             .onChange(of: retention) { _, days in Task { await store.setRetentionDays(days) } }
         }
@@ -119,12 +108,7 @@ struct ProfileView: View {
 
 extension ProfileView {
     private var rateStatus: String {
-        if rates.isUpdating { return "正在更新…" }
-        guard let current = rates.rates, let source = rates.source else { return rates.lastError ?? "尚未导入" }
-        if source == .network, !ratesEnabled { return "未使用（App 联网已关闭）" }
-        var text = "\(source.displayName) · \(Fmt.dateTime(current.updatedAt))"
-        if rates.lastError != nil, ratesEnabled { text += "（最近一次联网失败）" }
-        return text
+        rates.rates.map { "更新于 \(Fmt.dateTime($0.updatedAt))" } ?? "尚未导入"
     }
 }
 

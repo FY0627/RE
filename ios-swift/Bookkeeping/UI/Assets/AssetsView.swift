@@ -342,7 +342,7 @@ private struct CardPlacement: ViewModifier {
 
 /// 净资产卡：只显示净资产、总资产、总负债；点按卡片查看各币种明细。
 ///
-/// 有可用汇率时（快捷指令导入的，或打开了「App 联网获取汇率」）所有币种换算成主要币种合计；
+/// 有汇率时（由快捷指令导入）所有币种换算成主要币种合计；
 /// 否则只显示主要币种的金额，其他币种在明细里。
 /// 每张卡每个币种取推算余额（银行通知余额或初始余额起算）；正数计入总资产，负数（欠款）计入总负债。
 /// 信用卡通知里的「余额」含义因银行而异，只有填了初始余额的信用卡币种才计入。
@@ -350,11 +350,10 @@ private struct OverviewCard: View {
     @Environment(LedgerStore.self) private var store
     @Environment(ExchangeRateStore.self) private var rates
     @AppStorage(ExchangeRateStore.primaryKey) private var primaryCode = CurrencyCode.cny.rawValue
-    @AppStorage(ExchangeRateStore.enabledKey) private var ratesEnabled = false
     @State private var showDetail = false
 
     var body: some View {
-        let summary = NetWorth(store: store, rates: rates.usableRates(networkEnabled: ratesEnabled), primary: CurrencyCode(primaryCode))
+        let summary = NetWorth(store: store, rates: rates.rates, primary: CurrencyCode(primaryCode))
         let main = summary.main
         VStack(alignment: .leading, spacing: 0) {
             Text("净资产").font(.subheadline).foregroundStyle(.secondary)
@@ -396,11 +395,9 @@ private struct NetWorthDetailView: View {
     @Environment(ExchangeRateStore.self) private var rates
     @Environment(\.dismiss) private var dismiss
     @AppStorage(ExchangeRateStore.primaryKey) private var primaryCode = CurrencyCode.cny.rawValue
-    @AppStorage(ExchangeRateStore.enabledKey) private var ratesEnabled = false
 
     var body: some View {
-        let usable = rates.usableRates(networkEnabled: ratesEnabled)
-        let summary = NetWorth(store: store, rates: usable, primary: CurrencyCode(primaryCode))
+        let summary = NetWorth(store: store, rates: rates.rates, primary: CurrencyCode(primaryCode))
         NavigationStack {
             List {
                 Section(summary.converted == nil ? summary.main.currency.chineseName : "合计（\(summary.main.currency.chineseName)）") {
@@ -424,9 +421,9 @@ private struct NetWorthDetailView: View {
                         }
                     }
                 }
-                if let usable, let source = rates.source {
+                if let current = rates.rates {
                     Section("汇率") {
-                        LabeledContent(source.displayName, value: Fmt.dateTime(usable.updatedAt))
+                        LabeledContent("更新时间", value: Fmt.dateTime(current.updatedAt))
                         Link(ExchangeRateFeed.attribution, destination: ExchangeRateFeed.attributionURL)
                     }
                 }

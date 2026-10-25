@@ -39,7 +39,7 @@ struct ImportExchangeRatesIntent: AppIntent {
         } catch {
             throw ImportFailure.unreadable
         }
-        ExchangeRateStore.save(rates, source: .shortcut)
+        ExchangeRateStore.save(rates)
         await MainActor.run { NotificationCenter.default.post(name: .exchangeRatesDidChange, object: nil) }
         AppServices.logger.info("exchange rates imported count=\(rates.rates.count)")
         return .result(value: "已导入 \(rates.rates.count) 个币种的汇率")
