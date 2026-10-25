@@ -2,7 +2,7 @@
 
 独立于 Flutter 的 iOS 版本（[ADR 0006](../docs/decisions/0006-ios-native-swift.md)）。只依赖用户自己的 iPhone：
 账户、流水、解析规则和设置保存在本机 SQLite；没有服务器、云数据库、远程解析或账号系统。
-唯一的联网功能是用户自愿开启的「联网获取汇率」，只下载公开汇率用于净资产换算显示（[ADR 0011](../docs/decisions/0011-ios-swift-multi-currency-and-rates.md)）。
+汇率可以由快捷指令下载后导入（App 不联网）；唯一的联网功能是用户自愿开启的「App 联网获取汇率」，只下载公开汇率用于净资产换算显示（[ADR 0011](../docs/decisions/0011-ios-swift-multi-currency-and-rates.md)）。
 
 ## 目录
 
@@ -51,14 +51,16 @@ docker run --rm -v "<仓库>/ios-swift/Packages/BKCore:/pkg" -w /pkg bk-swift sw
 
 ## 卡包与详情转场
 
-`UI/Assets/AssetsView.swift`。卡片在卡包和详情里尺寸相同；打开 / 关闭只改「选中的卡」一个状态，放在一个弹簧动画事务里，
+`UI/Assets/AssetsView.swift`。选中卡上面的卡收到它后面，下面的卡向下落出屏幕，之后详情内容从下往上进入。卡片在卡包和详情里尺寸相同；打开 / 关闭只改「选中的卡」一个状态，放在一个弹簧动画事务里，
 动画只插值位移、缩放、3D 旋转和透明度这些渲染变换，不改变布局、不逐帧执行 body。卡面阴影只画在一个圆角矩形上。
 其余卡片收到选中卡后面的缩放和倾斜角度是 `CardPlacement.behindScale` / `behindTilt`。
 
 ## 多币种与汇率
 
 - 账户有一个主币种，多币种账户另有其他币种；余额按「卡 × 币种」分别推算，卡片和流水始终是原币种。
-- 「我的 › 币种与汇率」选择主要币种；打开「联网获取汇率」后资产页净资产按主要币种换算合计（`App/ExchangeRateStore.swift`）。
+- 「我的 › 币种与汇率」选择主要币种；有汇率时资产页净资产按主要币种换算合计（`App/ExchangeRateStore.swift`）。
+- 汇率来源：快捷指令自动化「获取 URL 内容」→ App 动作「导入汇率」（`Intents/ImportExchangeRatesIntent.swift`，App 不联网）；
+  或打开「App 联网获取汇率」。
 
 ## 卡片信息与卡面
 

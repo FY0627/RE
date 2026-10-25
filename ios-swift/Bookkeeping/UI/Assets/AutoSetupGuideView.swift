@@ -121,7 +121,7 @@ struct AutoSetupGuideView: View {
     ]
 }
 
-private struct StepRow: View {
+struct StepRow: View {
     let number: Int
     let text: LocalizedStringKey
 

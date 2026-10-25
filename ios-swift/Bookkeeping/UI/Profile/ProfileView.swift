@@ -45,20 +45,24 @@ struct ProfileView: View {
                     } label: {
                         Label("主要币种", systemImage: "dollarsign.circle")
                     }
+                    LabeledContent("汇率", value: rateStatus)
+                    NavigationLink {
+                        ExchangeRateGuideView()
+                    } label: {
+                        Label("用快捷指令更新汇率", systemImage: "arrow.triangle.2.circlepath")
+                    }
                     Toggle(isOn: $ratesEnabled) {
-                        Label("联网获取汇率", systemImage: "arrow.left.arrow.right.circle")
+                        Label("App 联网获取汇率", systemImage: "network")
                     }
                     if ratesEnabled {
-                        LabeledContent("汇率", value: rateStatus)
                         Button("立即更新") { Task { await rates.refreshIfNeeded(force: true) } }
                             .disabled(rates.isUpdating)
                     }
                 } header: {
                     Text("币种与汇率")
                 } footer: {
-                    Text(ratesEnabled
-                         ? "资产页的净资产按主要币种换算合计。汇率约每 6 小时从 open.er-api.com 下载一次（数据每日更新），只发送币种代码，不上传任何账本数据。卡片和流水始终按原币种显示。"
-                         : "资产页先显示主要币种的净资产，其他币种分开列出。打开联网获取汇率后，可以按主要币种换算合计。")
+                    Text("有汇率时，资产页的净资产按主要币种换算合计；卡片和流水始终按原币种显示。推荐用快捷指令更新汇率，App 自己不联网。"
+                         + (ratesEnabled ? "已打开 App 联网：约每 6 小时从 open.er-api.com 下载一次，只发送币种代码，不上传任何账本数据。" : ""))
                 }
 
                 Section("自动记账") {
@@ -118,10 +122,11 @@ struct ProfileView: View {
 extension ProfileView {
     private var rateStatus: String {
         if rates.isUpdating { return "正在更新…" }
-        if let error = rates.lastError, rates.rates == nil { return error }
-        guard let current = rates.rates else { return "尚未获取" }
-        let updated = "更新于 \(Fmt.dateTime(current.updatedAt))"
-        return rates.lastError == nil ? updated : "\(updated)（最近一次更新失败）"
+        guard let current = rates.rates, let source = rates.source else { return rates.lastError ?? "尚未导入" }
+        if source == .network, !ratesEnabled { return "未使用（App 联网已关闭）" }
+        var text = "\(source.displayName) · \(Fmt.dateTime(current.updatedAt))"
+        if rates.lastError != nil, ratesEnabled { text += "（最近一次联网失败）" }
+        return text
     }
 }
 

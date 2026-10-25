@@ -380,6 +380,20 @@ final class IngestTests: XCTestCase {
         XCTAssertNil(rates.convert(1_00, from: CurrencyCode("XYZ"), to: .cny))
         XCTAssertEqual(rates.convert(1_23, from: CurrencyCode("XYZ"), to: CurrencyCode("XYZ")), 1_23)
 
+        // 快捷指令把「URL 的内容」转成文本时，键的顺序、缩进和数字写法可能变化，还会带上其他字段
+        let reformatted = """
+        {
+          "rates" : { "JPY" : 150, "CNY" : 7.2000000000000002, "USD" : 1.0 },
+          "provider" : "https://www.exchangerate-api.com",
+          "base_code" : "USD",
+          "result" : "success"
+        }
+        """
+        let fromShortcut = try ExchangeRateFeed.parse(Data(reformatted.utf8), fetchedAt: now)
+        XCTAssertEqual(fromShortcut.updatedAt, now, "没有更新时间时用导入时间")
+        XCTAssertEqual(fromShortcut.convert(100_00, from: .usd, to: .cny), 720_00)
+        XCTAssertEqual(fromShortcut.convert(150, from: .jpy, to: .usd), 1_00)
+
         XCTAssertThrowsError(try ExchangeRateFeed.parse(Data(#"{"result":"error","error-type":"x"}"#.utf8), fetchedAt: now))
         XCTAssertThrowsError(try ExchangeRateFeed.parse(Data("not json".utf8), fetchedAt: now))
     }

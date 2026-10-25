@@ -9,7 +9,8 @@ final class AssetsScrollBox {
 
 /// 资产页：卡包 → 点按卡片展开详情 → 返回。
 ///
-/// 转场参考 Apple 钱包：选中的卡片移到顶部；其余卡片一边上移一边缩小、向里倾斜，收到选中卡片后面。
+/// 转场参考 Apple 钱包：选中的卡片移到顶部；它上面的卡一边上移一边缩小、向里倾斜，收到选中卡片后面；
+/// 它下面的卡直接向下落出屏幕。下面的卡离场后，详情内容再从下往上进入。返回时按相反的顺序。
 /// 性能做法（参考 Apple 关于 SwiftUI 动画与渲染卡顿的建议）：
 /// - 打开 / 关闭只改一个状态（选中的卡），放在一个弹簧动画事务里；所有卡片按新状态一次算出终点，
 ///   动画只插值 offset / scaleEffect / rotation3DEffect / opacity 这些渲染变换，不重新布局、不每帧执行 body；
@@ -26,6 +27,8 @@ struct AssetsView: View {
     @State private var box = AssetsScrollBox()
     /// 卡包第一张卡从当前位置移到详情位置所需的位移；点按时计算一次
     @State private var openShift: CGFloat = 0
+    /// 最近一次打开的卡在卡包里的位置；关闭后保留，用来让原来在下面的卡晚一点升回来
+    @State private var openedIndex: Int?
     @State private var hideBalance = false
     @State private var cardPendingCount = 0
     @State private var detailSheet: DetailSheet?
@@ -43,7 +46,7 @@ struct AssetsView: View {
             let cardHeight = AppLayout.cardHeight(proxy.size.width)
             let selected = selectedID.flatMap { store.account(id: $0) }
             ZStack(alignment: .top) {
-                stack(width: proxy.size.width)
+                stack(size: proxy.size)
 
                 if let selected {
                     AccountDetailView(
@@ -55,8 +58,8 @@ struct AssetsView: View {
                     )
                     .padding(.top, AppLayout.detailTop + cardHeight + 8)
                     .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .offset(y: 48)),
-                        removal: .opacity.animation(.easeOut(duration: 0.15))
+                        insertion: .move(edge: .bottom).combined(with: .opacity).animation(contentEntrance),
+                        removal: .move(edge: .bottom).combined(with: .opacity).animation(.easeIn(duration: 0.2))
                     ))
                 }
 
@@ -92,9 +95,9 @@ struct AssetsView: View {
 
     // MARK: 卡包
 
-    private func stack(width: CGFloat) -> some View {
-        let cardHeight = AppLayout.cardHeight(width)
-        let peek = AppLayout.peek(width)
+    private func stack(size: CGSize) -> some View {
+        let cardHeight = AppLayout.cardHeight(size.width)
+        let peek = AppLayout.peek(size.width)
         let accounts = store.accounts
         return ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 0) {
@@ -106,7 +109,7 @@ struct AssetsView: View {
                 } else {
                     ZStack(alignment: .top) {
                         ForEach(Array(accounts.enumerated()), id: \.element.id) { index, account in
-                            card(account, index: index, height: cardHeight, peek: peek)
+                            card(account, index: index, height: cardHeight, peek: peek, dropDistance: size.height)
                         }
                     }
                     .frame(height: cardHeight + CGFloat(accounts.count - 1) * peek, alignment: .top)
@@ -153,8 +156,15 @@ struct AssetsView: View {
         .accessibilityHidden(isOpen)
     }
 
-    private func card(_ account: Account, index: Int, height: CGFloat, peek: CGFloat) -> some View {
-        let role: CardRole = selectedID == nil ? .resting : (selectedID == account.id ? .selected : .behind)
+    private func card(_ account: Account, index: Int, height: CGFloat, peek: CGFloat, dropDistance: CGFloat) -> some View {
+        let role: CardRole
+        if selectedID == nil {
+            role = .resting
+        } else if selectedID == account.id {
+            role = .selected
+        } else {
+            role = index < (openedIndex ?? 0) ? .behind : .below
+        }
         return WalletCardView(
             account: account,
             balanceText: store.balances[account.id]?.cardText ?? "余额未知",
@@ -166,9 +176,16 @@ struct AssetsView: View {
         .onTapGesture {
             if role == .selected { close() } else { open(account) }
         }
-        .modifier(CardPlacement(role: role, restY: CGFloat(index) * peek, openY: openShift, reduceMotion: reduceMotion))
-        .allowsHitTesting(role != .behind)
-        .accessibilityHidden(role == .behind)
+        .modifier(CardPlacement(
+            role: role,
+            restY: CGFloat(index) * peek,
+            openY: openShift,
+            dropDistance: dropDistance,
+            wasBelow: index > (openedIndex ?? .max),
+            reduceMotion: reduceMotion
+        ))
+        .allowsHitTesting(role == .resting || role == .selected)
+        .accessibilityHidden(role == .behind || role == .below)
         .accessibilityAddTraits(.isButton)
         .accessibilityHint(role == .selected ? "返回卡包" : "打开账户详情")
     }
@@ -216,10 +233,16 @@ struct AssetsView: View {
         reduceMotion ? .easeInOut(duration: 0.25) : .spring(response: 0.5, dampingFraction: 0.86)
     }
 
+    /// 详情内容等下面的卡落出屏幕后再从下往上进入
+    private var contentEntrance: Animation {
+        reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.45, dampingFraction: 0.9).delay(CardPlacement.dropDuration * 0.8)
+    }
+
     private func open(_ account: Account) {
         guard selectedID == nil else { return }
         // 第一张卡当前在屏幕上的位置 = 标题区高度 - 滚动偏移；移到详情位置所需的位移对每张卡都相同
         openShift = AppLayout.detailTop - (box.headerHeight - box.scrollOffset)
+        openedIndex = store.accounts.firstIndex { $0.id == account.id }
         let signpost = AppServices.signposter.beginInterval("DetailOpen")
         withAnimation(transition) {
             motion.selectedAccountID = account.id
@@ -259,8 +282,10 @@ private enum CardRole {
     case resting
     /// 选中的卡：移到详情位置
     case selected
-    /// 其他卡：移到选中卡后面，缩小并向里倾斜，最后隐藏
+    /// 选中卡上面的卡：移到选中卡后面，缩小并向里倾斜，最后隐藏
     case behind
+    /// 选中卡下面的卡：直接向下落出屏幕
+    case below
 }
 
 /// 只使用渲染变换：位移、缩放、3D 旋转、透明度。这些属性的动画由 SwiftUI 直接插值，不触发布局。
@@ -268,18 +293,45 @@ private struct CardPlacement: ViewModifier {
     let role: CardRole
     let restY: CGFloat
     let openY: CGFloat
+    /// 下面的卡落出屏幕的距离（页面高度）
+    let dropDistance: CGFloat
+    /// 刚关闭的详情打开时，这张卡在选中卡下面
+    let wasBelow: Bool
     let reduceMotion: Bool
 
     /// 收到后面时的缩放和倾斜角度
     static let behindScale: CGFloat = 0.86
     static let behindTilt: Double = 30
+    /// 下面的卡落下的时长
+    static let dropDuration: Double = 0.3
+
+    private var y: CGFloat {
+        switch role {
+        case .resting: restY
+        case .selected, .behind: openY
+        case .below: restY + dropDistance
+        }
+    }
+
+    /// 下面的卡单独用「加速下落」；返回时等详情内容退下去再升回来。其余情况沿用转场的弹簧动画。
+    private var offsetAnimation: Animation? {
+        guard !reduceMotion else { return nil }
+        if role == .below { return .easeIn(duration: Self.dropDuration) }
+        if role == .resting, wasBelow { return .spring(response: 0.45, dampingFraction: 0.88).delay(0.15) }
+        return nil
+    }
 
     func body(content: Content) -> some View {
         let behind = role == .behind && !reduceMotion
+        let animation = offsetAnimation
         content
             .scaleEffect(behind ? Self.behindScale : 1)
             .rotation3DEffect(.degrees(behind ? Self.behindTilt : 0), axis: (x: 1, y: 0, z: 0), anchor: .center, perspective: 0.6)
-            .offset(y: role == .resting ? restY : openY)
+            .offset(y: y)
+            // 只替换有动画的事务（打开 / 关闭）；滚动、数据刷新等没有动画的更新保持原样
+            .transaction { transaction in
+                if let animation, transaction.animation != nil { transaction.animation = animation }
+            }
             // 打开时先收到后面，末段再淡出（这时已被选中的卡挡住，淡出后不再参与绘制）；返回时立即淡入
             .animation(role == .behind ? .easeIn(duration: 0.15).delay(0.25) : .easeOut(duration: 0.1)) {
                 $0.opacity(role == .behind ? 0 : 1)
@@ -292,7 +344,7 @@ private struct CardPlacement: ViewModifier {
 
 /// 净资产卡，右上角是隐藏金额按钮。
 ///
-/// - 打开「联网获取汇率」且有汇率时：所有币种按汇率换算成主要币种合计，下面列出各币种的原币金额；
+/// - 有可用汇率时（快捷指令导入的，或打开了「联网获取汇率」）：所有币种按汇率换算成主要币种合计，下面列出各币种的原币金额；
 /// - 否则：大字显示主要币种的净资产，其他币种各占一行，不做换算。
 ///
 /// 每张卡每个币种取推算余额（银行通知余额或初始余额起算）；正数计入总资产，负数（欠款）计入总负债。
@@ -307,7 +359,7 @@ private struct OverviewCard: View {
     var body: some View {
         let primary = CurrencyCode(primaryCode)
         let totals = Self.totals(store.accounts, store.balances, primary: primary)
-        let converted = ratesEnabled ? rates.rates.flatMap { Self.convert(totals, to: primary, with: $0) } : nil
+        let converted = rates.usableRates(networkEnabled: ratesEnabled).flatMap { Self.convert(totals, to: primary, with: $0) }
         let main = converted?.total ?? totals.first(where: { $0.currency == primary }) ?? Totals(currency: primary)
         let others = converted == nil ? totals.filter { $0.currency != primary } : totals
         VStack(alignment: .leading, spacing: 0) {
