@@ -13,7 +13,7 @@ ios-swift/
 ├── Bookkeeping/                   App target（文件夹同步，新增 .swift 文件无需改工程）
 │   ├── App/                       入口、共享服务 AppServices、界面状态 LedgerStore
 │   ├── Intents/                   App Intent「记录银行动账通知」、AccountEntity、AppShortcuts
-│   ├── UI/                        Shell（系统 TabView）、Home、Assets（卡包、详情转场、卡片信息、卡面编辑）、Stats、Profile、Pending
+│   ├── UI/                        Shell（系统 TabView）、Home、Assets（卡包与已停用卡包、详情转场、卡片信息、卡面编辑、管理银行卡）、Stats、Profile、Pending
 │   ├── Diagnostics/               单变量性能开关、帧率/内存指标
 │   └── Assets.xcassets
 ├── Packages/BKCore/               纯 Swift 业务核心（无 UI 依赖）
@@ -67,6 +67,8 @@ docker run --rm -v "<仓库>/ios-swift/Packages/BKCore:/pkg" -w /pkg bk-swift sw
 - **卡面图片**：选图时用 ImageIO 一次性按卡片比例居中裁剪、缩小到卡片的屏幕像素（最大 1200px 宽）存成 JPEG，
   放在 `Application Support/Ledger/CardFaces/`，数据库只存文件标识。显示时后台解码并缓存（`CardFaceImages`），
   卡包滚动和详情转场只绘制已解码的位图。换图、移除或取消编辑时删除不再使用的文件。
+- **停用**：卡片信息里，或资产页「更多 › 管理银行卡」里停用（`accounts.archived`）。停用的卡不参与自动记账匹配和净资产，
+  流水保留，在资产页最下方以灰色卡包显示，可以点开详情，也可以重新启用。
 
 ## 安装到 iPhone
 

@@ -96,7 +96,7 @@ struct StatsView: View {
     private func accountRow(_ total: MonthStats.AccountTotal) -> some View {
         let account = store.account(id: total.accountID)
         return HStack {
-            Text(account.map { "\($0.bankName) ·\($0.last4)" } ?? "已隐藏的账户")
+            Text(account.map { "\($0.bankName) ·\($0.last4)" } ?? "已删除的账户")
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {
                 Text("+" + Fmt.money(total.inflowMinor, total.currency)).foregroundStyle(AppTheme.income)

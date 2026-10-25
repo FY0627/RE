@@ -11,7 +11,8 @@ struct ToolbarIcon: View {
     var body: some View {
         Image(systemName: symbol)
             .font(.system(size: 17, weight: .medium))
-            .foregroundStyle(.primary)
+            // 用 Color.primary 而不是层级样式 .primary：放在 Menu 里时层级样式会跟随强调色变成蓝色
+            .foregroundStyle(Color.primary)
             .frame(width: 44, height: 44)
             .contentShape(Rectangle())
     }

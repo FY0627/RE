@@ -15,7 +15,12 @@ final class LedgerStore {
     }
 
     private(set) var state: LoadState = .loading
+    /// 使用中的卡（资产页上方的卡包、净资产、待处理账单的账户选择）
     private(set) var accounts: [Account] = []
+    /// 已停用的卡：不参与自动记账和净资产，在资产页最下方以灰色卡包显示
+    private(set) var archivedAccounts: [Account] = []
+    /// 全部卡片，按添加顺序
+    private(set) var allAccounts: [Account] = []
     private(set) var balances: [String: AccountBalances] = [:]
     private(set) var automation: [String: AccountAutomationStatus] = [:]
     private(set) var pendingCount = 0
@@ -66,14 +71,16 @@ final class LedgerStore {
             let now = Date()
             let year = Calendar.current.component(.year, from: now)
             let month = Calendar.current.component(.month, from: now)
-            async let accounts = backend.accounts()
+            async let accounts = backend.accounts(includeArchived: true)
             async let balances = backend.balanceSummaries()
             async let automation = backend.automationStatus()
             async let pending = backend.pendingCount()
             async let rows = backend.records(limit: Self.pageSize)
             async let stats = backend.monthStats(year: year, month: month)
             let (a, b, au, p, r, s) = try await (accounts, balances, automation, pending, rows, stats)
-            self.accounts = a
+            self.allAccounts = a
+            self.accounts = a.filter { !$0.archived }
+            self.archivedAccounts = a.filter(\.archived)
             self.balances = b
             self.automation = au
             self.pendingCount = p
@@ -183,5 +190,6 @@ final class LedgerStore {
         _ = try? await backend?.purgeExpiredRawContent()
     }
 
-    func account(id: String) -> Account? { accounts.first { $0.id == id } }
+    /// 包括已停用的卡
+    func account(id: String) -> Account? { allAccounts.first { $0.id == id } }
 }

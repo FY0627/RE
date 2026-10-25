@@ -3,12 +3,10 @@ import UIKit
 import BKModel
 import BKBackend
 
-/// 卡片信息：银行、卡类型、币种、完整卡号（选填，默认遮住）。可以改账户名称、卡号、多币种账户的其他币种，也可以隐藏这张卡。
+/// 卡片信息：银行、卡类型、币种、完整卡号（选填，默认遮住）。可以改账户名称、卡号、多币种账户的其他币种，也可以停用 / 启用这张卡。
 /// 银行、尾号、卡类型、主币种决定自动记账的匹配，这里只显示不修改。
 struct CardInfoView: View {
     let accountID: String
-    /// 隐藏这张卡：由详情页关闭详情后归档
-    let onHide: () -> Void
 
     @Environment(LedgerStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -20,7 +18,6 @@ struct CardInfoView: View {
     @State private var revealed = false
     @State private var copied = false
     @State private var saving = false
-    @State private var confirmHide = false
     @State private var errorText: String?
 
     var body: some View {
@@ -29,7 +26,6 @@ struct CardInfoView: View {
                 form(account)
             }
         }
-        .presentationDetents([.medium, .large])
     }
 
     private func form(_ account: Account) -> some View {
@@ -87,8 +83,13 @@ struct CardInfoView: View {
             }
 
             if !editing {
+                // 停用后详情页保持打开，卡片变灰并移到资产页最下方的「已停用」
                 Section {
-                    Button("隐藏这张卡", systemImage: "eye.slash", role: .destructive) { confirmHide = true }
+                    if account.archived {
+                        Button("启用这张卡", systemImage: "checkmark.circle") { setArchived(account, false) }
+                    } else {
+                        Button("停用这张卡", systemImage: "pause.circle", role: .destructive) { setArchived(account, true) }
+                    }
                 }
             }
         }
@@ -122,14 +123,11 @@ struct CardInfoView: View {
                 }
             }
         }
-        .confirmationDialog("隐藏这张卡？", isPresented: $confirmHide, titleVisibility: .visible) {
-            Button("隐藏", role: .destructive) {
-                dismiss()
-                onHide()
-            }
-        } message: {
-            Text("已有流水会保留。")
-        }
+    }
+
+    private func setArchived(_ account: Account, _ archived: Bool) {
+        dismiss()
+        Task { await store.setArchived(accountID: account.id, archived: archived) }
     }
 
     /// 默认只露出尾号；点眼睛显示完整卡号（每 4 位一组）。
