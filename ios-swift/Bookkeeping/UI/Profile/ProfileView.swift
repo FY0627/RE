@@ -1,5 +1,6 @@
 import SwiftUI
 import BKModel
+import BKBackend
 
 /// 「我的」：系统设置风格的分组列表，二级页面用导航推入。
 struct ProfileView: View {
@@ -20,10 +21,7 @@ struct ProfileView: View {
                             .foregroundStyle(.white)
                             .frame(width: 56, height: 56)
                             .background(Color.accentColor.gradient, in: Circle())
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("本地账本").font(.title3.weight(.semibold))
-                            Text("数据只保存在本机").font(.subheadline).foregroundStyle(.secondary)
-                        }
+                        Text("本地账本").font(.title3.weight(.semibold))
                     }
                     .padding(.vertical, 4)
                 }
@@ -58,11 +56,11 @@ struct ProfileView: View {
                         Button("立即更新") { Task { await rates.refreshIfNeeded(force: true) } }
                             .disabled(rates.isUpdating)
                     }
+                    if rates.rates != nil {
+                        Link(ExchangeRateFeed.attribution, destination: ExchangeRateFeed.attributionURL)
+                    }
                 } header: {
                     Text("币种与汇率")
-                } footer: {
-                    Text("有汇率时，资产页的净资产按主要币种换算合计；卡片和流水始终按原币种显示。推荐用快捷指令更新汇率，App 自己不联网。"
-                         + (ratesEnabled ? "已打开 App 联网：约每 6 小时从 open.er-api.com 下载一次，只发送币种代码，不上传任何账本数据。" : ""))
                 }
 
                 Section("自动记账") {

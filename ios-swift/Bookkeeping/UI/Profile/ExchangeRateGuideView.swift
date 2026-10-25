@@ -10,12 +10,8 @@ struct ExchangeRateGuideView: View {
     var body: some View {
         List {
             Section {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("App 不联网也能换算").font(.title2.weight(.bold))
-                    Text("快捷指令下载当天汇率，再交给日常记账。可以在打开 App 时更新，也可以每天定时更新。")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                }
-                .padding(.vertical, 4)
+                Text("App 不联网也能换算").font(.title2.weight(.bold))
+                    .padding(.vertical, 4)
                 HStack(spacing: 12) {
                     Button {
                         UIPasteboard.general.string = ExchangeRateFeed.url.absoluteString
@@ -44,8 +40,6 @@ struct ExchangeRateGuideView: View {
                 }
             } header: {
                 Text("4 步完成")
-            } footer: {
-                Text("两种触发方式可以都建。\(ExchangeRateFeed.attribution)，数据每日更新。")
             }
         }
         .navigationTitle("用快捷指令更新汇率")

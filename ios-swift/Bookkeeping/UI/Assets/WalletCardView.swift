@@ -10,7 +10,6 @@ import BKModel
 struct WalletCardView: View {
     let account: Account
     let balanceText: String
-    let hideBalance: Bool
 
     private static let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
 
@@ -27,7 +26,7 @@ struct WalletCardView: View {
                 }
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(account.bankName) \(account.cardType.displayName) 尾号\(account.last4)，\(hideBalance ? "余额已隐藏" : balanceText)")
+            .accessibilityLabel("\(account.bankName) \(account.cardType.displayName) 尾号\(account.last4)，\(balanceText)")
     }
 
     private func face(_ palette: CardPalette) -> some View {
@@ -53,7 +52,7 @@ struct WalletCardView: View {
                 Spacer(minLength: 8)
                 HStack(spacing: 4) {
                     Image(systemName: "wave.3.right").font(.system(size: 13 * s)).opacity(0.8)
-                    Text(hideBalance ? "••••" : balanceText).font(.system(size: 14 * s, weight: .bold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+                    Text(balanceText).font(.system(size: 14 * s, weight: .bold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
                 }
             }
             Spacer(minLength: 0)

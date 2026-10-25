@@ -23,12 +23,8 @@ struct AutoSetupGuideView: View {
     var body: some View {
         List {
             Section {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("只需设置一次").font(.title2.weight(.bold))
-                    Text("一个自动化覆盖所有银行卡，不会打开 App。")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                }
-                .padding(.vertical, 4)
+                Text("只需设置一次").font(.title2.weight(.bold))
+                    .padding(.vertical, 4)
                 HStack(spacing: 12) {
                     Button {
                         UIPasteboard.general.string = Self.keyword

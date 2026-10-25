@@ -143,11 +143,10 @@ struct RecordDetailView: View {
             if let peer = detail.transferPeer {
                 Section("内部转账") {
                     LabeledContent("对方账户", value: "\(peer.bankName) ·\(peer.last4)")
-                    Text("不计入收支").font(.footnote).foregroundStyle(.secondary)
                 }
             } else if r.isInternalTransfer {
                 Section("内部转账") {
-                    Text("转到你自己的另一张卡，不计入收支").font(.footnote).foregroundStyle(.secondary)
+                    LabeledContent("对方账户", value: "你自己的另一张卡")
                 }
             }
             if let related = detail.related {

@@ -6,7 +6,9 @@ import BKModel
 /// 这里只负责地址和解析，网络请求在 App 里发起。
 public enum ExchangeRateFeed {
     public static let url = URL(string: "https://open.er-api.com/v6/latest/USD")!
-    public static let attribution = "汇率来自 ExchangeRate-API（open.er-api.com）"
+    /// 数据源要求在使用汇率的界面上注明来源并链接到官网
+    public static let attribution = "Rates By Exchange Rate API"
+    public static let attributionURL = URL(string: "https://www.exchangerate-api.com")!
 
     public enum ParseError: Error, Equatable {
         case invalidResponse

@@ -69,10 +69,6 @@ struct CardInfoView: View {
                 }
             } header: {
                 Text("卡号")
-            } footer: {
-                Text(editing
-                     ? "末四位必须是 \(account.last4)。完整卡号只保存在这台 iPhone，自动记账只用尾号匹配。"
-                     : (account.cardNumber == nil ? "点「编辑」可以填写完整卡号，方便需要时查看。" : "完整卡号只保存在这台 iPhone。"))
             }
 
             if editing {
@@ -83,8 +79,6 @@ struct CardInfoView: View {
                     }
                 } header: {
                     Text("币种")
-                } footer: {
-                    Text("一张卡里存多个币种的钱时打开，勾选其他币种。去掉的币种不再显示余额，它的初始余额会删除，已有流水保留。")
                 }
             }
 
@@ -95,8 +89,6 @@ struct CardInfoView: View {
             if !editing {
                 Section {
                     Button("隐藏这张卡", systemImage: "eye.slash", role: .destructive) { confirmHide = true }
-                } footer: {
-                    Text("隐藏后不再显示在卡包里，已有流水会保留。")
                 }
             }
         }

@@ -5,7 +5,6 @@ import BKModel
 /// 右上角菜单（卡片信息、编辑卡面、待处理账单）在资产页的顶部按钮里；自动记账的设置在「我的」里。
 struct AccountDetailView: View {
     let account: Account
-    let hideBalance: Bool
     let pendingCount: Int
     let openPending: () -> Void
     let close: () -> Void
@@ -137,7 +136,7 @@ struct AccountDetailView: View {
                 Text("\(currency.chineseName) \(currency.rawValue)").font(.subheadline.weight(.medium)).padding(.top, 2)
             }
             if let derived = summary?.ledgerDerivedMinor {
-                Text(hideBalance ? "••••••" : Fmt.money(derived, currency))
+                Text(Fmt.money(derived, currency))
                     .font(amountFont)
                     .monospacedDigit()
                     .foregroundStyle(derived < 0 ? AppTheme.debt : Color.primary)
@@ -151,7 +150,7 @@ struct AccountDetailView: View {
 
             LabeledContent("银行通知余额") {
                 if let reported = summary?.bankReported {
-                    Text(hideBalance ? "••••" : Fmt.money(reported.amountMinor, reported.currency)).monospacedDigit().foregroundStyle(.primary)
+                    Text(Fmt.money(reported.amountMinor, reported.currency)).monospacedDigit().foregroundStyle(.primary)
                 } else {
                     Text("未收到")
                 }
@@ -162,7 +161,7 @@ struct AccountDetailView: View {
                 LabeledContent("初始余额") {
                     HStack(spacing: 6) {
                         if let opening = account.openingBalance(currency) {
-                            Text(hideBalance ? "••••" : Fmt.money(opening.amountMinor, currency)).monospacedDigit()
+                            Text(Fmt.money(opening.amountMinor, currency)).monospacedDigit()
                         } else {
                             Text("未填写")
                         }

@@ -53,6 +53,8 @@ struct RootView: View {
     @State private var tab: AppTab = .home
     @State private var detail = DetailMotionState()
     @State private var sheet: ActiveSheet?
+    /// 离开「我的」时 +1，让它下次进入时重建：滚动位置回到最上方，二级页面也关闭
+    @State private var profileVisit = 0
 
     var body: some View {
         TabView(selection: $tab) {
@@ -68,9 +70,13 @@ struct RootView: View {
             }
             Tab(AppTab.profile.title, systemImage: AppTab.profile.symbol, value: AppTab.profile) {
                 ProfileView()
+                    .id(profileVisit)
             }
         }
         .tabBarMinimizeBehavior(.never)
+        .onChange(of: tab) { old, _ in
+            if old == .profile { profileVisit += 1 }
+        }
         .sheet(item: $sheet) { sheet in
             switch sheet {
             case .addAccount:

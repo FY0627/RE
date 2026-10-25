@@ -1,5 +1,6 @@
 import SwiftUI
 import BKModel
+import BKBackend
 
 /// 滚动位置和标题区高度。普通 class，不是 @Observable：滚动时写入不会触发重新渲染，只在点按卡片时读取。
 final class AssetsScrollBox {
@@ -29,7 +30,6 @@ struct AssetsView: View {
     @State private var openShift: CGFloat = 0
     /// 最近一次打开的卡在卡包里的位置；关闭后保留，用来让原来在下面的卡晚一点升回来
     @State private var openedIndex: Int?
-    @State private var hideBalance = false
     @State private var cardPendingCount = 0
     @State private var detailSheet: DetailSheet?
 
@@ -51,7 +51,6 @@ struct AssetsView: View {
                 if let selected {
                     AccountDetailView(
                         account: selected,
-                        hideBalance: hideBalance,
                         pendingCount: cardPendingCount,
                         openPending: { detailSheet = .pending },
                         close: close
@@ -136,7 +135,7 @@ struct AssetsView: View {
                 .padding(.top, 2)
                 .accessibilityAddTraits(.isHeader)
 
-            OverviewCard(hideBalance: $hideBalance)
+            OverviewCard()
                 .padding(.top, 8)
 
             HStack(alignment: .firstTextBaseline) {
@@ -167,8 +166,7 @@ struct AssetsView: View {
         }
         return WalletCardView(
             account: account,
-            balanceText: store.balances[account.id]?.cardText ?? "余额未知",
-            hideBalance: hideBalance
+            balanceText: store.balances[account.id]?.cardText ?? "余额未知"
         )
         .frame(height: height)
         // 点按区域要放在位移之前，才会跟着卡片移动；放在之后时所有卡的点按区域都叠在卡包顶部，总是点到最上面那张
@@ -342,86 +340,44 @@ private struct CardPlacement: ViewModifier {
 
 // MARK: - 总览与空状态
 
-/// 净资产卡，右上角是隐藏金额按钮。
+/// 净资产卡：只显示净资产、总资产、总负债；点按卡片查看各币种明细。
 ///
-/// - 有可用汇率时（快捷指令导入的，或打开了「联网获取汇率」）：所有币种按汇率换算成主要币种合计，下面列出各币种的原币金额；
-/// - 否则：大字显示主要币种的净资产，其他币种各占一行，不做换算。
-///
+/// 有可用汇率时（快捷指令导入的，或打开了「App 联网获取汇率」）所有币种换算成主要币种合计；
+/// 否则只显示主要币种的金额，其他币种在明细里。
 /// 每张卡每个币种取推算余额（银行通知余额或初始余额起算）；正数计入总资产，负数（欠款）计入总负债。
 /// 信用卡通知里的「余额」含义因银行而异，只有填了初始余额的信用卡币种才计入。
 private struct OverviewCard: View {
-    @Binding var hideBalance: Bool
     @Environment(LedgerStore.self) private var store
     @Environment(ExchangeRateStore.self) private var rates
     @AppStorage(ExchangeRateStore.primaryKey) private var primaryCode = CurrencyCode.cny.rawValue
     @AppStorage(ExchangeRateStore.enabledKey) private var ratesEnabled = false
+    @State private var showDetail = false
 
     var body: some View {
-        let primary = CurrencyCode(primaryCode)
-        let totals = Self.totals(store.accounts, store.balances, primary: primary)
-        let converted = rates.usableRates(networkEnabled: ratesEnabled).flatMap { Self.convert(totals, to: primary, with: $0) }
-        let main = converted?.total ?? totals.first(where: { $0.currency == primary }) ?? Totals(currency: primary)
-        let others = converted == nil ? totals.filter { $0.currency != primary } : totals
+        let summary = NetWorth(store: store, rates: rates.usableRates(networkEnabled: ratesEnabled), primary: CurrencyCode(primaryCode))
+        let main = summary.main
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("净资产").font(.subheadline).foregroundStyle(.secondary)
-                Spacer()
-                Button {
-                    hideBalance.toggle()
-                } label: {
-                    Image(systemName: hideBalance ? "eye.slash" : "eye")
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .padding(.vertical, -12)
-                .padding(.trailing, -10)
-                .accessibilityLabel(hideBalance ? "显示金额" : "隐藏金额")
-            }
-            Text(amount(main.net, main.currency))
+            Text("净资产").font(.subheadline).foregroundStyle(.secondary)
+            Text(Fmt.money(main.net, main.currency))
                 .font(.system(.largeTitle, design: .rounded).weight(.bold))
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
                 .padding(.top, 2)
             HStack(spacing: 0) {
-                figure("总资产", amount(main.assets, main.currency))
-                figure("总负债", amount(main.liabilities, main.currency))
+                figure("总资产", Fmt.money(main.assets, main.currency))
+                figure("总负债", Fmt.money(main.liabilities, main.currency))
             }
             .padding(.top, 14)
-
-            if let note = note(converted: converted, totals: totals, primary: primary) {
-                Text(note).font(.footnote).foregroundStyle(.secondary).padding(.top, 10)
-            }
-
-            if !others.isEmpty, converted == nil || totals.count > 1 || totals.first?.currency != primary {
-                Divider().padding(.vertical, 12)
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(others, id: \.currency) { other in
-                        currencyRow(other, skipped: converted?.skipped.contains(other.currency) == true)
-                    }
-                }
-            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-    }
-
-    private func note(converted: Converted?, totals: [Totals], primary: CurrencyCode) -> String? {
-        if let converted {
-            var text = "按汇率换算为\(primary.chineseName) · 汇率更新于 \(Fmt.dateTime(converted.updatedAt))"
-            if !converted.skipped.isEmpty { text += " · 缺少汇率的币种未计入" }
-            return text
-        }
-        guard totals.contains(where: { $0.currency != primary }) else { return nil }
-        if ratesEnabled { return rates.isUpdating ? "正在获取汇率…" : "汇率暂不可用，其他币种分开列出" }
-        return nil
-    }
-
-    private func amount(_ minor: Int64, _ currency: CurrencyCode) -> String {
-        hideBalance ? "••••" : Fmt.money(minor, currency)
+        .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .onTapGesture { showDetail = true }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("查看各币种明细")
+        .sheet(isPresented: $showDetail) { NetWorthDetailView() }
     }
 
     private func figure(_ title: String, _ value: String) -> some View {
@@ -432,20 +388,72 @@ private struct OverviewCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
     }
+}
 
-    private func currencyRow(_ t: Totals, skipped: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(t.currency.chineseName).font(.subheadline.weight(.medium))
-                Spacer()
-                Text(amount(t.net, t.currency)).font(.headline).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+/// 净资产明细：合计（有汇率时为换算后的金额）、各币种的原币金额、汇率来源。
+private struct NetWorthDetailView: View {
+    @Environment(LedgerStore.self) private var store
+    @Environment(ExchangeRateStore.self) private var rates
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage(ExchangeRateStore.primaryKey) private var primaryCode = CurrencyCode.cny.rawValue
+    @AppStorage(ExchangeRateStore.enabledKey) private var ratesEnabled = false
+
+    var body: some View {
+        let usable = rates.usableRates(networkEnabled: ratesEnabled)
+        let summary = NetWorth(store: store, rates: usable, primary: CurrencyCode(primaryCode))
+        NavigationStack {
+            List {
+                Section(summary.converted == nil ? summary.main.currency.chineseName : "合计（\(summary.main.currency.chineseName)）") {
+                    totalsRows(summary.main)
+                }
+                if !summary.totals.isEmpty {
+                    Section("各币种") {
+                        ForEach(summary.totals, id: \.currency) { t in
+                            let skipped = summary.converted?.skipped.contains(t.currency) == true
+                            VStack(alignment: .leading, spacing: 6) {
+                                LabeledContent(t.currency.chineseName) {
+                                    Text(skipped ? "无汇率" : amount(t.net, t.currency)).monospacedDigit()
+                                }
+                                .font(.headline)
+                                if !skipped {
+                                    LabeledContent("资产", value: amount(t.assets, t.currency))
+                                    LabeledContent("负债", value: amount(t.liabilities, t.currency))
+                                }
+                            }
+                            .monospacedDigit()
+                        }
+                    }
+                }
+                if let usable, let source = rates.source {
+                    Section("汇率") {
+                        LabeledContent(source.displayName, value: Fmt.dateTime(usable.updatedAt))
+                        Link(ExchangeRateFeed.attribution, destination: ExchangeRateFeed.attributionURL)
+                    }
+                }
             }
-            Text("资产 \(amount(t.assets, t.currency)) · 负债 \(amount(t.liabilities, t.currency))" + (skipped ? " · 无汇率，未计入合计" : ""))
-                .font(.footnote).foregroundStyle(.secondary).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+            .navigationTitle("净资产")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("完成", systemImage: "checkmark") { dismiss() } }
+            }
         }
-        .accessibilityElement(children: .combine)
+        .presentationDetents([.medium, .large])
     }
 
+    @ViewBuilder
+    private func totalsRows(_ t: NetWorth.Totals) -> some View {
+        LabeledContent("净资产", value: amount(t.net, t.currency))
+        LabeledContent("总资产", value: amount(t.assets, t.currency))
+        LabeledContent("总负债", value: amount(t.liabilities, t.currency))
+    }
+
+    private func amount(_ minor: Int64, _ currency: CurrencyCode) -> String {
+        Fmt.money(minor, currency)
+    }
+}
+
+/// 净资产的计算：按币种汇总各卡的推算余额，有汇率时换算成主要币种合计。
+private struct NetWorth {
     struct Totals {
         var currency: CurrencyCode
         var assets: Int64 = 0
@@ -457,10 +465,24 @@ private struct OverviewCard: View {
     struct Converted {
         var total: Totals
         var skipped: Set<CurrencyCode>
-        var updatedAt: Date
     }
 
-    /// 每个币种一项：主要币种在前，其余按有余额的卡多少、金额大小排序。
+    /// 每个币种一项：主要币种在前，其余按有余额的卡多少、金额大小排序
+    let totals: [Totals]
+    /// 有汇率时的换算结果
+    let converted: Converted?
+    /// 卡片上显示的合计：换算后的金额，或者主要币种的金额
+    let main: Totals
+
+    @MainActor
+    init(store: LedgerStore, rates: ExchangeRates?, primary: CurrencyCode) {
+        let totals = Self.totals(store.accounts, store.balances, primary: primary)
+        let converted = rates.flatMap { Self.convert(totals, to: primary, with: $0) }
+        self.totals = totals
+        self.converted = converted
+        self.main = converted?.total ?? totals.first(where: { $0.currency == primary }) ?? Totals(currency: primary)
+    }
+
     static func totals(_ accounts: [Account], _ balances: [String: AccountBalances], primary: CurrencyCode) -> [Totals] {
         var byCurrency: [CurrencyCode: Totals] = [:]
         for account in accounts {
@@ -482,7 +504,7 @@ private struct OverviewCard: View {
         }
     }
 
-    /// 资产和负债分别换算后相加；缺汇率的币种不计入并单独标出。
+    /// 资产和负债分别换算后相加；缺汇率的币种不计入。
     static func convert(_ totals: [Totals], to primary: CurrencyCode, with rates: ExchangeRates) -> Converted? {
         guard rates.rate(primary) != nil else { return nil }
         var sum = Totals(currency: primary)
@@ -497,7 +519,7 @@ private struct OverviewCard: View {
             sum.liabilities += liabilities
             sum.cards += t.cards
         }
-        return Converted(total: sum, skipped: skipped, updatedAt: rates.updatedAt)
+        return Converted(total: sum, skipped: skipped)
     }
 }
 

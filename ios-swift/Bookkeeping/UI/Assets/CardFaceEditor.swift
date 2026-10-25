@@ -46,8 +46,7 @@ struct CardFaceEditor: View {
                     .overlay {
                         WalletCardView(
                             account: preview,
-                            balanceText: store.balances[account.id]?.cardText ?? "余额未知",
-                            hideBalance: false
+                            balanceText: store.balances[account.id]?.cardText ?? "余额未知"
                         )
                     }
                     .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pixelWidth = min(1200, $0 * displayScale) }
@@ -69,8 +68,6 @@ struct CardFaceEditor: View {
                 }
             } header: {
                 Text("背景图片")
-            } footer: {
-                Text("图片会按卡片比例居中裁剪，只保存在这台 iPhone。")
             }
 
             Section(face.imageID == nil ? "配色" : "配色（移除图片后显示）") {

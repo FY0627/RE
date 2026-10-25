@@ -99,10 +99,6 @@ struct AddAccountView: View {
                     Toggle("多币种账户", isOn: $multiCurrency)
                 } header: {
                     Text("记账币种")
-                } footer: {
-                    Text(multiCurrency
-                         ? "一张卡里存多个币种的钱时打开（例如多币种扣账卡）。通知没写币种时记为主币种，各币种余额分开显示。"
-                         : "一张卡里存多个币种的钱（例如多币种扣账卡）时打开「多币种账户」。")
                 }
                 if multiCurrency {
                     Section("其他币种") {

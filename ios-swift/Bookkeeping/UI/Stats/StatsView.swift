@@ -20,17 +20,11 @@ struct StatsView: View {
                             ForEach(stats.accounts, id: \.accountID) { accountRow($0) }
                         }
                     }
-                    Section {
-                    } footer: {
-                        footnote(holds: stats.holdCount, failed: stats.failedCount)
-                    }
                 } else {
                     Section {
                         ContentUnavailableView("这个月还没有已入账的流水", systemImage: "chart.bar", description: Text(Fmt.monthTitle(year: year, month: month)))
                     } header: {
                         Text(Fmt.monthTitle(year: year, month: month))
-                    } footer: {
-                        footnote(holds: 0, failed: 0)
                     }
                 }
             }
@@ -114,10 +108,4 @@ struct StatsView: View {
         .accessibilityElement(children: .combine)
     }
 
-    @ViewBuilder
-    private func footnote(holds: Int, failed: Int) -> some View {
-        if holds + failed > 0 {
-            Text("冻结/预授权 \(holds) 笔、失败 \(failed) 笔未计入")
-        }
-    }
 }
