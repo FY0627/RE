@@ -83,22 +83,36 @@ struct IngestEngine {
             text: request.text, source: request.source, sender: request.sender, subject: request.subject,
             referenceDate: request.receivedAt ?? now, calendar: calendar
         ))
+        let accounts = try AccountDAO.all(db)
+        // 固定写法认不出尾号时，在正文里找已添加的卡的尾号
+        let fallbackTail = Self.knownTail(in: parsed.cleanedText, accounts: accounts)
+
+        // 自动化可以对所有短信 / 邮件触发。没有任何尾号、看不出是哪家银行、也没有绑定账户的，不当作动账通知
+        // （例如朋友发来「转我100元」），不进待处理
+        var classification = parsed.classification
+        if [MessageClassification.transaction, .unrecognized, .marketing].contains(classification),
+           parsed.cardTails.isEmpty, fallbackTail == nil, parsed.bankHint == nil, request.boundAccountID == nil {
+            classification = .noFinancialContent
+        }
+        // 不是动账通知的不保存，也不写接收日志：普通短信、邮件不会留在 App 里
+        if classification == .noFinancialContent {
+            return IngestResult(ingestID: nil, outcome: .filtered, classification: classification, recordedCount: 0, mergedCount: 0, pendingCount: 0, summary: classification.displayName)
+        }
+
         let retention = try retentionDays()
         // 验证码和空输入不保存正文；其余按保留期限保存，便于核对和处理待处理项
-        let storeRaw = parsed.classification != .verificationCode && parsed.classification != .empty
+        let storeRaw = classification != .verificationCode && classification != .empty
         let rawText = storeRaw ? String(request.text.prefix(20_000)) : nil
         let purgeAfter = storeRaw ? now.addingTimeInterval(Double(retention) * 86_400) : nil
         try IngestDAO.insert(
             db, id: ingestID, fingerprint: fingerprint, request: request, processedAt: now, rawText: rawText,
-            rawPurgeAfter: purgeAfter, classification: parsed.classification, outcome: .filtered, detail: "", parserVersion: MessageParser.version
+            rawPurgeAfter: purgeAfter, classification: classification, outcome: .filtered, detail: "", parserVersion: MessageParser.version
         )
         let meta = IngestMeta(ingestID: ingestID, source: request.source, receivedAt: request.receivedAt, processedAt: now)
-        let accounts = try AccountDAO.all(db)
 
         var recorded = 0, merged = 0, pending = 0
         var items: [IngestItem] = []
-        if parsed.classification == .transaction {
-            let fallbackTail = parsed.events.contains { $0.draft.cardTail == nil } ? Self.knownTail(in: parsed.cleanedText, accounts: accounts) : nil
+        if classification == .transaction {
             for event in parsed.events {
                 var draft = event.draft
                 if draft.cardTail == nil { draft.cardTail = fallbackTail }
@@ -122,7 +136,7 @@ struct IngestEngine {
                     items.append(Self.pendingItem(draft, reason: reason))
                 }
             }
-        } else if parsed.classification == .unrecognized {
+        } else if classification == .unrecognized {
             try PendingDAO.insert(db, id: newID(), ingestID: ingestID, partIndex: 0, reason: .unrecognized, draft: nil, candidates: request.boundAccountID.map { [$0] } ?? [], duplicateOf: nil, now: now)
             pending += 1
             items.append(IngestItem(cardTail: nil, kind: nil, status: nil, amountMinor: nil, currency: nil, amountText: nil, result: .pending(.unrecognized)))
@@ -144,11 +158,11 @@ struct IngestEngine {
         if recorded > 0 { parts.append("入账 \(recorded) 笔") }
         if merged > 0 { parts.append("与已有流水合并 \(merged) 笔") }
         if pending > 0 { parts.append("待处理 \(pending) 条") }
-        if parts.isEmpty { parts.append(parsed.classification.displayName) }
+        if parts.isEmpty { parts.append(classification.displayName) }
         let summary = parts.joined(separator: "，")
         // 待处理项的正文要保留到处理完；其余按保留期限清理
-        try IngestDAO.updateResult(db, id: ingestID, classification: parsed.classification, outcome: outcome, detail: summary, rawPurgeAfter: purgeAfter)
-        return IngestResult(ingestID: ingestID, outcome: outcome, classification: parsed.classification, recordedCount: recorded, mergedCount: merged, pendingCount: pending, summary: summary, items: items)
+        try IngestDAO.updateResult(db, id: ingestID, classification: classification, outcome: outcome, detail: summary, rawPurgeAfter: purgeAfter)
+        return IngestResult(ingestID: ingestID, outcome: outcome, classification: classification, recordedCount: recorded, mergedCount: merged, pendingCount: pending, summary: summary, items: items)
     }
 
     /// 已入账 / 已合并的一笔：用流水本身的金额、币种和账户尾号

@@ -44,7 +44,7 @@ public enum MessageClassification: String, Sendable, Codable, CaseIterable {
         case .statement: "账单/对账单（不重复入账）"
         case .balanceSnapshot: "余额通知（无交易）"
         case .creditLimitChange: "信用额度变化"
-        case .noFinancialContent: "没有金额和尾号（不是动账通知）"
+        case .noFinancialContent: "不是动账通知（没有尾号，也看不出是银行发的）"
         case .unrecognized: "未能识别"
         case .empty: "空输入（快捷指令未传入内容）"
         }

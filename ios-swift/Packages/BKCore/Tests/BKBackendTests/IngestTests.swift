@@ -500,7 +500,17 @@ final class IngestTests: XCTestCase {
         let pending = try await backend.pendingCount()
         XCTAssertEqual(pending, 0, "关键词误触发的普通短信不进待处理")
         let log = try await backend.ingestLog()
-        XCTAssertEqual(log.first?.classification, .noFinancialContent, "但会留在接收日志里")
+        XCTAssertTrue(log.isEmpty, "所有短信都会触发自动化：普通短信不保存，也不写接收日志")
+    }
+
+    func testMoneyMessageWithoutTailOrBankIsIgnored() async throws {
+        let backend = try makeBackend()
+        try await addAccount(backend, last4: "0427")
+        let result = try await backend.ingest(IngestRequest(text: "晚上的饭钱你转我100元就行", source: .sms))
+        XCTAssertEqual(result.classification, .noFinancialContent)
+        XCTAssertTrue(result.items.isEmpty)
+        let pending = try await backend.pendingCount()
+        XCTAssertEqual(pending, 0, "朋友的短信里有金额，但没有尾号、也不是银行发的，不进待处理")
     }
 
     func testBalanceOnlyMessageCreatesNoRecord() async throws {

@@ -39,6 +39,8 @@ public struct ParsedMessage: Sendable {
     public var balances: [ParsedBalance]
     public var bankHint: String?
     public var cleanedText: String
+    /// 按固定写法认出的全部尾号（含对方账户的尾号）
+    public var cardTails: [String]
 }
 
 /// 规则解析器：纯函数，不访问数据库，不依赖网络。
@@ -116,8 +118,9 @@ public enum MessageParser {
         let subject = context.subject.map(TextNormalizer.normalize) ?? ""
         let bankHint = BankDirectory.identify(sender: context.sender, text: cleaned + "\n" + subject)
 
+        var foundTails: [String] = []
         func result(_ classification: MessageClassification, _ events: [ParsedEvent] = [], _ balances: [ParsedBalance] = []) -> ParsedMessage {
-            ParsedMessage(classification: classification, events: events, balances: balances, bankHint: bankHint, cleanedText: cleaned)
+            ParsedMessage(classification: classification, events: events, balances: balances, bankHint: bankHint, cleanedText: cleaned, cardTails: foundTails)
         }
 
         guard !cleaned.isEmpty else { return result(.empty) }
@@ -140,6 +143,7 @@ public enum MessageParser {
             }
         }
         tails.sort { $0.range.location < $1.range.location }
+        foundTails = tails.map(\.value)
 
         // 2. 日期时间
         let chinese = cjk.test(cleaned)

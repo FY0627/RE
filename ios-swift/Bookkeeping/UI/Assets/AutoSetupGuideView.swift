@@ -2,12 +2,13 @@ import SwiftUI
 import UIKit
 import BKModel
 
-/// 「设置自动记账」：每张卡一个短信自动化，「信息包含」填这张卡的尾号。
+/// 「设置自动记账」：一个不加任何条件的短信自动化，所有短信都交给 App，只需设置一次。
 ///
-/// 按尾号触发而不是按「银行」等关键词：繁体（銀行）、英文银行的短信写法各不相同，
-/// 而有资金变动的通知都会带卡号尾号。iOS 的信息自动化「信息包含」只能填一个词，所以每张卡建一个。
+/// 不按关键词或尾号筛选：繁体（銀行）、英文银行写法各不相同，「信息包含」又只能填一个词。
+/// 由 App 判断是不是动账通知：认出尾号（固定写法，或正文里出现已添加的卡的尾号）才入账；
+/// 不是动账通知的短信不保存。
 /// iOS 不允许 App 创建、导入或查询快捷指令自动化，这里只给出最少的手动步骤，
-/// 并只展示 App 能确认的状态（是否收到过这张卡的真实输入）。
+/// 并只展示 App 能确认的状态（是否收到过每张卡的真实输入）。
 struct AutoSetupGuideView: View {
     /// 从某张卡进入（例如刚添加完）时把这张卡排在最前面
     var account: Account?
@@ -16,7 +17,6 @@ struct AutoSetupGuideView: View {
 
     @Environment(LedgerStore.self) private var store
     @Environment(\.openURL) private var openURL
-    @State private var copiedTail: String?
     @State private var showEmail = false
 
     private var cards: [Account] {
@@ -27,7 +27,7 @@ struct AutoSetupGuideView: View {
     var body: some View {
         List {
             Section {
-                Text("每张卡设置一次").font(.title2.weight(.bold))
+                Text("只需设置一次").font(.title2.weight(.bold))
                     .padding(.vertical, 4)
                 Button {
                     if let url = URL(string: "shortcuts://") { openURL(url) }
@@ -49,15 +49,14 @@ struct AutoSetupGuideView: View {
                 Text("5 步完成")
             }
 
-            Section {
-                if cards.isEmpty {
-                    Text("还没有银行卡").foregroundStyle(.secondary)
+            if !cards.isEmpty {
+                Section {
+                    ForEach(cards) { card in
+                        cardRow(card)
+                    }
+                } header: {
+                    Text("各卡状态")
                 }
-                ForEach(cards) { card in
-                    cardRow(card)
-                }
-            } header: {
-                Text("点尾号复制")
             }
 
             Section {
@@ -81,43 +80,32 @@ struct AutoSetupGuideView: View {
         .navigationBarBackButtonHidden(onDone != nil)
     }
 
-    /// 一张卡：尾号（点按复制）和是否收到过这张卡的自动输入。
+    /// 一张卡是否收到过自动输入
     private func cardRow(_ card: Account) -> some View {
         let last = store.automation[card.id]?.lastSuccessAt
-        let copied = copiedTail == card.last4
-        return Button {
-            UIPasteboard.general.string = card.last4
-            copiedTail = card.last4
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: last != nil ? "checkmark.circle.fill" : "clock")
-                    .font(.title3)
-                    .foregroundStyle(last != nil ? Color.green : Color.orange)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(card.displayTitle).font(.body.weight(.medium)).foregroundStyle(.primary)
-                    Text(last.map { "最近一次接收 \(Fmt.dateTime($0))" } ?? "还没有收到这张卡的自动输入")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Label(copied ? "已复制" : card.last4, systemImage: copied ? "checkmark" : "doc.on.doc")
-                    .font(.body.monospacedDigit().weight(.semibold))
-                    .labelStyle(.titleAndIcon)
+        return HStack(spacing: 12) {
+            Image(systemName: last != nil ? "checkmark.circle.fill" : "clock")
+                .font(.title3)
+                .foregroundStyle(last != nil ? Color.green : Color.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(card.displayTitle).font(.body.weight(.medium))
+                Text(last.map { "最近一次接收 \(Fmt.dateTime($0))" } ?? "还没有收到这张卡的自动输入")
+                    .font(.subheadline).foregroundStyle(.secondary)
             }
         }
-        .accessibilityLabel("\(card.displayTitle)，尾号 \(card.last4)，\(last != nil ? "已收到过自动输入" : "还没有收到自动输入")")
-        .accessibilityHint("复制尾号")
+        .accessibilityElement(children: .combine)
     }
 
     static let smsSteps: [LocalizedStringKey] = [
         "点上面 **打开快捷指令**，在底部选 **自动化**，点右上角 **+**，选 **信息**。",
-        "在 **信息包含** 里粘贴这张卡的 **尾号**（在下面点尾号复制），其他条件不用填。",
+        "**发件人** 和 **信息包含** 都不填，所有短信都会交给 App，不是动账通知的不会保存。",
         "选 **立即运行**，点 **下一步**。",
         "点 **新建空白自动化** → **添加操作**，搜索 **记录银行动账通知** 并添加。",
-        "确认 **通知内容** 显示为 **快捷指令输入**（没有就点它选上），点 **完成**。每张卡重复一次。",
+        "确认 **通知内容** 显示为 **快捷指令输入**（没有就点它选上），点 **完成**。",
     ]
 
     static let emailSteps: [LocalizedStringKey] = [
-        "**自动化** → **+** → **电子邮件**，在 **发件人** 里填银行通知邮箱。",
+        "**自动化** → **+** → **电子邮件**，条件都不填。",
         "选 **立即运行** → **新建空白自动化** → 添加 **记录银行动账通知**。",
         "**通知内容** 选 **快捷指令输入**，**来源** 改为 **邮件**，点 **完成**。",
     ]
