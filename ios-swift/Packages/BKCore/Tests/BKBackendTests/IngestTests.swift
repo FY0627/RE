@@ -667,6 +667,34 @@ final class IngestTests: XCTestCase {
         } catch BackendError.invalidAccount(.invalidAccountNumber) {}
     }
 
+    func testTruncatedNotificationStillUsable() async throws {
+        let backend = try makeBackend()
+        let account = try await addAccount(backend, bank: "x", bankName: "恒生银行", last4: "8482", currency: .hkd)
+        // App 通知被发送方截断：后半段（日期、交易号码、银行名称）没有了
+        let text = """
+        kiri
+        如未能正常顯示電郵內容，請你設定電郵瀏覽程式至支援HTML格式的電郵。
+        If you cannot view this email properly, please configure your email programme so that it can support HTML formatted emails.
+        你已成功轉賬
+        Your transfer is successful
+        由 From
+        123-456XXX-789
+        HKD527.28
+
+        至 To
+        +86-1380000***...
+        """
+        // 没填账号：认不出卡，但交易完整，进待处理而不是被当成普通通知丢掉
+        let before = try await backend.ingest(IngestRequest(text: text, source: .auto))
+        XCTAssertEqual(before.outcome, .pending, before.summary)
+
+        try await backend.updateAccountNumber(accountID: account.id, accountNumber: "123-456XXX-789")
+        let after = try await backend.ingest(IngestRequest(text: text + " ", source: .notification))
+        XCTAssertNotEqual(after.outcome, .filtered, after.summary)
+        XCTAssertEqual(after.items.first?.cardTail, "8482")
+        XCTAssertEqual(after.items.first?.kind, .transferOut)
+    }
+
     func testMaskedNumbersMatchAccountNumberOrCardNumber() {
         let account = Account(
             id: "a", name: "", bankID: nil, bankName: "恒生银行", last4: "8482", cardType: .debit, currency: .hkd,

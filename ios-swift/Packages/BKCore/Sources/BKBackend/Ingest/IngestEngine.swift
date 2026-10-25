@@ -87,12 +87,13 @@ struct IngestEngine {
         // 固定写法认不出尾号时，在正文里找已添加的卡的尾号；再找卡片信息里填的账号、完整卡号
         let fallbackTail = Self.knownTail(in: parsed.cleanedText, accounts: accounts) ?? Self.identifierTail(in: parsed.cleanedText, accounts: accounts)
 
-        // 自动化可以对所有短信 / 邮件 / App 通知触发。没有任何尾号、看不出是银行发的、也没有绑定账户的，
-        // 不当作动账通知（例如朋友发来「转我100元」），不进待处理
+        // 自动化可以对所有短信 / 邮件 / App 通知触发。没有任何尾号、看不出是银行发的、也没有绑定账户、
+        // 而且认不出完整交易（方向或性质不明）的，不当作动账通知（例如朋友发来「转我100元」），不进待处理。
+        // 被截断的通知可能丢了银行名称，但「你已成功转账 … HKD527.28」这样能完整认出的交易仍进待处理
         var classification = parsed.classification
         if [MessageClassification.transaction, .unrecognized, .marketing].contains(classification),
            parsed.cardTails.isEmpty, fallbackTail == nil, parsed.bankHint == nil, request.boundAccountID == nil,
-           !Lexicon.bankish.test(parsed.cleanedText) {
+           !Lexicon.bankish.test(parsed.cleanedText), !parsed.events.contains(where: { $0.issue == nil }) {
             classification = .noFinancialContent
         }
         // 不是动账通知的不保存，也不写接收日志：普通短信、邮件不会留在 App 里
