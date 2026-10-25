@@ -148,15 +148,6 @@ struct AccountDetailView: View {
 
             if large { Divider().padding(.vertical, 12) }
 
-            LabeledContent("银行通知余额") {
-                if let reported = summary?.bankReported {
-                    Text(Fmt.money(reported.amountMinor, reported.currency)).monospacedDigit().foregroundStyle(.primary)
-                } else {
-                    Text("未收到")
-                }
-            }
-            .padding(.vertical, 4)
-
             Button { openingTarget = OpeningTarget(currency: currency) } label: {
                 LabeledContent("初始余额") {
                     HStack(spacing: 6) {

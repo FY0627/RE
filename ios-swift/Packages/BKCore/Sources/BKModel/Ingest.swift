@@ -307,7 +307,7 @@ public struct BalanceObservation: Hashable, Sendable {
     }
 }
 
-/// 一张卡全部币种的余额，顺序与账户币种一致（主币种在前）；收到过其他币种的银行余额时排在后面。
+/// 一张卡全部币种的余额，顺序与账户币种一致（主币种在前）。
 public struct AccountBalances: Hashable, Sendable {
     public var accountID: String
     public var items: [AccountBalanceSummary]
@@ -327,49 +327,31 @@ public struct AccountBalances: Hashable, Sendable {
     }
 }
 
-/// 某张卡某个币种的余额：银行通知余额与账本推算余额分开展示。
+/// 某张卡某个币种的余额：从用户填写的初始余额出发，加上之后已入账的流水。
+/// 银行通知里写的余额不使用（很多银行不提供，写法也不统一）。
 public struct AccountBalanceSummary: Hashable, Sendable {
-    /// 推算余额的起点
-    public enum Base: String, Hashable, Sendable {
-        /// 最新的银行通知余额
-        case bankReported
-        /// 用户填写的初始余额（晚于所有银行通知余额时才作为起点）
-        case opening
-    }
-
     public var accountID: String
     public var currency: CurrencyCode
-    /// 最新（按通知内时间排序）的银行通知余额；没有就是未知。与用户填写的初始余额分开保存、分开显示。
-    public var bankReported: BalanceObservation?
     /// 用户填写的初始余额及其时间点
     public var openingBalanceMinor: Int64?
     public var openingBalanceAt: Date?
-    /// 起点 + 之后已入账的流水；既没有银行余额也没有初始余额时为 nil（未知）
+    /// 初始余额 + 之后已入账的流水；没有初始余额时为 nil（未知）
     public var ledgerDerivedMinor: Int64?
-    /// 推算余额的币种（起点的币种）
-    public var ledgerDerivedCurrency: CurrencyCode?
-    public var base: Base?
-    /// 推算用到的、晚于起点的流水笔数
+    /// 推算用到的、晚于初始余额的流水笔数
     public var recordsAfterBase: Int
 
     public init(
         accountID: String,
         currency: CurrencyCode,
-        bankReported: BalanceObservation?,
         ledgerDerivedMinor: Int64?,
         recordsAfterBase: Int,
-        base: Base? = nil,
-        ledgerDerivedCurrency: CurrencyCode? = nil,
         openingBalanceMinor: Int64? = nil,
         openingBalanceAt: Date? = nil
     ) {
         self.accountID = accountID
         self.currency = currency
-        self.bankReported = bankReported
         self.ledgerDerivedMinor = ledgerDerivedMinor
         self.recordsAfterBase = recordsAfterBase
-        self.base = base ?? (bankReported != nil ? .bankReported : nil)
-        self.ledgerDerivedCurrency = ledgerDerivedCurrency ?? bankReported?.currency
         self.openingBalanceMinor = openingBalanceMinor
         self.openingBalanceAt = openingBalanceAt
     }

@@ -26,6 +26,7 @@ enum TextNormalizer {
         var text = raw.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
         if looksLikeHTML(text) { text = htmlToText(text) } else { text = decodeEntities(text) }
         text = normalizeWidth(text)
+        text = simplifyChinese(text)
         text = text.unicodeScalars.filter { !["\u{200B}", "\u{200C}", "\u{200D}", "\u{FEFF}", "\u{2060}"].contains($0) }.map(String.init).joined()
         text = spaces.replace(text, with: " ")
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
@@ -78,6 +79,17 @@ enum TextNormalizer {
         }
         result += ns.substring(from: cursor)
         return result
+    }
+
+    /// 银行通知里常见的繁体字转简体，让「結尾號碼」「銀行」「賬戶」等按同一套规则识别（香港、澳门、台湾的银行）。
+    /// 只影响解析；原文按原样保存。
+    private static let simplified: [Character: Character] = Dictionary(
+        uniqueKeysWithValues: zip("號銀賬帳戶碼結額餘費轉錢幣匯過為於從時間點進現開關證驗網購買賣價儲貸記單錄動變發撥還際國內處請詢電話無鐘週筆項業務臺門據這個們與對應該後實達約歷億萬圓經營簽認確權廣東華環優樣檢測試傳輸辦訊簡體續紀歸屬類別種稱響頁顯準備銷凍預繳稅資獎勵紅計劃擔險卻雖連線綫鈔兌換懷終領絡圍齊齡異隨復補償貨貝寶遞滙摺鎖張訂閱參選擇寫讀書冊註頭數詳細狀態啟協議敗錯誤謝歡聯繫熱兩機構員專標誌讓給島灣盧鄉縣區鎮樓層櫃檯圖館飯錶鏈車鐵運駕駛輛軌場戲劇樂師醫藥療學習課題練會衛濟貿競賽獲節慶禮擁護惡嚴厲盜竊詐騙謹嗎麼麽裡裏沒說爲", "号银账账户码结额余费转钱币汇过为于从时间点进现开关证验网购买卖价储贷记单录动变发拨还际国内处请询电话无钟周笔项业务台门据这个们与对应该后实达约历亿万圆经营签认确权广东华环优样检测试传输办讯简体续纪归属类别种称响页显准备销冻预缴税资奖励红计划担险却虽连线线钞兑换怀终领络围齐龄异随复补偿货贝宝递汇折锁张订阅参选择写读书册注头数详细状态启协议败错误谢欢联系热两机构员专标志让给岛湾卢乡县区镇楼层柜台图馆饭表链车铁运驾驶辆轨场戏剧乐师医药疗学习课题练会卫济贸竞赛获节庆礼拥护恶严厉盗窃诈骗谨吗么么里里没说为")
+    )
+
+    static func simplifyChinese(_ text: String) -> String {
+        guard text.contains(where: { simplified[$0] != nil }) else { return text }
+        return String(text.map { simplified[$0] ?? $0 })
     }
 
     /// 全角数字、字母和常用符号转半角；中文标点（，。；）保留，用于断句。

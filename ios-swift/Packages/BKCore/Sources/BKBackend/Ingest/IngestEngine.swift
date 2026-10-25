@@ -98,25 +98,28 @@ struct IngestEngine {
         var recorded = 0, merged = 0, pending = 0
         var items: [IngestItem] = []
         if parsed.classification == .transaction {
+            let fallbackTail = parsed.events.contains { $0.draft.cardTail == nil } ? Self.knownTail(in: parsed.cleanedText, accounts: accounts) : nil
             for event in parsed.events {
+                var draft = event.draft
+                if draft.cardTail == nil { draft.cardTail = fallbackTail }
                 let outcome: CommitOutcome
                 if let issue = event.issue {
-                    let candidates = candidateIDs(for: event.draft, request: request, accounts: accounts)
+                    let candidates = candidateIDs(for: draft, request: request, accounts: accounts)
                     outcome = .pending(issue, candidates: candidates, duplicateOf: nil)
                 } else {
-                    outcome = try commit(event.draft, meta: meta, boundAccountID: request.boundAccountID, accounts: accounts, forcedAccount: nil, duplicateCheck: true)
+                    outcome = try commit(draft, meta: meta, boundAccountID: request.boundAccountID, accounts: accounts, forcedAccount: nil, duplicateCheck: true)
                 }
                 switch outcome {
                 case let .recorded(recordID):
                     recorded += 1
-                    items.append(try item(recordID: recordID, draft: event.draft, result: .recorded, accounts: accounts))
+                    items.append(try item(recordID: recordID, draft: draft, result: .recorded, accounts: accounts))
                 case let .merged(recordID):
                     merged += 1
-                    items.append(try item(recordID: recordID, draft: event.draft, result: .merged, accounts: accounts))
+                    items.append(try item(recordID: recordID, draft: draft, result: .merged, accounts: accounts))
                 case let .pending(reason, candidates, duplicateOf):
-                    try PendingDAO.insert(db, id: newID(), ingestID: ingestID, partIndex: event.draft.partIndex, reason: reason, draft: event.draft, candidates: candidates, duplicateOf: duplicateOf, now: now)
+                    try PendingDAO.insert(db, id: newID(), ingestID: ingestID, partIndex: draft.partIndex, reason: reason, draft: draft, candidates: candidates, duplicateOf: duplicateOf, now: now)
                     pending += 1
-                    items.append(Self.pendingItem(event.draft, reason: reason))
+                    items.append(Self.pendingItem(draft, reason: reason))
                 }
             }
         } else if parsed.classification == .unrecognized {
@@ -125,20 +128,10 @@ struct IngestEngine {
             items.append(IngestItem(cardTail: nil, kind: nil, status: nil, amountMinor: nil, currency: nil, amountText: nil, result: .pending(.unrecognized)))
         }
 
-        // 只有余额、没有交易：保存余额快照，不凭差额编造交易
-        var balanceSaved = 0
+        // 只有余额、没有交易：不入账，也不保存余额（卡片余额只从初始余额推算）；能对上卡时记为这张卡收到过自动输入
         for balance in parsed.balances {
-            guard case let .matched(account) = AccountMatcher.match(tail: balance.cardTail, bankHint: parsed.bankHint, boundAccountID: request.boundAccountID, accounts: accounts),
-                  let currency = resolveCurrency(balance.amount, account: account),
-                  case let .success(minor) = AmountParser.minorUnits(balance.amount.digits, exponent: currency.minorUnitExponent) else { continue }
-            let observation = BalanceObservation(
-                accountID: account.id, amountMinor: balance.negative ? -minor : minor, currency: currency,
-                orderKey: orderKey(time: balance.transactionTime, fallback: meta.receivedAt ?? now), transactionTime: balance.transactionTime,
-                observedAt: meta.receivedAt ?? now, recordID: nil
-            )
-            try BalanceDAO.insert(db, id: newID(), observation: observation, ingestID: ingestID)
+            guard case let .matched(account) = AccountMatcher.match(tail: balance.cardTail, bankHint: parsed.bankHint, boundAccountID: request.boundAccountID, accounts: accounts) else { continue }
             try AccountDAO.noteSuccess(db, id: account.id, at: now, source: request.source)
-            balanceSaved += 1
         }
 
         let outcome: IngestOutcome
@@ -151,7 +144,6 @@ struct IngestEngine {
         if recorded > 0 { parts.append("入账 \(recorded) 笔") }
         if merged > 0 { parts.append("与已有流水合并 \(merged) 笔") }
         if pending > 0 { parts.append("待处理 \(pending) 条") }
-        if balanceSaved > 0 { parts.append("更新余额 \(balanceSaved) 个账户") }
         if parts.isEmpty { parts.append(parsed.classification.displayName) }
         let summary = parts.joined(separator: "，")
         // 待处理项的正文要保留到处理完；其余按保留期限清理
@@ -177,6 +169,19 @@ struct IngestEngine {
         let candidates = draft.amount.currencyCandidates
         let currency = draft.amount.preferredCurrency ?? (candidates.count == 1 ? candidates[0] : nil)
         return IngestItem(cardTail: draft.cardTail, kind: draft.kind, status: draft.status, amountMinor: nil, currency: currency, amountText: draft.amount.digits, result: result)
+    }
+
+    /// 正文里没认出尾号时，找已添加的卡的尾号：作为单独的 4 位数字出现、并且只有一张卡的尾号出现时，就是这张卡。
+    /// 各家银行、各种语言写尾号的方式不同（「結尾號碼8482」「a/c XX8482」），这样不依赖固定写法。
+    /// 排除明显不是尾号的位置：更长数字的一部分、日期（2026年、23/10/2026）、金额（CNY8482、8482元、8482.00）。
+    static func knownTail(in text: String, accounts: [Account]) -> String? {
+        let tails = Set(accounts.filter { !$0.archived }.map(\.last4)).filter { $0.count == 4 && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) }
+        var found = tails.filter { tail in
+            text.range(of: "(?<![0-9/.:$¥€£A-WYZa-wyz-])\(tail)(?![0-9年月日元圆号]|[.,][0-9])", options: .regularExpression) != nil
+        }
+        // 出现多个时，像年份的（「24 Oct 2026」）不算
+        if found.count > 1 { found = found.filter { !(1990...2099).contains(Int($0) ?? 0) } }
+        return found.count == 1 ? found.first : nil
     }
 
     func candidateIDs(for draft: EventDraft, request: IngestRequest, accounts: [Account]) -> [String] {
@@ -274,14 +279,6 @@ struct IngestEngine {
             return .merged(existingID)
         }
         try RecordDAO.addEvidence(db, recordID: record.id, ingestID: meta.ingestID, source: meta.source, at: now)
-        if let balanceMinor {
-            let observation = BalanceObservation(
-                accountID: account.id, amountMinor: balanceMinor, currency: currency,
-                orderKey: orderKey(time: record.transactionTime, fallback: record.effectiveAt), transactionTime: record.transactionTime,
-                observedAt: record.effectiveAt, recordID: record.id
-            )
-            try BalanceDAO.insert(db, id: newID(), observation: observation, ingestID: meta.ingestID)
-        }
         try AccountDAO.noteSuccess(db, id: account.id, at: now, source: meta.source)
         try linkTransfer(record, counterpartyTail: draft.counterpartyTail, accounts: accounts)
         try linkRefund(record)

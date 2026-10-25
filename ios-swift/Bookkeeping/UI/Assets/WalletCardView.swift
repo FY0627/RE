@@ -102,18 +102,9 @@ extension AccountBalances {
 }
 
 extension AccountBalanceSummary {
-    /// 卡面上显示的余额：银行通知余额，或从你填写的初始余额推算的余额；
-    /// 两者都没有时显示「余额未知」，不用部分流水冒充。
+    /// 卡面上显示的余额：从你填写的初始余额推算；没填时显示「余额未知」，不用部分流水冒充。
     var cardText: String {
-        switch base {
-        case .bankReported:
-            guard let reported = bankReported else { return "余额未知" }
-            return Fmt.money(reported.amountMinor, reported.currency)
-        case .opening:
-            guard let derived = ledgerDerivedMinor, let currency = ledgerDerivedCurrency else { return "余额未知" }
-            return Fmt.money(derived, currency)
-        case .none:
-            return "余额未知"
-        }
+        guard let derived = ledgerDerivedMinor else { return "余额未知" }
+        return Fmt.money(derived, currency)
     }
 }

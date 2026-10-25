@@ -2,46 +2,40 @@ import SwiftUI
 import UIKit
 import BKModel
 
-/// 「设置自动记账」：一个短信自动化覆盖所有银行卡，只需设置一次。
+/// 「设置自动记账」：每张卡一个短信自动化，「信息包含」填这张卡的尾号。
 ///
-/// iOS 不允许 App 创建、导入或查询快捷指令自动化，分享的快捷指令也不带自动化触发器，
-/// 所以这里给出最少的手动步骤，并只展示 App 能确认的状态（是否收到过真实输入）。
-/// 自动化按关键词「银行」触发；正文里的尾号由 App 匹配到具体的卡，不需要每张卡各建一个。
+/// 按尾号触发而不是按「银行」等关键词：繁体（銀行）、英文银行的短信写法各不相同，
+/// 而有资金变动的通知都会带卡号尾号。iOS 的信息自动化「信息包含」只能填一个词，所以每张卡建一个。
+/// iOS 不允许 App 创建、导入或查询快捷指令自动化，这里只给出最少的手动步骤，
+/// 并只展示 App 能确认的状态（是否收到过这张卡的真实输入）。
 struct AutoSetupGuideView: View {
-    /// 从某张卡进入时显示这张卡的验证状态
+    /// 从某张卡进入（例如刚添加完）时把这张卡排在最前面
     var account: Account?
     /// 作为面板或添加流程的最后一步出现时，右上角显示「完成」
     var onDone: (() -> Void)?
 
-    static let keyword = "银行"
-
     @Environment(LedgerStore.self) private var store
     @Environment(\.openURL) private var openURL
-    @State private var copied = false
+    @State private var copiedTail: String?
     @State private var showEmail = false
+
+    private var cards: [Account] {
+        guard let account else { return store.accounts }
+        return [account] + store.accounts.filter { $0.id != account.id }
+    }
 
     var body: some View {
         List {
             Section {
-                Text("只需设置一次").font(.title2.weight(.bold))
+                Text("每张卡设置一次").font(.title2.weight(.bold))
                     .padding(.vertical, 4)
-                HStack(spacing: 12) {
-                    Button {
-                        UIPasteboard.general.string = Self.keyword
-                        copied = true
-                    } label: {
-                        Label(copied ? "已复制" : "复制「\(Self.keyword)」", systemImage: copied ? "checkmark" : "doc.on.doc")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.glass)
-                    Button {
-                        if let url = URL(string: "shortcuts://") { openURL(url) }
-                    } label: {
-                        Label("打开快捷指令", systemImage: "arrow.up.forward.app")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.glassProminent)
+                Button {
+                    if let url = URL(string: "shortcuts://") { openURL(url) }
+                } label: {
+                    Label("打开快捷指令", systemImage: "arrow.up.forward.app")
+                        .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(.glassProminent)
                 .controlSize(.large)
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets())
@@ -55,7 +49,16 @@ struct AutoSetupGuideView: View {
                 Text("5 步完成")
             }
 
-            statusSection
+            Section {
+                if cards.isEmpty {
+                    Text("还没有银行卡").foregroundStyle(.secondary)
+                }
+                ForEach(cards) { card in
+                    cardRow(card)
+                }
+            } header: {
+                Text("点尾号复制")
+            }
 
             Section {
                 DisclosureGroup("可选：也记录银行邮件", isExpanded: $showEmail) {
@@ -78,36 +81,39 @@ struct AutoSetupGuideView: View {
         .navigationBarBackButtonHidden(onDone != nil)
     }
 
-    private var statusSection: some View {
-        var verified: (account: Account, at: Date)?
-        for a in store.accounts {
-            if let at = store.automation[a.id]?.lastSuccessAt, at > (verified?.at ?? .distantPast) { verified = (a, at) }
-        }
-        return Section {
-            if let account {
-                let last = store.automation[account.id]?.lastSuccessAt
-                StatusRow(
-                    title: "\(account.bankName) ·\(account.last4)",
-                    detail: last.map { "已验证 · 最近一次接收 \(Fmt.dateTime($0))" } ?? "待验证 · 还没有收到这张卡的自动输入",
-                    done: last != nil
-                )
+    /// 一张卡：尾号（点按复制）和是否收到过这张卡的自动输入。
+    private func cardRow(_ card: Account) -> some View {
+        let last = store.automation[card.id]?.lastSuccessAt
+        let copied = copiedTail == card.last4
+        return Button {
+            UIPasteboard.general.string = card.last4
+            copiedTail = card.last4
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: last != nil ? "checkmark.circle.fill" : "clock")
+                    .font(.title3)
+                    .foregroundStyle(last != nil ? Color.green : Color.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(card.displayTitle).font(.body.weight(.medium)).foregroundStyle(.primary)
+                    Text(last.map { "最近一次接收 \(Fmt.dateTime($0))" } ?? "还没有收到这张卡的自动输入")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Label(copied ? "已复制" : card.last4, systemImage: copied ? "checkmark" : "doc.on.doc")
+                    .font(.body.monospacedDigit().weight(.semibold))
+                    .labelStyle(.titleAndIcon)
             }
-            StatusRow(
-                title: "自动记账",
-                detail: verified.map { "已验证 · 最近一次接收 \(Fmt.dateTime($0.at))（\($0.account.bankName) ·\($0.account.last4)）" } ?? "待验证 · 还没有收到任何银行短信",
-                done: verified != nil
-            )
-        } header: {
-            Text("当前状态")
         }
+        .accessibilityLabel("\(card.displayTitle)，尾号 \(card.last4)，\(last != nil ? "已收到过自动输入" : "还没有收到自动输入")")
+        .accessibilityHint("复制尾号")
     }
 
     static let smsSteps: [LocalizedStringKey] = [
         "点上面 **打开快捷指令**，在底部选 **自动化**，点右上角 **+**，选 **信息**。",
-        "在 **信息包含** 里粘贴 **银行**，其他条件不用填。",
+        "在 **信息包含** 里粘贴这张卡的 **尾号**（在下面点尾号复制），其他条件不用填。",
         "选 **立即运行**，点 **下一步**。",
         "点 **新建空白自动化** → **添加操作**，搜索 **记录银行动账通知** 并添加。",
-        "确认动作里的 **通知内容** 显示为 **快捷指令输入**（没有就点它选上），再点 **完成**。",
+        "确认 **通知内容** 显示为 **快捷指令输入**（没有就点它选上），点 **完成**。每张卡重复一次。",
     ]
 
     static let emailSteps: [LocalizedStringKey] = [
@@ -132,25 +138,6 @@ struct StepRow: View {
             Text(text).font(.body)
         }
         .padding(.vertical, 2)
-        .accessibilityElement(children: .combine)
-    }
-}
-
-private struct StatusRow: View {
-    let title: String
-    let detail: String
-    let done: Bool
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: done ? "checkmark.circle.fill" : "clock")
-                .font(.title3)
-                .foregroundStyle(done ? Color.green : Color.orange)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.body.weight(.medium))
-                Text(detail).font(.subheadline).foregroundStyle(.secondary)
-            }
-        }
         .accessibilityElement(children: .combine)
     }
 }

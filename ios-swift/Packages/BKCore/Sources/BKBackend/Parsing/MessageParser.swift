@@ -48,7 +48,7 @@ public enum MessageParser {
     // MARK: 识别用正则
 
     private static let tailPatterns: [Rx] = [
-        Rx(#"(?:尾号|尾数|末四位|后四位|卡号后四位|账号尾号|卡尾号)\s*(?:为|是)?\s*[：:]?\s*[*xX•·]*\s*(\d{4})(?![\d年月日元.,])"#),
+        Rx(#"(?:结尾号码|尾号码|号码结尾|尾号|尾数|末四位|后四位|卡号后四位|账号尾号|卡尾号)\s*(?:为|是)?\s*[：:]?\s*[*xX•·]*\s*(\d{4})(?![\d年月日元.,])"#),
         Rx(#"(?:账户|账号|卡号?|card|acct|account|a/c|konto|karte)\s*(?:ending(?:\s+in|\s+with)?|endend auf|no\.?)?\s*[*xX•·.]{1,}\s*(\d{4})(?![\d年月日元.,])"#),
         Rx(#"(?:ending(?:\s+in|\s+with)?|ends in|endend auf)\s*[：:]?\s*[*xX•·]*\s*(\d{4})(?![\d.,])"#),
         Rx(#"(?<![\w])[*xX•]{2,}\s?(\d{4})(?![\d.,])"#),

@@ -421,8 +421,7 @@ private struct CardPlacement: ViewModifier {
 ///
 /// 有汇率时（由快捷指令导入）所有币种换算成主要币种合计；
 /// 否则只显示主要币种的金额，其他币种在明细里。
-/// 每张卡每个币种取推算余额（银行通知余额或初始余额起算）；正数计入总资产，负数（欠款）计入总负债。
-/// 信用卡通知里的「余额」含义因银行而异，只有填了初始余额的信用卡币种才计入。
+/// 每张卡每个币种取推算余额（从初始余额起算，没填初始余额的不计入）；正数计入总资产，负数（欠款）计入总负债。
 private struct OverviewCard: View {
     @Environment(LedgerStore.self) private var store
     @Environment(ExchangeRateStore.self) private var rates
@@ -560,7 +559,6 @@ private struct NetWorth {
         var byCurrency: [CurrencyCode: Totals] = [:]
         for account in accounts {
             for item in balances[account.id]?.items ?? [] {
-                if account.cardType == .credit, item.base != .opening { continue }
                 guard let amount = item.ledgerDerivedMinor else { continue }
                 var entry = byCurrency[item.currency] ?? Totals(currency: item.currency)
                 if amount >= 0 { entry.assets += amount } else { entry.liabilities += -amount }

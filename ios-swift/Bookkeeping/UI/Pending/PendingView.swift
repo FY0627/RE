@@ -105,6 +105,16 @@ private struct PendingItemCard: View {
             if item.reason == .possibleDuplicate {
                 Text("可能与已有流水重复").font(.caption2).foregroundStyle(.secondary)
             }
+            if item.reason.allowsConfirmation, item.draft != nil, candidates.isEmpty, !accounts.isEmpty {
+                // 通知里没认出尾号，或尾号对不上任何卡：选一张卡记入
+                Menu {
+                    ForEach(accounts) { account in
+                        Button("\(account.bankName) ·\(account.last4)") { Task { await confirm(account.id) } }
+                    }
+                } label: {
+                    Label("选择账户记入", systemImage: "creditcard")
+                }
+            }
             if item.reason.allowsConfirmation, item.draft != nil {
                 ForEach(candidates) { account in
                     Button {

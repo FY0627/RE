@@ -196,9 +196,15 @@ public final class LedgerBackend: Sendable {
             guard item.reason.allowsConfirmation, let draft = item.draft else { throw BackendError.confirmationNotAllowed }
             let accounts = try AccountDAO.all(db)
             guard let account = accounts.first(where: { $0.id == accountID }) else { throw BackendError.notFound }
-            let allowed = item.candidateAccountIDs.isEmpty
-                ? (draft.cardTail != nil && account.last4 == draft.cardTail)
-                : item.candidateAccountIDs.contains(accountID)
+            let allowed: Bool
+            if !item.candidateAccountIDs.isEmpty {
+                allowed = item.candidateAccountIDs.contains(accountID)
+            } else if let tail = draft.cardTail, accounts.contains(where: { !$0.archived && $0.last4 == tail }) {
+                allowed = account.last4 == tail
+            } else {
+                // 通知里没有尾号，或尾号对不上任何卡：由用户选择记入哪张卡
+                allowed = !account.archived
+            }
             guard allowed else { throw BackendError.accountNotACandidate }
             guard let meta = try IngestDAO.meta(db, id: item.ingestID) else { throw BackendError.notFound }
             let engine = IngestEngine(db: db, now: now, calendar: calendar, newID: newID)
@@ -246,60 +252,37 @@ public final class LedgerBackend: Sendable {
 
     // MARK: 余额
 
-    /// 每张卡每个币种的余额。币种顺序：账户持有的币种（主币种在前），再加上收到过银行余额的其他币种。
+    /// 每张卡每个币种的余额，币种顺序与账户一致（主币种在前）。
     public func balanceSummaries() async throws -> [String: AccountBalances] {
-        let calendar = calendar
-        return try await database.read { db in
+        try await database.read { db in
             var result: [String: AccountBalances] = [:]
             for account in try AccountDAO.all(db, includeArchived: true) {
-                var currencies = account.currencies
-                for observed in try BalanceDAO.currencies(db, accountID: account.id) where !currencies.contains(observed) {
-                    currencies.append(observed)
-                }
-                let items = try currencies.map { try Self.balanceSummary(db, account: account, currency: $0, calendar: calendar) }
+                let items = try account.currencies.map { try Self.balanceSummary(db, account: account, currency: $0) }
                 result[account.id] = AccountBalances(accountID: account.id, items: items)
             }
             return result
         }
     }
 
-    /// 推算余额：从「最新的银行通知余额」和「用户填写的初始余额」中较晚的一个出发，
-    /// 加上之后已入账的流水。两者都没有时余额未知，不用部分流水冒充。
+    /// 推算余额：从用户填写的初始余额出发，加上之后到达的已入账流水。没有初始余额时余额未知，不用部分流水冒充。
+    /// 银行通知里写的余额不使用：很多银行的通知不带余额，写法和含义也不统一。
     ///
-    /// 银行通知余额之间按通知内时间排序（银行所在地的时间）；初始余额是用户在手机上填写的时刻，
-    /// 和通知内时间不在同一个时区，所以和初始余额比较时一律用「通知到达手机的时间」。
-    static func balanceSummary(_ db: SQLiteConnection, account: Account, currency: CurrencyCode, calendar: Calendar) throws -> AccountBalanceSummary {
-        let reported = try BalanceDAO.latest(db, accountID: account.id, currency: currency)
-        let openingBalance = account.openingBalance(currency)
-        let opening = openingBalance.map { (amount: $0.amountMinor, at: $0.at) }
-
-        var total: Int64
+    /// 初始余额是用户在手机上填写的时刻；流水按「通知到达手机的时间」和它比较
+    /// （通知内时间是银行所在地的时间，和手机时区可能不同）。
+    static func balanceSummary(_ db: SQLiteConnection, account: Account, currency: CurrencyCode) throws -> AccountBalanceSummary {
+        guard let opening = account.openingBalance(currency) else {
+            return AccountBalanceSummary(accountID: account.id, currency: currency, ledgerDerivedMinor: nil, recordsAfterBase: 0)
+        }
+        var total = opening.amountMinor
         var count = 0
-        let base: AccountBalanceSummary.Base
-        if let reported, opening == nil || reported.observedAt >= opening!.at {
-            base = .bankReported
-            total = reported.amountMinor
-            let engine = IngestEngine(db: db, now: Date(), calendar: calendar, newID: { "" })
-            for record in try RecordDAO.postedAfter(db, accountID: account.id, currency: currency) where record.id != reported.recordID {
-                guard engine.orderKey(time: record.transactionTime, fallback: record.effectiveAt) > reported.orderKey else { continue }
-                total += record.direction == .inflow ? record.amountMinor : -record.amountMinor
-                count += 1
-            }
-        } else if let opening {
-            base = .opening
-            total = opening.amount
-            for record in try RecordDAO.postedAfter(db, accountID: account.id, currency: currency) {
-                guard (record.receivedAt ?? record.processedAt) > opening.at else { continue }
-                total += record.direction == .inflow ? record.amountMinor : -record.amountMinor
-                count += 1
-            }
-        } else {
-            return AccountBalanceSummary(accountID: account.id, currency: currency, bankReported: nil, ledgerDerivedMinor: nil, recordsAfterBase: 0)
+        for record in try RecordDAO.postedAfter(db, accountID: account.id, currency: currency) {
+            guard (record.receivedAt ?? record.processedAt) > opening.at else { continue }
+            total += record.direction == .inflow ? record.amountMinor : -record.amountMinor
+            count += 1
         }
         return AccountBalanceSummary(
-            accountID: account.id, currency: currency, bankReported: reported, ledgerDerivedMinor: total, recordsAfterBase: count,
-            base: base, ledgerDerivedCurrency: currency,
-            openingBalanceMinor: openingBalance?.amountMinor, openingBalanceAt: openingBalance?.at
+            accountID: account.id, currency: currency, ledgerDerivedMinor: total, recordsAfterBase: count,
+            openingBalanceMinor: opening.amountMinor, openingBalanceAt: opening.at
         )
     }
 
