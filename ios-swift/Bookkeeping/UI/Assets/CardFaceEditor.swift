@@ -42,16 +42,13 @@ struct CardFaceEditor: View {
         return Form {
             Section {
                 Color.clear
-                    .aspectRatio(AppLayout.detailAspect, contentMode: .fit)
+                    .aspectRatio(AppLayout.cardAspect, contentMode: .fit)
                     .overlay {
-                        GeometryReader { proxy in
-                            WalletCardView(
-                                account: preview,
-                                balanceText: store.balances[account.id]?.cardText ?? "余额未知",
-                                hideBalance: false,
-                                height: proxy.size.height
-                            )
-                        }
+                        WalletCardView(
+                            account: preview,
+                            balanceText: store.balances[account.id]?.cardText ?? "余额未知",
+                            hideBalance: false
+                        )
                     }
                     .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pixelWidth = min(1200, $0 * displayScale) }
                     .listRowBackground(Color.clear)
@@ -149,7 +146,7 @@ struct CardFaceEditor: View {
             // 缩小到卡片在屏幕上的像素宽度；低端机屏幕小，图片也小
             let pixelWidth = pixelWidth
             let id = try await Task.detached(priority: .userInitiated) {
-                try CardFaceImages.importImage(data, pixelWidth: pixelWidth, aspect: AppLayout.detailAspect)
+                try CardFaceImages.importImage(data, pixelWidth: pixelWidth, aspect: AppLayout.cardAspect)
             }.value
             importedIDs.append(id)
             // 第一次换成图片时文字默认改为白色，在大多数照片上更清楚

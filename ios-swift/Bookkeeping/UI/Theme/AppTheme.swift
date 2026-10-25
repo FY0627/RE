@@ -78,16 +78,17 @@ struct CardPalette: Identifiable, Hashable {
     static func named(_ id: String) -> CardPalette { all.first { $0.id == id } ?? all[2] }
 }
 
-/// 尺寸沿用 `lib/theme/app_layout.dart`：参考卡宽 295，堆叠卡高 186，详情卡高 196，露出 52。
+/// 卡片尺寸：卡包和详情用同一个尺寸，转场时只做平移、缩放等变换，不改变布局。
 enum AppLayout {
     static let cardInset: CGFloat = 16
-    static let referenceCardWidth: CGFloat = 327 - 16 * 2
-    static let stackedAspect: CGFloat = referenceCardWidth / 186
-    static let detailAspect: CGFloat = referenceCardWidth / 196
+    /// 卡片宽高比（接近实体银行卡）
+    static let cardAspect: CGFloat = 295.0 / 186.0
+    /// 卡包里每张卡露出的高度（按卡宽 295 时为 52）
+    static let peekRatio: CGFloat = 52.0 / 295.0
+    /// 详情页卡片顶端：顶部按钮行下方
     static let detailTop: CGFloat = 54
 
     static func cardWidth(_ viewport: CGFloat) -> CGFloat { max(1, viewport - cardInset * 2) }
-    static func stackedHeight(_ viewport: CGFloat) -> CGFloat { cardWidth(viewport) / stackedAspect }
-    static func detailHeight(_ viewport: CGFloat) -> CGFloat { cardWidth(viewport) / detailAspect }
-    static func peek(_ viewport: CGFloat) -> CGFloat { 52 * cardWidth(viewport) / referenceCardWidth }
+    static func cardHeight(_ viewport: CGFloat) -> CGFloat { cardWidth(viewport) / cardAspect }
+    static func peek(_ viewport: CGFloat) -> CGFloat { cardWidth(viewport) * peekRatio }
 }

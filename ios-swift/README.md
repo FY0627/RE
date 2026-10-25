@@ -48,6 +48,12 @@ printf 'FROM swift:latest\nRUN apt-get update && apt-get install -y libsqlite3-d
 docker run --rm -v "<仓库>/ios-swift/Packages/BKCore:/pkg" -w /pkg bk-swift swift test
 ```
 
+## 卡包与详情转场
+
+`UI/Assets/AssetsView.swift`。卡片在卡包和详情里尺寸相同；打开 / 关闭只改「选中的卡」一个状态，放在一个弹簧动画事务里，
+动画只插值位移、缩放、3D 旋转和透明度这些渲染变换，不改变布局、不逐帧执行 body。卡面阴影只画在一个圆角矩形上。
+其余卡片收到选中卡后面的缩放和倾斜角度是 `CardPlacement.behindScale` / `behindTilt`。
+
 ## 卡片信息与卡面
 
 - **卡号**：自动记账只用后四位匹配。完整卡号是选填的，在卡片详情 › 卡片信息里填写，只保存在本机 SQLite，默认遮住显示。

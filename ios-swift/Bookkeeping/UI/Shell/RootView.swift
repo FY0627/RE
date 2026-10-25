@@ -25,13 +25,11 @@ enum AppTab: Hashable {
     }
 }
 
-/// 资产页卡片详情的转场状态；详情展开时隐藏标签栏。
+/// 资产页当前展开的卡片；详情展开时隐藏标签栏。
 @MainActor
 @Observable
 final class DetailMotionState {
     var selectedAccountID: String?
-    var progress: Double = 0
-    var isAnimating = false
 
     var isOpen: Bool { selectedAccountID != nil }
 }

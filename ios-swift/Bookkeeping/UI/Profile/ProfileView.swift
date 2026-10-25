@@ -150,7 +150,6 @@ struct PerformanceSettingsView: View {
             Section {
                 Toggle("卡片阴影", isOn: $flags.cardShadows)
                 Toggle("卡面合成为位图（drawingGroup）", isOn: $flags.rasterizeCards)
-                Toggle("转场遮挡遮罩", isOn: $flags.flightMask)
             } header: {
                 Text("单变量开关")
             }

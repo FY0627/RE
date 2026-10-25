@@ -1,60 +1,31 @@
 import SwiftUI
 import BKModel
 
-/// 账户详情（原型 `_buildAccountDetailView`）：顶部玻璃按钮、详情卡片、待处理提示、余额、流水。
-/// 右上角菜单：卡片信息（卡号）、编辑卡面、待处理账单。自动记账的设置在「我的」里。
-/// 按钮用系统液态玻璃样式和标准尺寸，文字用系统文字样式。
+/// 账户详情的内容区：待处理提示、余额、交易记录。显示在选中卡片的下方，卡片本身和顶部按钮由资产页负责。
+/// 右上角菜单（卡片信息、编辑卡面、待处理账单）在资产页的顶部按钮里；自动记账的设置在「我的」里。
 struct AccountDetailView: View {
     let account: Account
-    let progress: Double
-    let isOpen: Bool
-    let viewport: CGSize
     let hideBalance: Bool
-    let geometry: AssetsGeometryBox
+    let pendingCount: Int
+    let openPending: () -> Void
     let close: () -> Void
 
     @Environment(LedgerStore.self) private var store
     @State private var rows: [RecordRow] = []
     @State private var hasMore = true
     @State private var total = 0
-    @State private var pendingCount = 0
     @State private var loading = false
-    @State private var showInfo = false
-    @State private var showFaceEditor = false
-    @State private var showPending = false
     @State private var showOpeningBalance = false
     @State private var selectedRecord: RecordRow?
 
     var body: some View {
-        ZStack(alignment: .top) {
-            ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 0) {
-                    WalletCardView(
-                        account: account,
-                        balanceText: store.balances[account.id]?.cardText ?? "余额未知",
-                        hideBalance: hideBalance,
-                        height: AppLayout.detailHeight(viewport.width),
-                        elevation: 1
-                    )
-                    .opacity(isOpen ? 1 : 0)
-
-                    content
-                        .modifier(ContentEntrance(progress: progress, height: viewport.height))
-                }
+        ScrollView(.vertical) {
+            content
                 .padding(.horizontal, AppLayout.cardInset)
-                .padding(.top, AppLayout.detailTop)
+                .padding(.top, 8)
                 .padding(.bottom, 48)
-            }
-            .scrollIndicators(.hidden)
-            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y + $0.contentInsets.top } action: { _, offset in
-                geometry.detailScrollOffset = offset
-            }
-
-            topBar
-                .padding(.horizontal, AppLayout.cardInset)
-                .padding(.top, 2)
         }
-        .allowsHitTesting(isOpen)
+        .scrollIndicators(.hidden)
         .simultaneousGesture(
             // 右滑返回卡包（左滑不响应，避免误触）
             DragGesture(minimumDistance: 24).onEnded { value in
@@ -62,14 +33,6 @@ struct AccountDetailView: View {
             }
         )
         .task(id: TaskKey(account: account.id, revision: store.revision)) { await reload() }
-        .sheet(isPresented: $showInfo) {
-            CardInfoView(accountID: account.id) {
-                close()
-                Task { await store.setArchived(accountID: account.id, archived: true) }
-            }
-        }
-        .sheet(isPresented: $showFaceEditor) { CardFaceEditor(accountID: account.id) }
-        .sheet(isPresented: $showPending) { PendingView(account: account) }
         .sheet(isPresented: $showOpeningBalance) { OpeningBalanceEditor(account: account) }
         .sheet(item: $selectedRecord) { row in RecordDetailSheet(recordID: row.id) }
     }
@@ -84,12 +47,6 @@ struct AccountDetailView: View {
         rows = first
         hasMore = first.count == 40
         total = await store.recordCount(accountID: account.id)
-        if store.pendingCount == 0 {
-            pendingCount = 0
-        } else {
-            let account = account
-            pendingCount = await store.pendingItems().filter { PendingView.belongs($0, to: account) }.count
-        }
     }
 
     private func loadMore() async {
@@ -101,42 +58,14 @@ struct AccountDetailView: View {
         loading = false
     }
 
-    // MARK: 顶部按钮
-
-    /// 与系统导航栏按钮同尺寸的玻璃圆形按钮：左侧返回，右侧菜单。
-    private var topBar: some View {
-        HStack {
-            Button(action: close) {
-                ToolbarIcon("chevron.left")
-            }
-            .buttonStyle(.plain)
-            .glassEffect(.regular.interactive(), in: Circle())
-            .accessibilityLabel("返回卡包")
-            .modifier(CenteredControlScale(progress: progress, circular: true, stage: DetailMotion.topButtons))
-
-            Spacer()
-
-            Menu {
-                Button("卡片信息", systemImage: "creditcard") { showInfo = true }
-                Button("编辑卡面", systemImage: "paintbrush") { showFaceEditor = true }
-                Button(pendingCount > 0 ? "待处理账单（\(pendingCount)）" : "待处理账单", systemImage: "tray") { showPending = true }
-            } label: {
-                ToolbarIcon("ellipsis")
-            }
-            .glassEffect(.regular.interactive(), in: Circle())
-            .accessibilityLabel("更多")
-            .modifier(CenteredControlScale(progress: progress, circular: true, stage: DetailMotion.topButtons))
-        }
-    }
-
     // MARK: 内容
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 0) {
             if pendingCount > 0 {
-                pendingStrip.padding(.top, 16)
+                pendingStrip.padding(.bottom, 16)
             }
-            balanceCard.padding(.top, 16)
+            balanceCard
             HStack(alignment: .firstTextBaseline) {
                 Text("交易记录").font(.title3.weight(.semibold))
                 Spacer()
@@ -163,7 +92,7 @@ struct AccountDetailView: View {
 
     /// 只有这张卡有待处理的账单时出现。
     private var pendingStrip: some View {
-        Button { showPending = true } label: {
+        Button(action: openPending) {
             HStack(spacing: 12) {
                 Image(systemName: "tray.full").font(.title3).foregroundStyle(AppTheme.debt)
                 Text("\(pendingCount) 条账单待处理").font(.headline).foregroundStyle(.primary)
@@ -233,22 +162,6 @@ struct AccountDetailView: View {
         }
         .padding(16)
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-    }
-}
-
-/// 详情内容在卡片落位后从下方进入（0.70 – 1）。
-private struct ContentEntrance: ViewModifier, Animatable {
-    var progress: Double
-    let height: CGFloat
-
-    var animatableData: Double {
-        get { progress }
-        set { progress = newValue }
-    }
-
-    func body(content: Content) -> some View {
-        let entrance = DetailMotion.contentEntrance(progress)
-        content.opacity(entrance).offset(y: (1 - entrance) * height * 0.66)
     }
 }
 

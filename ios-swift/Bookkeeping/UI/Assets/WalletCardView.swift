@@ -1,27 +1,31 @@
 import SwiftUI
 import BKModel
 
-/// 卡面（原型 `_walletCardFace`）：渐变底或自定义图片、机构圆标、名称与卡类型、余额、尾号。
-/// 文字颜色和大小可以在「编辑卡面」里自定义。
+/// 卡面：配色渐变或自定义图片、银行圆标、名称与卡类型、余额、尾号。尺寸由外部 frame 决定。
+///
+/// 渲染开销按 Apple 的建议压低：
+/// - 阴影只画在一个圆角矩形上（形状阴影），不对含文字的整张卡做阴影，避免离屏渲染；
+/// - 只有图片背景需要圆角裁剪，渐变直接填充圆角矩形，不对整张卡 clip；
+/// - 卡面不依赖动画进度，转场时外部只改变换（位移、缩放、旋转、透明度），卡面本身不重新计算。
 struct WalletCardView: View {
     let account: Account
     let balanceText: String
     let hideBalance: Bool
-    let height: CGFloat
-    /// 0 = 堆叠中，1 = 详情页；阴影随之加深
-    var elevation: CGFloat = 0
+
+    private static let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
 
     var body: some View {
         let palette = CardPalette.named(account.paletteID)
         let flags = PerfFlags.shared
         face(palette)
-            .frame(height: height)
             .modifier(CardRasterization(enabled: flags.rasterizeCards))
-            .shadow(
-                color: flags.cardShadows ? .black.opacity(0.12 + 0.10 * elevation) : .clear,
-                radius: flags.cardShadows ? (4 + 14 * elevation) / 2 : 0,
-                y: -1.5 + 9.5 * elevation
-            )
+            .background {
+                if flags.cardShadows {
+                    Self.shape
+                        .fill(Color(hex: palette.colors.last ?? 0x000000))
+                        .shadow(color: .black.opacity(0.18), radius: 6, y: 4)
+                }
+            }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(account.bankName) \(account.cardType.displayName) 尾号\(account.last4)，\(hideBalance ? "余额已隐藏" : balanceText)")
     }
@@ -31,52 +35,51 @@ struct WalletCardView: View {
         let s = style.textScale
         let text = style.textColor.map { Color(hex: $0) } ?? palette.textColor
         let subtext = style.textColor == nil ? palette.subtextColor : text.opacity(0.75)
-        return ZStack(alignment: .topLeading) {
-            background(palette, imageID: style.imageID)
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .top, spacing: 8) {
-                    HStack(spacing: 7) {
-                        Circle()
-                            .fill(text.opacity(0.15))
-                            .frame(width: 30 * s, height: 30 * s)
-                            .overlay(Text(String(account.bankName.prefix(1))).font(.system(size: 14 * s, weight: .bold)))
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text(account.name).font(.system(size: 14 * s, weight: .bold)).lineLimit(1)
-                            Text("\(account.bankName) · \(account.cardType.displayName)")
-                                .font(.system(size: 11 * s, weight: .medium))
-                                .foregroundStyle(subtext)
-                                .lineLimit(1)
-                        }
-                    }
-                    Spacer(minLength: 8)
-                    HStack(spacing: 4) {
-                        Image(systemName: "wave.3.right").font(.system(size: 13 * s)).opacity(0.8)
-                        Text(hideBalance ? "••••" : balanceText).font(.system(size: 14 * s, weight: .bold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 8) {
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(text.opacity(0.15))
+                        .frame(width: 30 * s, height: 30 * s)
+                        .overlay(Text(String(account.bankName.prefix(1))).font(.system(size: 14 * s, weight: .bold)))
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(account.name).font(.system(size: 14 * s, weight: .bold)).lineLimit(1)
+                        Text("\(account.bankName) · \(account.cardType.displayName)")
+                            .font(.system(size: 11 * s, weight: .medium))
+                            .foregroundStyle(subtext)
+                            .lineLimit(1)
                     }
                 }
-                Spacer(minLength: 0)
-                HStack(alignment: .lastTextBaseline) {
-                    Text("•••• \(account.last4)").font(.system(size: 15 * s, weight: .semibold)).tracking(1.2)
-                    Spacer()
-                    Text(account.currency.rawValue).font(.system(size: 12 * s, weight: .bold)).italic().opacity(0.8)
+                Spacer(minLength: 8)
+                HStack(spacing: 4) {
+                    Image(systemName: "wave.3.right").font(.system(size: 13 * s)).opacity(0.8)
+                    Text(hideBalance ? "••••" : balanceText).font(.system(size: 14 * s, weight: .bold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
                 }
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 14)
-            .foregroundStyle(text)
+            Spacer(minLength: 0)
+            HStack(alignment: .lastTextBaseline) {
+                Text("•••• \(account.last4)").font(.system(size: 15 * s, weight: .semibold)).tracking(1.2)
+                Spacer()
+                Text(account.currency.rawValue).font(.system(size: 12 * s, weight: .bold)).italic().opacity(0.8)
+            }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .foregroundStyle(text)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background { background(palette, imageID: style.imageID) }
     }
 
     /// 自定义图片在后台解码完成之前先显示配色渐变。
     @ViewBuilder
     private func background(_ palette: CardPalette, imageID: String?) -> some View {
         if let imageID, let image = CardFaceImages.shared.image(imageID) {
+            // Color.clear 占满卡片，图片在它上面等比填满，再按卡片圆角裁剪
             Color.clear
                 .overlay { Image(uiImage: image).resizable().scaledToFill() }
-                .clipped()
+                .clipShape(Self.shape)
         } else {
-            RoundedRectangle(cornerRadius: 20, style: .continuous).fill(palette.gradient)
+            Self.shape.fill(palette.gradient)
         }
     }
 }
