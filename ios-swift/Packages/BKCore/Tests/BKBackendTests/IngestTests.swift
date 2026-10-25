@@ -155,6 +155,22 @@ final class IngestTests: XCTestCase {
         XCTAssertEqual(Set(detail.evidence.map(\.source)), [.sms, .email])
     }
 
+    func testOneAutomationForAllSourcesDoesNotDoubleCount() async throws {
+        let backend = try makeBackend()
+        try await addAccount(backend, last4: "0427")
+        // 同一笔交易的短信和银行 App 通知交给同一个自动化，来源都是「自动」
+        _ = try await backend.ingest(IngestRequest(text: "您尾号0427的储蓄卡于2026年10月24日14:30消费人民币38.00元。【招商银行】", source: .auto))
+        let notification = try await backend.ingest(IngestRequest(text: "招商银行：尾号0427储蓄卡10月24日14:30消费38.00元", source: .auto))
+        XCTAssertEqual(notification.outcome, .mergedDuplicate, notification.summary)
+        let count = try await backend.recordCount()
+        XCTAssertEqual(count, 1)
+
+        // 没有分钟级时间：近似重复进待处理，不直接记两笔
+        _ = try await backend.ingest(IngestRequest(text: "您尾号0427账户消费人民币12.00元【招商银行】", source: .auto))
+        let weak = try await backend.ingest(IngestRequest(text: "招商银行：尾号0427账户消费12.00元", source: .auto))
+        XCTAssertEqual(weak.outcome, .pending, weak.summary)
+    }
+
     func testWeakCrossSourceMatchGoesToPending() async throws {
         let backend = try makeBackend()
         try await addAccount(backend, last4: "0427")

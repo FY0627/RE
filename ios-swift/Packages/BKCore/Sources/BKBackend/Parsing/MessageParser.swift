@@ -113,7 +113,8 @@ public enum MessageParser {
 
     public static func parse(_ context: MessageContext) -> ParsedMessage {
         var cleaned = TextNormalizer.normalize(context.text)
-        if context.source == .email { cleaned = EmailCleaner.stripQuotedHistory(cleaned) }
+        // 来源分不出时也按邮件处理引用历史：短信和 App 通知里不会出现「原始邮件」分隔线或「>」引用行
+        if context.source == .email || context.source == .auto { cleaned = EmailCleaner.stripQuotedHistory(cleaned) }
         cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
         let subject = context.subject.map(TextNormalizer.normalize) ?? ""
         let bankHint = BankDirectory.identify(sender: context.sender, text: cleaned + "\n" + subject)

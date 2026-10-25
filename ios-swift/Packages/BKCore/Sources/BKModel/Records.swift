@@ -79,13 +79,19 @@ public enum SettlementStatus: String, Sendable, Codable, CaseIterable {
 public enum SourceKind: String, Sendable, Codable, CaseIterable {
     case sms
     case email
+    /// 银行 App 的推送通知
+    case notification
     case other
+    /// 一个自动化同时接收短信、邮件、App 通知，分不出是哪一种
+    case auto
 
     public var displayName: String {
         switch self {
         case .sms: "短信"
         case .email: "邮件"
+        case .notification: "App 通知"
         case .other: "其他文本"
+        case .auto: "自动化"
         }
     }
 }

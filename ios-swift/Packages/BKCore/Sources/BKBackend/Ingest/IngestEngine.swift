@@ -274,8 +274,9 @@ struct IngestEngine {
 
         let key = forcedDedupeKey ?? dedupeKey(record)
         if let existingID = try RecordDAO.idForDedupeKey(db, key), let existing = try RecordDAO.find(db, id: existingID) {
-            // 同一笔交易的另一来源（短信 + 邮件），证据充分：合并为来源证据
-            if existing.source != meta.source || !duplicateCheck {
+            // 同一笔交易的另一来源（短信 + 邮件 + App 通知），证据充分：合并为来源证据。
+            // 来源分不出（一个自动化接收全部）时，同一来源的同一条输入已由指纹去重，这里视为另一来源
+            if existing.source != meta.source || meta.source == .auto || !duplicateCheck {
                 try RecordDAO.addEvidence(db, recordID: existingID, ingestID: meta.ingestID, source: meta.source, at: now)
                 try AccountDAO.noteSuccess(db, id: account.id, at: now, source: meta.source)
                 return .merged(existingID)
@@ -311,7 +312,7 @@ struct IngestEngine {
         return ["i", r.ingestID, String(r.partIndex)].joined(separator: "|")
     }
 
-    /// 跨来源的近似重复：同账户、同金额币种方向，来源不同、系统时间 20 分钟内，且正文时间不冲突。
+    /// 跨来源的近似重复：同账户、同金额币种方向，来源不同（或分不出来源）、系统时间 20 分钟内，且正文时间不冲突。
     func possibleDuplicate(of record: LedgerRecord) throws -> LedgerRecord? {
         let window: TimeInterval = 20 * 60
         let candidates = try RecordDAO.candidates(
@@ -320,7 +321,8 @@ struct IngestEngine {
             excludingIngest: record.ingestID
         )
         return candidates.first { other in
-            guard other.accountID == record.accountID, other.status == record.status, other.source != record.source else { return false }
+            guard other.accountID == record.accountID, other.status == record.status,
+                  other.source != record.source || record.source == .auto else { return false }
             if let a = other.transactionTime, let b = record.transactionTime, a.isMinutePrecise, b.isMinutePrecise, a.sortKey != b.sortKey { return false }
             if let a = other.balanceAfterMinor, let b = record.balanceAfterMinor, a != b { return false }
             return true

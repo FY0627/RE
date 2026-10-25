@@ -2,7 +2,8 @@ import SwiftUI
 import UIKit
 import BKModel
 
-/// 「设置自动记账」：一个不加任何条件的短信自动化，所有短信都交给 App，只需设置一次。
+/// 「设置自动记账」：一个自动化，用「信息」「电子邮件」「App 通知」触发（条件都不填），全部交给 App，只需设置一次。
+/// 来源选「自动」：App 分不出是哪一种时，同一笔交易的短信、邮件、App 通知合并成一笔或进待处理，不会重复记账。
 ///
 /// 不按关键词或尾号筛选：繁体（銀行）、英文银行写法各不相同，「信息包含」又只能填一个词。
 /// 由 App 判断是不是动账通知：认出尾号（固定写法，或正文里出现已添加的卡的尾号）才入账；
@@ -17,7 +18,6 @@ struct AutoSetupGuideView: View {
 
     @Environment(LedgerStore.self) private var store
     @Environment(\.openURL) private var openURL
-    @State private var showEmail = false
 
     private var cards: [Account] {
         guard let account else { return store.accounts }
@@ -59,13 +59,6 @@ struct AutoSetupGuideView: View {
                 }
             }
 
-            Section {
-                DisclosureGroup("可选：也记录银行邮件", isExpanded: $showEmail) {
-                    ForEach(Array(Self.emailSteps.enumerated()), id: \.offset) { index, step in
-                        StepRow(number: index + 1, text: step)
-                    }
-                }
-            }
         }
         .navigationTitle("设置自动记账")
         .navigationBarTitleDisplayMode(.inline)
@@ -97,17 +90,11 @@ struct AutoSetupGuideView: View {
     }
 
     static let smsSteps: [LocalizedStringKey] = [
-        "点上面 **打开快捷指令**，在底部选 **自动化**，点右上角 **+**，选 **信息**。",
-        "**发件人** 和 **信息包含** 都不填，所有短信都会交给 App，不是动账通知的不会保存。",
-        "选 **立即运行**，点 **下一步**。",
-        "点 **新建空白自动化** → **添加操作**，搜索 **记录银行动账通知** 并添加。",
-        "确认 **通知内容** 显示为 **快捷指令输入**（没有就点它选上），点 **完成**。",
-    ]
-
-    static let emailSteps: [LocalizedStringKey] = [
-        "**自动化** → **+** → **电子邮件**，条件都不填。",
-        "选 **立即运行** → **新建空白自动化** → 添加 **记录银行动账通知**。",
-        "**通知内容** 选 **快捷指令输入**，**来源** 改为 **邮件**，点 **完成**。",
+        "点上面 **打开快捷指令**，在底部选 **自动化**，点右上角 **+**，选 **信息**，条件都不填。",
+        "在同一个自动化里再加 **电子邮件** 和 **App 通知** 触发，条件都不填；App 通知可以只选银行 App。",
+        "选 **立即运行**，添加操作 **记录银行动账通知**。",
+        "**通知内容** 选自动化的输入（显示为 **快捷指令输入** 或 **通知**）。",
+        "**来源** 选 **自动**，点 **完成**。不是动账通知的内容不会保存。",
     ]
 }
 

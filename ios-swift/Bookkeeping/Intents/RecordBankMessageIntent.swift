@@ -30,7 +30,8 @@ struct RecordBankMessageIntent: AppIntent {
     )
     var content: String?
 
-    @Parameter(title: "来源", default: .sms)
+    /// 一个自动化同时用「信息」「电子邮件」「App 通知」触发时选「自动」
+    @Parameter(title: "来源", default: .auto)
     var source: MessageSourceOption
 
     @Parameter(title: "发件人", description: "可选。短信发件号码或邮件发件地址，用来识别银行。")
@@ -101,21 +102,27 @@ enum IntentFailure: Error, CustomLocalizedStringResourceConvertible {
 }
 
 enum MessageSourceOption: String, AppEnum {
+    case auto
     case sms
     case email
+    case notification
     case other
 
     static let typeDisplayRepresentation: TypeDisplayRepresentation = "通知来源"
     static let caseDisplayRepresentations: [MessageSourceOption: DisplayRepresentation] = [
+        .auto: "自动",
         .sms: "短信",
         .email: "邮件",
+        .notification: "App 通知",
         .other: "其他文本",
     ]
 
     var model: SourceKind {
         switch self {
+        case .auto: .auto
         case .sms: .sms
         case .email: .email
+        case .notification: .notification
         case .other: .other
         }
     }
