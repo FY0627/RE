@@ -336,7 +336,8 @@ final class IngestTests: XCTestCase {
         let rows = try await backend.records(accountID: account.id)
         XCTAssertEqual(Set(rows.map(\.record.currency)), [.usd, .hkd, .cny])
 
-        let balances = try XCTUnwrap(try await backend.balanceSummaries()[account.id])
+        let summaries = try await backend.balanceSummaries()
+        let balances = try XCTUnwrap(summaries[account.id])
         XCTAssertEqual(balances.items.map(\.currency), [.hkd, .usd, .cny])
         XCTAssertEqual(balances.item(.hkd)?.ledgerDerivedMinor, 1_000_00 - 100_00 - 20_00)
         XCTAssertEqual(balances.item(.usd)?.ledgerDerivedMinor, 200_00 - 12_50)

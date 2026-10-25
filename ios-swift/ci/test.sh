@@ -4,7 +4,21 @@
 #   2. iOS 模拟器上同一套测试（iOS 的 Foundation / SQLite 行为）
 # 用法：bash ios-swift/ci/test.sh <输出目录>
 set -euo pipefail
-trap 'echo "::error title=test.sh::test.sh line $LINENO failed: $BASH_COMMAND"' ERR
+on_error() { echo "::error title=test.sh::test.sh line $1 failed: $2"; }
+trap 'on_error $LINENO "$BASH_COMMAND"' ERR
+
+# 运行一条测试命令并把输出同时写入日志，返回命令本身的退出码。
+# 运行期间暂停 ERR 钩子：钩子里的 echo 会覆盖 PIPESTATUS，导致测试失败被当成成功（第 15–18 次构建就是这样）。
+run_logged() {
+  local log="$1"; shift
+  trap - ERR
+  set +e
+  "$@" 2>&1 | tee "$log"
+  local status=${PIPESTATUS[0]}
+  set -e
+  trap 'on_error $LINENO "$BASH_COMMAND"' ERR
+  return "$status"
+}
 
 OUT="${1:?output dir}"
 PACKAGE_DIR="ios-swift/Packages/BKCore"
@@ -17,10 +31,9 @@ if grep -rn --include='*.swift' -E '^\s*(@testable\s+)?import\s+BKDatabase' ios-
 fi
 
 echo "== swift test (macOS host)"
-set +e
-(cd "$PACKAGE_DIR" && swift test --parallel --xunit-output "$OUT/results/swift-test.xml") 2>&1 | tee "$OUT/logs/swift-test.log"
-STATUS=${PIPESTATUS[0]}
-set -e
+STATUS=0
+run_logged "$OUT/logs/swift-test.log" \
+  bash -c 'cd "$1" && swift test --parallel --xunit-output "$2"' _ "$PACKAGE_DIR" "$OUT/results/swift-test.xml" || STATUS=$?
 if [[ $STATUS -ne 0 ]]; then
   echo "::error title=SwiftTest::macOS 主机上的核心业务测试失败（退出码 ${STATUS}）"
   exit $STATUS
@@ -32,14 +45,10 @@ echo "simulator: $DEVICE_ID"
 
 echo "== xcodebuild test (iOS Simulator)"
 rm -rf "$OUT/results/BKCore-iOS-Simulator.xcresult"
-set +e
-(cd "$PACKAGE_DIR" && xcodebuild test \
-  -scheme BKCore-Package \
-  -destination "platform=iOS Simulator,id=$DEVICE_ID" \
-  -derivedDataPath "$OUT/derived-package" \
-  -resultBundlePath "$OUT/results/BKCore-iOS-Simulator.xcresult") 2>&1 | tee "$OUT/logs/simulator-test.log"
-STATUS=${PIPESTATUS[0]}
-set -e
+STATUS=0
+run_logged "$OUT/logs/simulator-test.log" \
+  bash -c 'cd "$1" && xcodebuild test -scheme BKCore-Package -destination "platform=iOS Simulator,id=$2" -derivedDataPath "$3" -resultBundlePath "$4"' \
+  _ "$PACKAGE_DIR" "$DEVICE_ID" "$OUT/derived-package" "$OUT/results/BKCore-iOS-Simulator.xcresult" || STATUS=$?
 if [[ $STATUS -ne 0 ]]; then
   echo "::error title=SimulatorTests::模拟器上的核心业务测试失败（退出码 ${STATUS}）"
   exit $STATUS
@@ -54,3 +63,8 @@ HOST_FAILS=$(cat "$OUT"/results/swift-test*.xml 2>/dev/null | grep -o '<failure'
 SIM_SUMMARY=$(grep -E "Executed [0-9]+ tests?, with [0-9]+ failures?" "$OUT/logs/simulator-test.log" | tail -n 1 | sed 's/^[[:space:]]*//')
 set -e -o pipefail
 echo "::notice title=Tests::macOS swift test: ${HOST_CASES} cases, ${HOST_FAILS} failures; iOS Simulator: ${SIM_SUMMARY:-see log}"
+# 测试命令成功却没有任何用例，说明测试没有真正运行
+if [[ "${HOST_CASES:-0}" -eq 0 ]]; then
+  echo "::error title=SwiftTest::macOS 主机上没有运行任何测试用例"
+  exit 1
+fi
