@@ -115,8 +115,15 @@ final class LedgerStore {
         return account
     }
 
-    func updateAppearance(accountID: String, paletteID: String) async {
-        try? await backend?.updateAppearance(accountID: accountID, paletteID: paletteID)
+    func updateCardFace(accountID: String, paletteID: String, face: CardFace) async throws {
+        guard let backend else { throw BackendError.notFound }
+        try await backend.updateCardFace(accountID: accountID, paletteID: paletteID, face: face)
+        await refresh()
+    }
+
+    func updateCardInfo(accountID: String, name: String, cardNumber: String?) async throws {
+        guard let backend else { throw BackendError.notFound }
+        try await backend.updateCardInfo(accountID: accountID, name: name, cardNumber: cardNumber)
         await refresh()
     }
 

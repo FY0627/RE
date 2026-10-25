@@ -1,7 +1,8 @@
 import SwiftUI
 import BKModel
 
-/// 卡面（原型 `_walletCardFace`）：渐变底、机构圆标、名称与卡类型、余额、尾号。
+/// 卡面（原型 `_walletCardFace`）：渐变底或自定义图片、机构圆标、名称与卡类型、余额、尾号。
+/// 文字颜色和大小可以在「编辑卡面」里自定义。
 struct WalletCardView: View {
     let account: Account
     let balanceText: String
@@ -26,41 +27,57 @@ struct WalletCardView: View {
     }
 
     private func face(_ palette: CardPalette) -> some View {
-        ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 20, style: .continuous).fill(palette.gradient)
+        let style = account.face
+        let s = style.textScale
+        let text = style.textColor.map { Color(hex: $0) } ?? palette.textColor
+        let subtext = style.textColor == nil ? palette.subtextColor : text.opacity(0.75)
+        return ZStack(alignment: .topLeading) {
+            background(palette, imageID: style.imageID)
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .top, spacing: 8) {
                     HStack(spacing: 7) {
                         Circle()
-                            .fill(palette.textColor.opacity(0.15))
-                            .frame(width: 30, height: 30)
-                            .overlay(Text(String(account.bankName.prefix(1))).font(.system(size: 14, weight: .bold)))
+                            .fill(text.opacity(0.15))
+                            .frame(width: 30 * s, height: 30 * s)
+                            .overlay(Text(String(account.bankName.prefix(1))).font(.system(size: 14 * s, weight: .bold)))
                         VStack(alignment: .leading, spacing: 0) {
-                            Text(account.name).font(.system(size: 14, weight: .bold)).lineLimit(1)
+                            Text(account.name).font(.system(size: 14 * s, weight: .bold)).lineLimit(1)
                             Text("\(account.bankName) · \(account.cardType.displayName)")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(palette.subtextColor)
+                                .font(.system(size: 11 * s, weight: .medium))
+                                .foregroundStyle(subtext)
                                 .lineLimit(1)
                         }
                     }
                     Spacer(minLength: 8)
                     HStack(spacing: 4) {
-                        Image(systemName: "wave.3.right").font(.system(size: 13)).opacity(0.8)
-                        Text(hideBalance ? "••••" : balanceText).font(.system(size: 14, weight: .bold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+                        Image(systemName: "wave.3.right").font(.system(size: 13 * s)).opacity(0.8)
+                        Text(hideBalance ? "••••" : balanceText).font(.system(size: 14 * s, weight: .bold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
                     }
                 }
                 Spacer(minLength: 0)
                 HStack(alignment: .lastTextBaseline) {
-                    Text("•••• \(account.last4)").font(.system(size: 15, weight: .semibold)).tracking(1.2)
+                    Text("•••• \(account.last4)").font(.system(size: 15 * s, weight: .semibold)).tracking(1.2)
                     Spacer()
-                    Text(account.currency.rawValue).font(.system(size: 12, weight: .bold)).italic().opacity(0.8)
+                    Text(account.currency.rawValue).font(.system(size: 12 * s, weight: .bold)).italic().opacity(0.8)
                 }
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 14)
-            .foregroundStyle(palette.textColor)
+            .foregroundStyle(text)
         }
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    /// 自定义图片在后台解码完成之前先显示配色渐变。
+    @ViewBuilder
+    private func background(_ palette: CardPalette, imageID: String?) -> some View {
+        if let imageID, let image = CardFaceImages.shared.image(imageID) {
+            Color.clear
+                .overlay { Image(uiImage: image).resizable().scaledToFill() }
+                .clipped()
+        } else {
+            RoundedRectangle(cornerRadius: 20, style: .continuous).fill(palette.gradient)
+        }
     }
 }
 

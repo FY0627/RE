@@ -126,6 +126,7 @@ struct AddAccountView: View {
             case .duplicateAccount: errorText = "已经添加过这张卡（同一银行、同一尾号、同一卡类型）。"
             case .invalidLast4: errorText = "后四位必须是 4 位数字。"
             case .emptyBank, .emptyName: errorText = "请选择或填写银行。"
+            case .invalidCardNumber: errorText = "卡号格式不正确。"
             }
         } catch {
             errorText = "保存失败：\(error)"

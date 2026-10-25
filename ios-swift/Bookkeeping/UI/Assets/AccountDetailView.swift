@@ -1,7 +1,8 @@
 import SwiftUI
 import BKModel
 
-/// 账户详情（原型 `_buildAccountDetailView`）：顶部玻璃按钮、详情卡片、自动记账状态、余额、流水。
+/// 账户详情（原型 `_buildAccountDetailView`）：顶部玻璃按钮、详情卡片、待处理提示、余额、流水。
+/// 右上角菜单：卡片信息（卡号）、编辑卡面、待处理账单。自动记账的设置在「我的」里。
 /// 按钮用系统液态玻璃样式和标准尺寸，文字用系统文字样式。
 struct AccountDetailView: View {
     let account: Account
@@ -10,18 +11,18 @@ struct AccountDetailView: View {
     let viewport: CGSize
     let hideBalance: Bool
     let geometry: AssetsGeometryBox
-    let openPending: () -> Void
     let close: () -> Void
 
     @Environment(LedgerStore.self) private var store
     @State private var rows: [RecordRow] = []
     @State private var hasMore = true
     @State private var total = 0
+    @State private var pendingCount = 0
     @State private var loading = false
-    @State private var showGuide = false
-    @State private var showAppearance = false
+    @State private var showInfo = false
+    @State private var showFaceEditor = false
+    @State private var showPending = false
     @State private var showOpeningBalance = false
-    @State private var confirmHide = false
     @State private var selectedRecord: RecordRow?
 
     var body: some View {
@@ -61,20 +62,16 @@ struct AccountDetailView: View {
             }
         )
         .task(id: TaskKey(account: account.id, revision: store.revision)) { await reload() }
-        .sheet(isPresented: $showGuide) {
-            NavigationStack { AutoSetupGuideView(account: account, onDone: { showGuide = false }) }
-        }
-        .sheet(isPresented: $showAppearance) { AppearancePicker(account: account) }
-        .sheet(isPresented: $showOpeningBalance) { OpeningBalanceEditor(account: account) }
-        .sheet(item: $selectedRecord) { row in RecordDetailSheet(recordID: row.id) }
-        .confirmationDialog("隐藏这张卡？", isPresented: $confirmHide, titleVisibility: .visible) {
-            Button("隐藏", role: .destructive) {
+        .sheet(isPresented: $showInfo) {
+            CardInfoView(accountID: account.id) {
                 close()
                 Task { await store.setArchived(accountID: account.id, archived: true) }
             }
-        } message: {
-            Text("已有流水会保留。")
         }
+        .sheet(isPresented: $showFaceEditor) { CardFaceEditor(accountID: account.id) }
+        .sheet(isPresented: $showPending) { PendingView(account: account) }
+        .sheet(isPresented: $showOpeningBalance) { OpeningBalanceEditor(account: account) }
+        .sheet(item: $selectedRecord) { row in RecordDetailSheet(recordID: row.id) }
     }
 
     private struct TaskKey: Hashable {
@@ -87,6 +84,12 @@ struct AccountDetailView: View {
         rows = first
         hasMore = first.count == 40
         total = await store.recordCount(accountID: account.id)
+        if store.pendingCount == 0 {
+            pendingCount = 0
+        } else {
+            let account = account
+            pendingCount = await store.pendingItems().filter { PendingView.belongs($0, to: account) }.count
+        }
     }
 
     private func loadMore() async {
@@ -100,11 +103,11 @@ struct AccountDetailView: View {
 
     // MARK: 顶部按钮
 
-    /// 与系统导航栏按钮同尺寸：44pt 圆形 / 胶囊，17pt 图标；右侧两个按钮共用一个玻璃胶囊（iOS 26 工具栏分组样式）。
+    /// 与系统导航栏按钮同尺寸的玻璃圆形按钮：左侧返回，右侧菜单。
     private var topBar: some View {
         HStack {
             Button(action: close) {
-                toolbarIcon("chevron.left")
+                ToolbarIcon("chevron.left")
             }
             .buttonStyle(.plain)
             .glassEffect(.regular.interactive(), in: Circle())
@@ -113,41 +116,27 @@ struct AccountDetailView: View {
 
             Spacer()
 
-            HStack(spacing: 0) {
-                Button { showGuide = true } label: {
-                    toolbarIcon("bolt.badge.automatic")
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("设置自动记账")
-                Menu {
-                    Button("初始余额", systemImage: "banknote") { showOpeningBalance = true }
-                    Button("卡面外观", systemImage: "paintpalette") { showAppearance = true }
-                    Button("隐藏这张卡", systemImage: "eye.slash", role: .destructive) { confirmHide = true }
-                } label: {
-                    toolbarIcon("ellipsis")
-                }
-                .accessibilityLabel("更多")
+            Menu {
+                Button("卡片信息", systemImage: "creditcard") { showInfo = true }
+                Button("编辑卡面", systemImage: "paintbrush") { showFaceEditor = true }
+                Button(pendingCount > 0 ? "待处理账单（\(pendingCount)）" : "待处理账单", systemImage: "tray") { showPending = true }
+            } label: {
+                ToolbarIcon("ellipsis")
             }
-            .glassEffect(.regular.interactive(), in: Capsule())
-            .modifier(CenteredControlScale(progress: progress, circular: false, stage: DetailMotion.topButtons))
+            .glassEffect(.regular.interactive(), in: Circle())
+            .accessibilityLabel("更多")
+            .modifier(CenteredControlScale(progress: progress, circular: true, stage: DetailMotion.topButtons))
         }
-    }
-
-    private func toolbarIcon(_ symbol: String) -> some View {
-        Image(systemName: symbol)
-            .font(.system(size: 17, weight: .medium))
-            .foregroundStyle(.primary)
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
     }
 
     // MARK: 内容
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 0) {
-            automationStrip.padding(.top, 16)
+            if pendingCount > 0 {
+                pendingStrip.padding(.top, 16)
+            }
             balanceCard.padding(.top, 16)
-            quickActions.padding(.top, 16)
             HStack(alignment: .firstTextBaseline) {
                 Text("交易记录").font(.title3.weight(.semibold))
                 Spacer()
@@ -172,28 +161,17 @@ struct AccountDetailView: View {
         }
     }
 
-    private var automationStrip: some View {
-        let status = store.automation[account.id]
-        return Button { showGuide = true } label: {
+    /// 只有这张卡有待处理的账单时出现。
+    private var pendingStrip: some View {
+        Button { showPending = true } label: {
             HStack(spacing: 12) {
-                Image(systemName: status?.lastSuccessAt == nil ? "bolt.badge.clock" : "bolt.badge.checkmark")
-                    .font(.title3)
-                    .foregroundStyle(status?.lastSuccessAt == nil ? Color.orange : Color.green)
-                    .frame(width: 44, height: 44)
-                    .background(Color.primary.opacity(0.06), in: Circle())
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("自动记账").font(.headline).foregroundStyle(.primary)
-                    if let last = status?.lastSuccessAt {
-                        Text("已验证 · \(Fmt.dateTime(last))").font(.subheadline).foregroundStyle(.secondary)
-                    } else {
-                        Text("未验证").font(.subheadline).foregroundStyle(.secondary)
-                    }
-                }
+                Image(systemName: "tray.full").font(.title3).foregroundStyle(AppTheme.debt)
+                Text("\(pendingCount) 条账单待处理").font(.headline).foregroundStyle(.primary)
                 Spacer()
                 Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
             .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .contentShape(Rectangle())
         }
@@ -255,30 +233,6 @@ struct AccountDetailView: View {
         }
         .padding(16)
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-    }
-
-
-    private var quickActions: some View {
-        HStack(spacing: 8) {
-            quickAction("自动记账", "bolt.badge.automatic") { showGuide = true }
-            quickAction(store.pendingCount > 0 ? "待处理 \(store.pendingCount)" : "待处理", "tray", action: openPending)
-            quickAction("卡面", "paintpalette") { showAppearance = true }
-            quickAction("隐藏", "eye.slash") { confirmHide = true }
-        }
-    }
-
-    private func quickAction(_ title: String, _ symbol: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 6) {
-                Image(systemName: symbol).font(.title3).frame(width: 52, height: 52)
-                    .background(Color(.secondarySystemGroupedBackground), in: Circle())
-                Text(title).font(.footnote.weight(.medium)).lineLimit(1).minimumScaleFactor(0.8)
-            }
-            .foregroundStyle(.primary)
-            .frame(maxWidth: .infinity)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 }
 
@@ -364,37 +318,6 @@ struct OpeningBalanceEditor: View {
         } catch {
             errorText = "保存失败：\(error)"
         }
-    }
-}
-
-/// 卡面外观：只改配色，不影响账户匹配。
-struct AppearancePicker: View {
-    let account: Account
-    @Environment(LedgerStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
-    @State private var selection: String = ""
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                PaletteGrid(selection: $selection).padding(16)
-            }
-            .navigationTitle("卡面外观")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消", systemImage: "xmark") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("保存", systemImage: "checkmark") {
-                        Task {
-                            await store.updateAppearance(accountID: account.id, paletteID: selection)
-                            dismiss()
-                        }
-                    }
-                }
-            }
-            .onAppear { selection = account.paletteID }
-        }
-        .presentationDetents([.medium, .large])
     }
 }
 

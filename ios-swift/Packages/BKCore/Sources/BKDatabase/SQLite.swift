@@ -34,6 +34,7 @@ public protocol SQLBindable {
 extension Int64: SQLBindable { public var sqlValue: SQLValue { .int(self) } }
 extension Int: SQLBindable { public var sqlValue: SQLValue { .int(Int64(self)) } }
 extension String: SQLBindable { public var sqlValue: SQLValue { .text(self) } }
+extension Double: SQLBindable { public var sqlValue: SQLValue { .real(self) } }
 extension Bool: SQLBindable { public var sqlValue: SQLValue { .int(self ? 1 : 0) } }
 /// 时间以 Unix 秒（Double）保存；不参与账务运算。
 extension Date: SQLBindable { public var sqlValue: SQLValue { .real(timeIntervalSince1970) } }

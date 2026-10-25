@@ -2,7 +2,9 @@ import SwiftUI
 import BKModel
 
 /// 待处理：只能「确认系统给出的候选」或「忽略」，不能借此手动编辑金额、方向、时间。
+/// 从卡片详情进入时只列出与这张卡有关的项（候选里有这张卡，或通知尾号与它相同）。
 struct PendingView: View {
+    var account: Account?
     @Environment(LedgerStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var items: [PendingItem] = []
@@ -17,10 +19,10 @@ struct PendingView: View {
                     Text(errorText).foregroundStyle(.red).font(.footnote)
                 }
                 Section {
-                    if items.isEmpty && loaded {
-                        Text("没有待处理的通知").foregroundStyle(.secondary)
+                    if shown.isEmpty && loaded {
+                        Text(account == nil ? "没有待处理的通知" : "这张卡没有待处理的账单").foregroundStyle(.secondary)
                     }
-                    ForEach(items) { item in
+                    ForEach(shown) { item in
                         PendingItemCard(item: item, accounts: store.accounts) { accountID in
                             await run { try await store.confirmPending(id: item.id, accountID: accountID) }
                         } ignore: {
@@ -28,28 +30,40 @@ struct PendingView: View {
                         }
                     }
                 } header: {
-                    Text("待处理")
+                    Text(account.map { $0.displayTitle } ?? "待处理")
                 }
-                Section {
-                    ForEach(log.filter { $0.outcome == .filtered }.prefix(30)) { entry in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(entry.classification.displayName).font(.subheadline)
-                            Text("\(entry.source.displayName) · \(Fmt.dateTime(entry.processedAt))").font(.caption).foregroundStyle(.secondary)
-                            if let raw = entry.rawText {
-                                Text(raw).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                if account == nil {
+                    Section {
+                        ForEach(log.filter { $0.outcome == .filtered }.prefix(30)) { entry in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(entry.classification.displayName).font(.subheadline)
+                                Text("\(entry.source.displayName) · \(Fmt.dateTime(entry.processedAt))").font(.caption).foregroundStyle(.secondary)
+                                if let raw = entry.rawText {
+                                    Text(raw).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                                }
                             }
                         }
+                    } header: {
+                        Text("最近已过滤（未入账）")
                     }
-                } header: {
-                    Text("最近已过滤（未入账）")
                 }
             }
-            .navigationTitle("待处理")
+            .navigationTitle(account == nil ? "待处理" : "待处理账单")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成", systemImage: "checkmark") { dismiss() } } }
             .task { await reload() }
             .refreshable { await reload() }
         }
+    }
+
+    private var shown: [PendingItem] {
+        guard let account else { return items }
+        return items.filter { Self.belongs($0, to: account) }
+    }
+
+    static func belongs(_ item: PendingItem, to account: Account) -> Bool {
+        if item.candidateAccountIDs.contains(account.id) { return true }
+        return item.candidateAccountIDs.isEmpty && item.draft?.cardTail == account.last4
     }
 
     private func reload() async {

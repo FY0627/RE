@@ -5,7 +5,7 @@
 /// - 每个迁移在一个事务里执行，失败整体回滚，版本号不变；
 /// - 每次修改表结构都要在 `DatabaseTests` 里补迁移测试。
 public enum Migrations {
-    public static let latestVersion = 2
+    public static let latestVersion = 3
 
     static let steps: [(version: Int, sql: String)] = [
         (1, """
@@ -121,6 +121,13 @@ public enum Migrations {
         (2, """
         ALTER TABLE accounts ADD COLUMN opening_balance_minor INTEGER;
         ALTER TABLE accounts ADD COLUMN opening_balance_at REAL;
+        """),
+        // 选填的完整卡号；卡面背景图（文件标识）与文字颜色、大小
+        (3, """
+        ALTER TABLE accounts ADD COLUMN card_number TEXT;
+        ALTER TABLE accounts ADD COLUMN face_image_id TEXT;
+        ALTER TABLE accounts ADD COLUMN face_text_color INTEGER;
+        ALTER TABLE accounts ADD COLUMN face_text_scale REAL NOT NULL DEFAULT 1;
         """),
     ]
 

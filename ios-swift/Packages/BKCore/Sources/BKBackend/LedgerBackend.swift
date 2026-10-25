@@ -86,8 +86,32 @@ public final class LedgerBackend: Sendable {
         }
     }
 
-    public func updateAppearance(accountID: String, paletteID: String) async throws {
-        try await database.write { try AccountDAO.updateAppearance($0, id: accountID, paletteID: paletteID) }
+    /// 卡面：配色、背景图标识、文字颜色和大小。只影响显示，不影响账户匹配。
+    public func updateCardFace(accountID: String, paletteID: String, face: CardFace) async throws {
+        var stored = face
+        stored.textScale = min(CardFace.textScaleRange.upperBound, max(CardFace.textScaleRange.lowerBound, face.textScale))
+        let face = stored
+        let updated = try await database.write { try AccountDAO.updateFace($0, id: accountID, paletteID: paletteID, face: face) }
+        if !updated { throw BackendError.notFound }
+    }
+
+    /// 卡片信息里可改的字段：账户名称（留空恢复默认名称）和选填的完整卡号（nil 或空串清除）。
+    /// 银行、尾号、卡类型、币种决定自动记账的匹配，不在这里修改。
+    public func updateCardInfo(accountID: String, name: String, cardNumber: String?) async throws {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawNumber = cardNumber?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var number: String?
+        if !rawNumber.isEmpty {
+            guard let normalized = Account.normalizedCardNumber(rawNumber) else { throw BackendError.invalidAccount(.invalidCardNumber) }
+            number = normalized
+        }
+        let cardNumber = number
+        try await database.write { db in
+            guard let account = try AccountDAO.find(db, id: accountID) else { throw BackendError.notFound }
+            if let cardNumber, !cardNumber.hasSuffix(account.last4) { throw BackendError.invalidAccount(.invalidCardNumber) }
+            let name = trimmedName.isEmpty ? "\(account.bankName)\(account.cardType.displayName)" : trimmedName
+            try AccountDAO.updateInfo(db, id: accountID, name: name, cardNumber: cardNumber)
+        }
     }
 
     /// 设置这张卡「现在」的余额（最小货币单位，账户币种）；传 nil 清除。

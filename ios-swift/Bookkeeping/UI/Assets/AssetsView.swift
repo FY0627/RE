@@ -5,13 +5,14 @@ import BKModel
 /// 只在点按卡片、关闭详情时读取一次。
 final class AssetsGeometryBox {
     var cards: [String: CGRect] = [:]
-    var overview: CGRect = .zero
+    /// 标题、净资产卡和「银行卡」标题行整体的位置
+    var header: CGRect = .zero
     var detailScrollOffset: CGFloat = 0
 }
 
 /// 资产页：卡包堆叠 → 点按卡片飞到详情 → 返回（原型 `lib/pages/assets_page.dart`）。
+/// 右上角固定一个玻璃圆形「+」添加银行卡，位置与详情页的菜单按钮相同，转场时一个缩小消失、另一个出现。
 struct AssetsView: View {
-    let openPending: () -> Void
     let openAddAccount: () -> Void
 
     @Environment(LedgerStore.self) private var store
@@ -22,7 +23,7 @@ struct AssetsView: View {
     @State private var selectedIndex: Int?
     @State private var source: CGRect = .zero
     @State private var destination: CGRect = .zero
-    @State private var overviewSource: CGRect = .zero
+    @State private var headerSource: CGRect = .zero
     @State private var detailOpen = false
     @State private var hideBalance = false
 
@@ -47,10 +48,14 @@ struct AssetsView: View {
                         viewport: size,
                         hideBalance: hideBalance,
                         geometry: geometry,
-                        openPending: openPending,
                         close: closeDetail
                     )
                 }
+
+                addButton
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .padding(.horizontal, AppLayout.cardInset)
+                    .padding(.top, 2)
             }
             .coordinateSpace(.named("assets"))
         }
@@ -77,24 +82,33 @@ struct AssetsView: View {
         let accounts = store.accounts
         let travelOffset = destination.minY - source.minY
         let exitDistance = size.height + 200
-        let overviewExit = max(overviewSource.maxY + 24, abs(source.minY - AppLayout.detailTop))
+        // 整块移出屏幕顶部，并且不慢于选中卡片向上移动的速度
+        let headerExit = max(headerSource.maxY + 60, source.minY - AppLayout.detailTop)
 
         return ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 0) {
-                OverviewCard(hideBalance: $hideBalance)
-                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("assets")) } action: { geometry.overview = $0 }
-                    .modifier(OverviewExit(progress: motion.progress, distance: overviewExit, active: selectedIndex != nil))
-                    .padding(.top, 12)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("资产")
+                        .font(.largeTitle.weight(.bold))
+                        .frame(height: 44)
+                        .padding(.horizontal, 4)
+                        .padding(.top, 2)
+                        .accessibilityAddTraits(.isHeader)
 
-                HStack(alignment: .firstTextBaseline) {
-                    Text("银行卡").font(.title3.weight(.semibold))
-                    Spacer()
-                    Text("共 \(accounts.count) 张").font(.subheadline).foregroundStyle(.secondary)
+                    OverviewCard(hideBalance: $hideBalance)
+                        .padding(.top, 8)
+
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("银行卡").font(.title3.weight(.semibold))
+                        Spacer()
+                        Text("共 \(accounts.count) 张").font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 4)
+                    .padding(.top, 24)
+                    .padding(.bottom, 10)
                 }
-                .padding(.horizontal, 4)
-                .padding(.top, 24)
-                .padding(.bottom, 10)
-                .modifier(OverviewExit(progress: motion.progress, distance: overviewExit, active: selectedIndex != nil))
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("assets")) } action: { geometry.header = $0 }
+                .modifier(HeaderExit(progress: motion.progress, distance: headerExit, active: selectedIndex != nil))
 
                 if accounts.isEmpty {
                     EmptyWalletCard(action: openAddAccount)
@@ -159,7 +173,7 @@ struct AssetsView: View {
         let account = store.accounts[index]
         let width = AppLayout.cardWidth(size.width)
         source = geometry.cards[account.id] ?? CGRect(x: AppLayout.cardInset, y: 260, width: width, height: AppLayout.stackedHeight(size.width))
-        overviewSource = geometry.overview
+        headerSource = geometry.header
         destination = CGRect(x: AppLayout.cardInset, y: AppLayout.detailTop, width: width, height: AppLayout.detailHeight(size.width))
         geometry.detailScrollOffset = 0
         detailOpen = false
@@ -254,8 +268,9 @@ private struct StackVisibility: ViewModifier, Animatable {
     }
 }
 
-/// 总览卡片随选中卡片的移动向上离场。
-private struct OverviewExit: ViewModifier, Animatable {
+/// 标题、净资产卡和「银行卡」标题行作为一个整体：随卡片一起向上移出屏幕，同时在第一阶段淡出，
+/// 不会停留在界面里再突然消失；返回时沿同一条曲线反向回来。
+private struct HeaderExit: ViewModifier, Animatable {
     var progress: Double
     let distance: CGFloat
     let active: Bool
@@ -266,7 +281,10 @@ private struct OverviewExit: ViewModifier, Animatable {
     }
 
     func body(content: Content) -> some View {
-        content.offset(y: active ? -DetailMotion.cardTravel(progress) * distance : 0)
+        let t = active ? progress : 0
+        content
+            .offset(y: -DetailMotion.cardTravel(t) * distance)
+            .opacity(1 - DetailMotion.headerFade(t))
     }
 }
 
@@ -325,7 +343,22 @@ private struct FlightCard<Card: View>: View, Animatable {
     }
 }
 
-// MARK: - 总览与空状态
+// MARK: - 「+」、总览与空状态
+
+extension AssetsView {
+    /// 固定在右上角，不随卡包滚动。打开详情时在第一阶段缩小消失，详情页的菜单按钮随后在同一位置出现。
+    fileprivate var addButton: some View {
+        Button(action: openAddAccount) {
+            ToolbarIcon("plus")
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: Circle())
+        .accessibilityLabel("添加银行卡")
+        .modifier(CenteredControlScale(progress: motion.progress, circular: true, stage: DetailMotion.listButtonsExit))
+        .allowsHitTesting(selectedIndex == nil)
+        .accessibilityHidden(selectedIndex != nil)
+    }
+}
 
 /// 净资产卡：只显示净资产、总资产、总负债，右上角是隐藏金额按钮。
 /// 每张卡取推算余额（银行通知余额或初始余额起算）；正数计入总资产，负数（欠款）计入总负债。

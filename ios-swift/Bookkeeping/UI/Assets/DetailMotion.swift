@@ -19,6 +19,10 @@ enum DetailMotion {
     static func stackExit(_ t: Double) -> Double { interval(t, 0, secondStageEnd, exitCurve) }
     /// 顶部按钮出现（0.24 – 0.70）
     static func topButtons(_ t: Double) -> Double { interval(t, firstStageEnd, secondStageEnd, easeInOutCubic) }
+    /// 资产页标题、净资产卡和「银行卡」标题行淡出（0 – 0.24）
+    static func headerFade(_ t: Double) -> Double { interval(t, 0, firstStageEnd, easeOutCubic) }
+    /// 资产页右上角「+」缩小消失（0 – 0.24），之后详情页的按钮在同一位置出现
+    static func listButtonsExit(_ t: Double) -> Double { 1 - interval(t, 0, firstStageEnd, easeInOutCubic) }
     /// 详情内容进入（0.70 – 1）
     static func contentEntrance(_ t: Double) -> Double { interval(t, secondStageEnd, 1, easeOutCubic) }
 

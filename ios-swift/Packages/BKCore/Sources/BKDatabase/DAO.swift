@@ -3,7 +3,7 @@ import BKModel
 
 /// 数据访问函数。全部接收 `SQLiteConnection`，只能在 `Database.read/write` 的闭包里调用。
 public enum AccountDAO {
-    static let columns = "id, name, bank_id, bank_name, last4, card_type, currency, palette_id, sort_order, created_at, archived, opening_balance_minor, opening_balance_at"
+    static let columns = "id, name, bank_id, bank_name, last4, card_type, currency, palette_id, sort_order, created_at, archived, opening_balance_minor, opening_balance_at, card_number, face_image_id, face_text_color, face_text_scale"
 
     static func map(_ row: SQLiteConnection.Row) -> Account {
         Account(
@@ -11,7 +11,9 @@ public enum AccountDAO {
             last4: row.string(4), cardType: CardType(rawValue: row.string(5)) ?? .other,
             currency: CurrencyCode(row.string(6)), paletteID: row.string(7), sortOrder: Int(row.int(8)),
             createdAt: row.date(9), archived: row.bool(10),
-            openingBalanceMinor: row.optionalInt(11), openingBalanceAt: row.optionalDate(12)
+            openingBalanceMinor: row.optionalInt(11), openingBalanceAt: row.optionalDate(12),
+            cardNumber: row.optionalString(13),
+            face: CardFace(imageID: row.optionalString(14), textColor: row.optionalInt(15).map { UInt32(truncatingIfNeeded: $0) }, textScale: row.double(16))
         )
     }
 
@@ -26,9 +28,9 @@ public enum AccountDAO {
 
     public static func insert(_ db: SQLiteConnection, _ a: Account) throws {
         try db.run(
-            "INSERT INTO accounts (\(columns)) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO accounts (\(columns)) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [a.id, a.name, a.bankID, a.bankName, a.last4, a.cardType.rawValue, a.currency.rawValue, a.paletteID, a.sortOrder, a.createdAt, a.archived,
-             a.openingBalanceMinor, a.openingBalanceAt]
+             a.openingBalanceMinor, a.openingBalanceAt, a.cardNumber, a.face.imageID, a.face.textColor.map { Int64($0) }, a.face.textScale]
         )
     }
 
@@ -36,8 +38,17 @@ public enum AccountDAO {
         Int(try db.scalarInt("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM accounts"))
     }
 
-    public static func updateAppearance(_ db: SQLiteConnection, id: String, paletteID: String) throws {
-        try db.run("UPDATE accounts SET palette_id = ? WHERE id = ?", [paletteID, id])
+    @discardableResult
+    public static func updateFace(_ db: SQLiteConnection, id: String, paletteID: String, face: CardFace) throws -> Bool {
+        try db.run(
+            "UPDATE accounts SET palette_id = ?, face_image_id = ?, face_text_color = ?, face_text_scale = ? WHERE id = ?",
+            [paletteID, face.imageID, face.textColor.map { Int64($0) }, face.textScale, id]
+        ) > 0
+    }
+
+    @discardableResult
+    public static func updateInfo(_ db: SQLiteConnection, id: String, name: String, cardNumber: String?) throws -> Bool {
+        try db.run("UPDATE accounts SET name = ?, card_number = ? WHERE id = ?", [name, cardNumber, id]) > 0
     }
 
     public static func setArchived(_ db: SQLiteConnection, id: String, archived: Bool) throws {

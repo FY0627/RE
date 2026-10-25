@@ -59,6 +59,35 @@ final class DatabaseTests: XCTestCase {
         XCTAssertNil(cleared.openingBalanceAt, "清除时时间一起清除")
     }
 
+    func testMigrationFromVersion2AddsCardNumberAndFace() throws {
+        let path = tempPath()
+        do {
+            let old = try SQLiteConnection(path: path)
+            try old.execute(Migrations.steps[0].sql)
+            try old.execute(Migrations.steps[1].sql)
+            try old.setUserVersion(2)
+            try old.run(
+                "INSERT INTO accounts (id, name, bank_id, bank_name, last4, card_type, currency, palette_id, sort_order, created_at, opening_balance_minor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ["a1", "测试卡", "cmb", "招商银行", "0427", "debit", "CNY", "ocean", 0, Date(timeIntervalSince1970: 1_790_000_000), 5_000]
+            )
+        }
+        let db = try Database(path: path)
+        XCTAssertEqual(try db.readSync { $0.userVersion }, Migrations.latestVersion)
+        let stored = try XCTUnwrap(try db.readSync { try AccountDAO.find($0, id: "a1") })
+        XCTAssertEqual(stored.openingBalanceMinor, 5_000)
+        XCTAssertNil(stored.cardNumber)
+        XCTAssertEqual(stored.face, .standard, "旧卡使用默认卡面")
+
+        let face = CardFace(imageID: "img-1", textColor: 0xFFEEDD, textScale: 1.2)
+        XCTAssertTrue(try db.writeSync { try AccountDAO.updateFace($0, id: "a1", paletteID: "jade", face: face) })
+        XCTAssertTrue(try db.writeSync { try AccountDAO.updateInfo($0, id: "a1", name: "工资卡", cardNumber: "6225880112340427") })
+        let updated = try XCTUnwrap(try db.readSync { try AccountDAO.find($0, id: "a1") })
+        XCTAssertEqual(updated.paletteID, "jade")
+        XCTAssertEqual(updated.face, face)
+        XCTAssertEqual(updated.name, "工资卡")
+        XCTAssertEqual(updated.cardNumber, "6225880112340427")
+    }
+
     func testLeadingZeroLast4SurvivesReopen() throws {
         let path = tempPath()
         do {

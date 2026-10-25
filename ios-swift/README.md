@@ -12,7 +12,7 @@ ios-swift/
 ├── Bookkeeping/                   App target（文件夹同步，新增 .swift 文件无需改工程）
 │   ├── App/                       入口、共享服务 AppServices、界面状态 LedgerStore
 │   ├── Intents/                   App Intent「记录银行动账通知」、AccountEntity、AppShortcuts
-│   ├── UI/                        Shell（系统 TabView + 盖在系统「+」上的上拉手势）、Home、Assets（卡包与详情转场）、Stats、Profile、Pending
+│   ├── UI/                        Shell（系统 TabView）、Home、Assets（卡包、详情转场、卡片信息、卡面编辑）、Stats、Profile、Pending
 │   ├── Diagnostics/               单变量性能开关、帧率/内存指标
 │   └── Assets.xcassets
 ├── Packages/BKCore/               纯 Swift 业务核心（无 UI 依赖）
@@ -47,6 +47,13 @@ printf 'FROM swift:latest\nRUN apt-get update && apt-get install -y libsqlite3-d
 # 运行测试（PowerShell / Git Bash 均可，路径换成你的仓库位置）
 docker run --rm -v "<仓库>/ios-swift/Packages/BKCore:/pkg" -w /pkg bk-swift swift test
 ```
+
+## 卡片信息与卡面
+
+- **卡号**：自动记账只用后四位匹配。完整卡号是选填的，在卡片详情 › 卡片信息里填写，只保存在本机 SQLite，默认遮住显示。
+- **卡面图片**：选图时用 ImageIO 一次性按卡片比例居中裁剪、缩小到卡片的屏幕像素（最大 1200px 宽）存成 JPEG，
+  放在 `Application Support/Ledger/CardFaces/`，数据库只存文件标识。显示时后台解码并缓存（`CardFaceImages`），
+  卡包滚动和详情转场只绘制已解码的位图。换图、移除或取消编辑时删除不再使用的文件。
 
 ## 安装到 iPhone
 

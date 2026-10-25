@@ -315,6 +315,41 @@ final class IngestTests: XCTestCase {
         XCTAssertEqual(summary?.recordsAfterBase, 1)
     }
 
+    func testCardInfoValidatesCardNumberAgainstLast4() async throws {
+        let backend = try makeBackend()
+        let account = try await addAccount(backend, last4: "0427")
+        try await backend.updateCardInfo(accountID: account.id, name: " 工资卡 ", cardNumber: "6225 8801 1234 0427")
+        var stored = try await backend.accounts().first
+        XCTAssertEqual(stored?.name, "工资卡")
+        XCTAssertEqual(stored?.cardNumber, "6225880112340427", "去掉空格保存")
+
+        for invalid in ["6225880112340428", "1234", "6225-8801-12a4-0427"] {
+            do {
+                try await backend.updateCardInfo(accountID: account.id, name: "工资卡", cardNumber: invalid)
+                XCTFail("accepted \(invalid)")
+            } catch {
+                XCTAssertEqual(error as? BackendError, .invalidAccount(.invalidCardNumber))
+            }
+        }
+
+        // 名称留空恢复默认名称；卡号留空清除
+        try await backend.updateCardInfo(accountID: account.id, name: "", cardNumber: "")
+        stored = try await backend.accounts().first
+        XCTAssertEqual(stored?.name, "招商银行借记卡")
+        XCTAssertNil(stored?.cardNumber)
+    }
+
+    func testCardFaceIsStoredAndTextScaleClamped() async throws {
+        let backend = try makeBackend()
+        let account = try await addAccount(backend, last4: "0427")
+        try await backend.updateCardFace(accountID: account.id, paletteID: "midnight", face: CardFace(imageID: "img", textColor: 0x112233, textScale: 5))
+        let stored = try await backend.accounts().first
+        XCTAssertEqual(stored?.paletteID, "midnight")
+        XCTAssertEqual(stored?.face.imageID, "img")
+        XCTAssertEqual(stored?.face.textColor, 0x112233)
+        XCTAssertEqual(stored?.face.textScale, CardFace.textScaleRange.upperBound)
+    }
+
     func testOpeningBalanceIsBaseUntilBankReportsBalance() async throws {
         let backend = try makeBackend()
         let account = try await backend.addAccount(AccountDraft(
