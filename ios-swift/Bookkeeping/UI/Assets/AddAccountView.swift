@@ -170,6 +170,7 @@ struct AddAccountView: View {
             case .invalidLast4: errorText = "后四位必须是 4 位数字。"
             case .emptyBank, .emptyName: errorText = "请选择或填写银行。"
             case .invalidCardNumber: errorText = "卡号格式不正确。"
+            case .invalidAccountNumber: errorText = "账号格式不正确。"
             }
         } catch {
             errorText = "保存失败：\(error)"

@@ -24,6 +24,8 @@ final class LedgerStore {
     private(set) var balances: [String: AccountBalances] = [:]
     private(set) var automation: [String: AccountAutomationStatus] = [:]
     private(set) var pendingCount = 0
+    /// 没配对到自己另一张卡、待确认对方的转账
+    private(set) var transferConfirmCount = 0
     private(set) var homeRows: [RecordRow] = []
     private(set) var homeHasMore = false
     private(set) var monthStats: MonthStats?
@@ -75,15 +77,17 @@ final class LedgerStore {
             async let balances = backend.balanceSummaries()
             async let automation = backend.automationStatus()
             async let pending = backend.pendingCount()
+            async let transfers = backend.unconfirmedTransferCount()
             async let rows = backend.records(limit: Self.pageSize)
             async let stats = backend.monthStats(year: year, month: month)
-            let (a, b, au, p, r, s) = try await (accounts, balances, automation, pending, rows, stats)
+            let (a, b, au, p, r, s, t) = try await (accounts, balances, automation, pending, rows, stats, transfers)
             self.allAccounts = a
             self.accounts = a.filter { !$0.archived }
             self.archivedAccounts = a.filter(\.archived)
             self.balances = b
             self.automation = au
             self.pendingCount = p
+            self.transferConfirmCount = t
             self.homeRows = r
             self.homeHasMore = r.count == Self.pageSize
             self.monthStats = s
@@ -128,9 +132,10 @@ final class LedgerStore {
         await refresh()
     }
 
-    func updateCardInfo(accountID: String, name: String, cardNumber: String?, extraCurrencies: [CurrencyCode]?) async throws {
+    func updateCardInfo(accountID: String, name: String, cardNumber: String?, accountNumber: String?, extraCurrencies: [CurrencyCode]?) async throws {
         guard let backend else { throw BackendError.notFound }
         try await backend.updateCardInfo(accountID: accountID, name: name, cardNumber: cardNumber, extraCurrencies: extraCurrencies)
+        try await backend.updateAccountNumber(accountID: accountID, accountNumber: accountNumber)
         await refresh()
     }
 
@@ -170,6 +175,15 @@ final class LedgerStore {
 
     func ignorePending(id: String) async throws {
         try await backend?.ignorePending(id: id)
+        await refresh()
+    }
+
+    func unconfirmedTransfers() async -> [RecordRow] {
+        (try? await backend?.unconfirmedTransfers()) ?? []
+    }
+
+    func setTransferParty(recordID: String, party: TransferParty?) async throws {
+        try await backend?.setTransferParty(recordID: recordID, party: party)
         await refresh()
     }
 

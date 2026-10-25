@@ -84,14 +84,15 @@ struct IngestEngine {
             referenceDate: request.receivedAt ?? now, calendar: calendar
         ))
         let accounts = try AccountDAO.all(db)
-        // 固定写法认不出尾号时，在正文里找已添加的卡的尾号
-        let fallbackTail = Self.knownTail(in: parsed.cleanedText, accounts: accounts)
+        // 固定写法认不出尾号时，在正文里找已添加的卡的尾号；再找卡片信息里填的账号、完整卡号
+        let fallbackTail = Self.knownTail(in: parsed.cleanedText, accounts: accounts) ?? Self.identifierTail(in: parsed.cleanedText, accounts: accounts)
 
-        // 自动化可以对所有短信 / 邮件触发。没有任何尾号、看不出是哪家银行、也没有绑定账户的，不当作动账通知
-        // （例如朋友发来「转我100元」），不进待处理
+        // 自动化可以对所有短信 / 邮件 / App 通知触发。没有任何尾号、看不出是银行发的、也没有绑定账户的，
+        // 不当作动账通知（例如朋友发来「转我100元」），不进待处理
         var classification = parsed.classification
         if [MessageClassification.transaction, .unrecognized, .marketing].contains(classification),
-           parsed.cardTails.isEmpty, fallbackTail == nil, parsed.bankHint == nil, request.boundAccountID == nil {
+           parsed.cardTails.isEmpty, fallbackTail == nil, parsed.bankHint == nil, request.boundAccountID == nil,
+           !Lexicon.bankish.test(parsed.cleanedText) {
             classification = .noFinancialContent
         }
         // 不是动账通知的不保存，也不写接收日志：普通短信、邮件不会留在 App 里
@@ -196,6 +197,44 @@ struct IngestEngine {
         // 出现多个时，像年份的（「24 Oct 2026」）不算
         if found.count > 1 { found = found.filter { !(1990...2099).contains(Int($0) ?? 0) } }
         return found.count == 1 ? found.first : nil
+    }
+
+    /// 通知里写的是账号（户口号码）或完整卡号时，和卡片信息里填写的号码比较。
+    /// 通知里的号码常被打码（`971-634XXX-888`）：两边的 X、*、• 都当作任意一位数字。
+    /// 只有一张卡对得上时返回它的尾号。
+    static func identifierTail(in text: String, accounts: [Account]) -> String? {
+        let tokens = numberTokens(in: text)
+        guard !tokens.isEmpty else { return nil }
+        let matched = accounts.filter { account in
+            guard !account.archived else { return false }
+            let ids = [account.accountNumber, account.cardNumber].compactMap { $0 }.map(Account.numberPattern)
+            return ids.contains { id in tokens.contains { maskedMatch($0, id) } }
+        }
+        return matched.count == 1 ? matched[0].last4 : nil
+    }
+
+    private static let numberToken = Rx(#"[0-9Xx*•](?:[0-9Xx*•]|-(?=[0-9Xx*•]))+"#)
+
+    /// 正文里像号码的片段（数字、打码位、短横线），整理成只有数字和 X；至少 6 位、其中至少 3 位数字
+    static func numberTokens(in text: String) -> [String] {
+        let ns = NSString(string: text)
+        return numberToken.matches(ns)
+            .map { Account.numberPattern(ns.substring(with: $0.range)) }
+            .filter { $0.count >= 6 && $0.filter(\.isNumber).count >= 3 }
+    }
+
+    /// 等长时逐位比较；通知里的号码更短且以打码位开头时（`XXXX888`）和完整号码的末尾比较
+    static func maskedMatch(_ token: String, _ id: String) -> Bool {
+        let t = Array(token), full = Array(id)
+        let aligned: ArraySlice<Character>
+        if t.count == full.count {
+            aligned = full[...]
+        } else if t.count < full.count, t.first == "X" {
+            aligned = full.suffix(t.count)
+        } else {
+            return false
+        }
+        return zip(t, aligned).allSatisfy { $0 == $1 || $0 == "X" || $1 == "X" }
     }
 
     func candidateIDs(for draft: EventDraft, request: IngestRequest, accounts: [Account]) -> [String] {

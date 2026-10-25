@@ -5,7 +5,7 @@
 /// - 每个迁移在一个事务里执行，失败整体回滚，版本号不变；
 /// - 每次修改表结构都要在 `DatabaseTests` 里补迁移测试。
 public enum Migrations {
-    public static let latestVersion = 4
+    public static let latestVersion = 5
 
     static let steps: [(version: Int, sql: String)] = [
         (1, """
@@ -143,6 +143,12 @@ public enum Migrations {
             SELECT id, currency, opening_balance_minor, COALESCE(opening_balance_at, created_at)
             FROM accounts WHERE opening_balance_minor IS NOT NULL;
         UPDATE accounts SET opening_balance_minor = NULL, opening_balance_at = NULL;
+        """),
+        // 选填的账号（户口号码，可打码）：只写账号的银行通知靠它匹配到卡；
+        // 没配对到自己另一张卡的转账，用户确认的对方（own / other，NULL 为未确认）
+        (5, """
+        ALTER TABLE accounts ADD COLUMN account_number TEXT;
+        ALTER TABLE records ADD COLUMN transfer_party TEXT;
         """),
     ]
 

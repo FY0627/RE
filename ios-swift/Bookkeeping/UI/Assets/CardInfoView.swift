@@ -13,6 +13,7 @@ struct CardInfoView: View {
     @State private var editing = false
     @State private var name = ""
     @State private var number = ""
+    @State private var accountNumber = ""
     @State private var multiCurrency = false
     @State private var extras: [CurrencyCode] = []
     @State private var revealed = false
@@ -63,6 +64,15 @@ struct CardInfoView: View {
                 } else {
                     LabeledContent("卡号", value: "尾号 \(account.last4)")
                 }
+                // 只写账号不写卡号尾号的通知（例如转账邮件）靠账号匹配；可以直接粘贴通知里打码的账号
+                if editing {
+                    TextField("账号（选填，可粘贴打码的账号）", text: $accountNumber)
+                        .font(.body.monospacedDigit())
+                        .textInputAutocapitalization(.characters)
+                        .autocorrectionDisabled()
+                } else if let value = account.accountNumber {
+                    LabeledContent("账号") { Text(value).monospacedDigit() }
+                }
             } header: {
                 Text("卡号")
             }
@@ -112,6 +122,7 @@ struct CardInfoView: View {
                     Button("编辑") {
                         name = account.name
                         number = account.cardNumber ?? ""
+                        accountNumber = account.accountNumber ?? ""
                         multiCurrency = account.isMultiCurrency
                         extras = account.extraCurrencies
                         errorText = nil
@@ -164,10 +175,12 @@ struct CardInfoView: View {
         saving = true
         defer { saving = false }
         do {
-            try await store.updateCardInfo(accountID: account.id, name: name, cardNumber: number, extraCurrencies: multiCurrency ? extras : [])
+            try await store.updateCardInfo(accountID: account.id, name: name, cardNumber: number, accountNumber: accountNumber, extraCurrencies: multiCurrency ? extras : [])
             errorText = nil
             revealed = false
             editing = false
+        } catch BackendError.invalidAccount(.invalidAccountNumber) {
+            errorText = "账号只能包含数字、X 和短横线，至少 6 位。"
         } catch BackendError.invalidAccount(.invalidCardNumber) {
             errorText = "卡号必须是 12–19 位数字，末四位是 \(account.last4)。"
         } catch {

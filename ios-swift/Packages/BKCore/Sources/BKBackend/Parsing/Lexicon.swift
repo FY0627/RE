@@ -12,6 +12,8 @@ enum Lexicon {
     static let completed = Rx(#"已还款|还款成功|成功还款|已入账|已到账|已收到|已扣款|已于|扣款成功|has been (?:credited|debited|received)|was (?:charged|debited|credited)|received your payment"#)
     static let marketing = Rx(#"退订|回T\b|回TD|回复TD|拒收请回|unsubscribe|优惠|活动|抽奖|立减|领取|特惠|福利|专享|邀请|免费|promo|offer|最高可(?:借|贷|享|领)|额度高达|申请|办理|分期|诚邀|恭喜"#)
     static let limitChange = Rx(#"(?:临时|固定|信用|可用)?额度.{0,10}(?:调整|提升|提高|恢复|降低|调低|调为|生效|到期)|credit limit (?:increase|change|adjust)"#)
+    /// 像银行发来的内容（银行名录里没有、也没有【签名】的银行也能认出来）
+    static let bankish = Rx(#"银行|\bbank(?:ing)?\b|信用卡|借记卡|储蓄卡|扣账卡|credit card|debit card|card ending"#)
     static let failed = Rx(#"失败|未成功|不成功|未能成功|被拒|拒绝交易|交易拒绝|余额不足|declined|\bfailed\b|unsuccessful|not successful|abgelehnt"#)
 
     // MARK: 金额角色（金额前面最近的标签决定这个数字是什么）
@@ -75,7 +77,7 @@ enum Lexicon {
         KindRule(#"取款|取现|\bATM\b|支取|cash withdrawal|withdrawal|withdrawn|abhebung|bargeld"#, .withdrawal, .outflow),
         KindRule(#"存款|现金存入|存入现金|cash deposit|einzahlung"#, .deposit, .inflow),
         KindRule(#"向您(?:尾号\s*[*xX•]*\d{4})?的?(?:账户|账号|卡)?(?:转账|汇款)|转入|汇入|收款|来账|转账收入|转账存入|received from|transfer from|incoming transfer|überweisung von"#, .transferIn, .inflow),
-        KindRule(#"转出|汇出|转账支出|向[^，,。；;\n]{1,20}(?:转账|汇款)|付款给|transfer(?:red)? to|sent to|outgoing transfer|überweisung an"#, .transferOut, .outflow),
+        KindRule(#"转出|汇出|转账支出|[你您]已成功转账|成功转账至|已转账至|转账至|向[^，,。；;\n]{1,20}(?:转账|汇款)|付款给|transfer(?:red)? to|your transfer is successful|sent to|outgoing transfer|überweisung an"#, .transferOut, .outflow),
         KindRule(#"转账|汇款|\btransfer\b|überweisung"#, .transferOut, nil, transferGeneric: true),
         KindRule(#"消费|刷卡|网上支付|快捷支付|网银支付|支付|购物|扣款|划扣|purchase|spent|charged|card payment|payment (?:at|to)|\bPOS\b|kartenzahlung|einkauf"#, .purchase, .outflow),
     ]

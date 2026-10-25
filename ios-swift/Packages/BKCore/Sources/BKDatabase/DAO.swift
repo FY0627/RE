@@ -3,7 +3,7 @@ import BKModel
 
 /// 数据访问函数。全部接收 `SQLiteConnection`，只能在 `Database.read/write` 的闭包里调用。
 public enum AccountDAO {
-    static let columns = "id, name, bank_id, bank_name, last4, card_type, currency, palette_id, sort_order, created_at, archived, card_number, face_image_id, face_text_color, face_text_scale, extra_currencies"
+    static let columns = "id, name, bank_id, bank_name, last4, card_type, currency, palette_id, sort_order, created_at, archived, card_number, face_image_id, face_text_color, face_text_scale, extra_currencies, account_number"
 
     static func map(_ row: SQLiteConnection.Row) -> Account {
         let currency = CurrencyCode(row.string(6))
@@ -14,6 +14,7 @@ public enum AccountDAO {
             paletteID: row.string(7), sortOrder: Int(row.int(8)),
             createdAt: row.date(9), archived: row.bool(10),
             cardNumber: row.optionalString(11),
+            accountNumber: row.optionalString(16),
             face: CardFace(imageID: row.optionalString(12), textColor: row.optionalInt(13).map { UInt32(truncatingIfNeeded: $0) }, textScale: row.double(14))
         )
     }
@@ -50,9 +51,9 @@ public enum AccountDAO {
 
     public static func insert(_ db: SQLiteConnection, _ a: Account) throws {
         try db.run(
-            "INSERT INTO accounts (\(columns)) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO accounts (\(columns)) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [a.id, a.name, a.bankID, a.bankName, a.last4, a.cardType.rawValue, a.currency.rawValue, a.paletteID, a.sortOrder, a.createdAt, a.archived,
-             a.cardNumber, a.face.imageID, a.face.textColor.map { Int64($0) }, a.face.textScale, encodeCurrencies(a.extraCurrencies)]
+             a.cardNumber, a.face.imageID, a.face.textColor.map { Int64($0) }, a.face.textScale, encodeCurrencies(a.extraCurrencies), a.accountNumber]
         )
         for opening in a.openingBalances {
             try setOpeningBalance(db, id: a.id, currency: opening.currency, amountMinor: opening.amountMinor, at: opening.at)
@@ -74,6 +75,11 @@ public enum AccountDAO {
     @discardableResult
     public static func updateInfo(_ db: SQLiteConnection, id: String, name: String, cardNumber: String?) throws -> Bool {
         try db.run("UPDATE accounts SET name = ?, card_number = ? WHERE id = ?", [name, cardNumber, id]) > 0
+    }
+
+    @discardableResult
+    public static func updateAccountNumber(_ db: SQLiteConnection, id: String, accountNumber: String?) throws -> Bool {
+        try db.run("UPDATE accounts SET account_number = ? WHERE id = ?", [accountNumber, id]) > 0
     }
 
     /// 修改多币种账户的其他币种；不再持有的币种，其初始余额一起删除（已有流水保留）。
@@ -127,7 +133,7 @@ public enum RecordDAO {
     static let columns = """
     r.id, r.account_id, r.amount_minor, r.currency, r.direction, r.kind, r.status, r.counterparty, r.txn_time, r.txn_year_inferred, \
     r.received_at, r.processed_at, r.source, r.ingest_id, r.part_index, r.bank_reference, r.balance_after_minor, r.included_fee_minor, \
-    r.note, r.transfer_group, r.related_record_id
+    r.note, r.transfer_group, r.related_record_id, r.transfer_party
     """
     static let rowColumns = columns + ", a.name, a.bank_name, a.last4, a.palette_id"
 
@@ -140,12 +146,13 @@ public enum RecordDAO {
             receivedAt: row.optionalDate(10), processedAt: row.date(11), source: SourceKind(rawValue: row.string(12)) ?? .other,
             ingestID: row.string(13), partIndex: Int(row.int(14)), bankReference: row.optionalString(15),
             balanceAfterMinor: row.optionalInt(16), includedFeeMinor: row.optionalInt(17), note: row.string(18),
-            transferGroupID: row.optionalString(19), relatedRecordID: row.optionalString(20)
+            transferGroupID: row.optionalString(19), relatedRecordID: row.optionalString(20),
+            transferParty: row.optionalString(21).flatMap(TransferParty.init(rawValue:))
         )
     }
 
     static func mapRow(_ row: SQLiteConnection.Row) -> RecordRow {
-        RecordRow(record: map(row), accountName: row.string(21), bankName: row.string(22), last4: row.string(23), paletteID: row.string(24))
+        RecordRow(record: map(row), accountName: row.string(22), bankName: row.string(23), last4: row.string(24), paletteID: row.string(25))
     }
 
     /// 插入一条记录。`dedupe_key` 冲突时返回 false（说明是重复），不抛错。
@@ -154,14 +161,14 @@ public enum RecordDAO {
             """
             INSERT OR IGNORE INTO records (id, account_id, amount_minor, currency, direction, kind, status, counterparty, txn_time, \
             txn_year_inferred, received_at, processed_at, effective_at, source, ingest_id, part_index, bank_reference, balance_after_minor, \
-            included_fee_minor, note, transfer_group, related_record_id, dedupe_key, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            included_fee_minor, note, transfer_group, related_record_id, transfer_party, dedupe_key, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 r.id, r.accountID, r.amountMinor, r.currency.rawValue, r.direction.rawValue, r.kind.rawValue, r.status.rawValue,
                 r.counterparty, r.transactionTime.map(WallClockCodec.encode), r.transactionTime?.yearInferred ?? false,
                 r.receivedAt, r.processedAt, r.effectiveAt, r.source.rawValue, r.ingestID, r.partIndex, r.bankReference,
-                r.balanceAfterMinor, r.includedFeeMinor, r.note, r.transferGroupID, r.relatedRecordID, dedupeKey, now,
+                r.balanceAfterMinor, r.includedFeeMinor, r.note, r.transferGroupID, r.relatedRecordID, r.transferParty?.rawValue, dedupeKey, now,
             ]
         )
         return changed > 0
@@ -180,6 +187,25 @@ public enum RecordDAO {
     }
 
     /// 首页：全部账户流水，按系统时间倒序，键集分页。
+    /// 没配对到自己另一张卡、也还没确认对方的转账
+    static let unconfirmedTransferFilter = "r.status = 'posted' AND r.kind IN ('transferIn', 'transferOut') AND r.transfer_group IS NULL AND r.transfer_party IS NULL"
+
+    public static func unconfirmedTransfers(_ db: SQLiteConnection, limit: Int = 100) throws -> [RecordRow] {
+        try db.query(
+            "SELECT \(rowColumns) FROM records r JOIN accounts a ON a.id = r.account_id WHERE \(unconfirmedTransferFilter) ORDER BY r.effective_at DESC, r.id DESC LIMIT ?",
+            [limit], mapRow
+        )
+    }
+
+    public static func unconfirmedTransferCount(_ db: SQLiteConnection) throws -> Int {
+        Int(try db.scalarInt("SELECT COUNT(*) FROM records r WHERE \(unconfirmedTransferFilter)"))
+    }
+
+    @discardableResult
+    public static func setTransferParty(_ db: SQLiteConnection, id: String, party: TransferParty?) throws -> Bool {
+        try db.run("UPDATE records SET transfer_party = ? WHERE id = ?", [party?.rawValue, id]) > 0
+    }
+
     public static func page(_ db: SQLiteConnection, accountID: String?, before cursor: RecordCursor?, limit: Int) throws -> [RecordRow] {
         var conditions: [String] = []
         var values: [SQLBindable] = []

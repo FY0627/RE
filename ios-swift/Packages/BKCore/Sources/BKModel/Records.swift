@@ -152,7 +152,15 @@ public struct WallClock: Hashable, Sendable, Codable, Comparable {
     public static func < (lhs: WallClock, rhs: WallClock) -> Bool { lhs.sortKey < rhs.sortKey }
 }
 
-/// 一条资金变动记录。只有备注 `note` 允许用户修改。
+/// 没有配对到自己另一张卡的转账，由用户确认对方是不是自己的账户。
+public enum TransferParty: String, Sendable, Codable, CaseIterable {
+    /// 自己在别处的账户（没有添加到 App 的卡、电子钱包等）：算内部转账，不计入收支
+    case own
+    /// 别人：转出算支出，转入算收入
+    case other
+}
+
+/// 一条资金变动记录。只有备注 `note` 和转账去向 `transferParty` 允许用户修改。
 public struct LedgerRecord: Identifiable, Hashable, Sendable, Codable {
     public var id: String
     public var accountID: String
@@ -177,13 +185,15 @@ public struct LedgerRecord: Identifiable, Hashable, Sendable, Codable {
     public var note: String
     public var transferGroupID: String?
     public var relatedRecordID: String?
+    /// 没配对到自己另一张卡的转账，用户确认的对方；nil 表示还没确认（按转给别人统计）
+    public var transferParty: TransferParty?
 
     public init(
         id: String, accountID: String, amountMinor: Int64, currency: CurrencyCode, direction: FlowDirection,
         kind: TransactionKind, status: SettlementStatus, counterparty: String?, transactionTime: WallClock?,
         receivedAt: Date?, processedAt: Date, source: SourceKind, ingestID: String, partIndex: Int,
         bankReference: String?, balanceAfterMinor: Int64?, includedFeeMinor: Int64?, note: String,
-        transferGroupID: String?, relatedRecordID: String?
+        transferGroupID: String?, relatedRecordID: String?, transferParty: TransferParty? = nil
     ) {
         self.id = id
         self.accountID = accountID
@@ -205,11 +215,17 @@ public struct LedgerRecord: Identifiable, Hashable, Sendable, Codable {
         self.note = note
         self.transferGroupID = transferGroupID
         self.relatedRecordID = relatedRecordID
+        self.transferParty = transferParty
     }
 
     /// 排序和按日分组使用的系统时间。
     public var effectiveAt: Date { receivedAt ?? processedAt }
-    public var isInternalTransfer: Bool { transferGroupID != nil }
+    /// 自己账户之间的转账：两边都是 App 里的卡并已配对，或用户确认对方是自己的账户
+    public var isInternalTransfer: Bool { transferGroupID != nil || transferParty == .own }
+    /// 转账没有配对到自己另一张卡，也还没确认对方是谁
+    public var needsTransferConfirmation: Bool {
+        status == .posted && (kind == .transferIn || kind == .transferOut) && transferGroupID == nil && transferParty == nil
+    }
     public var money: Money { Money(minorUnits: amountMinor, currency: currency) }
 }
 

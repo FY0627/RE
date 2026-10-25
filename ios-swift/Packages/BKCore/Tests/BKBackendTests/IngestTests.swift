@@ -557,6 +557,154 @@ final class IngestTests: XCTestCase {
         XCTAssertEqual(r.kind, .purchase)
     }
 
+    /// 恒生转账邮件（脱敏）：只写打码的户口号码，不写卡号尾号；中英双语；金额单独一行。
+    static let hangSengTransferEmail = """
+
+        如未能正常顯示電郵內容，請你設定電郵瀏覽程式至支援HTML格式的電郵。
+        If you cannot view this email properly, please configure your email programme so that it can support HTML formatted emails.
+
+
+        你已成功轉賬
+        Your transfer is successful
+
+
+        由 From
+        123-456XXX-789
+
+
+
+        HKD527.28
+
+
+        至 To
+        +86-1380000****
+
+
+        交易狀況
+        Transfer status
+
+        已成功轉賬至收款人
+        Successfully transferred to payee
+
+        轉賬日期
+        Transfer date
+
+        2026-10-25
+
+        收款銀行
+        Receiving bank
+
+        眾安銀行有限公司
+        ZA Bank Limited
+
+        預設銀行
+        Default bank
+
+        N
+
+        交易號碼
+        Transaction ID
+
+        HD000A0000000001
+
+        參考編號
+        Reference number
+
+        NA0000000001
+
+
+        多謝選用我們的服務
+        Thank you for using our service
+
+        如你本人並沒有發出此指示或有任何疑問，請即通知我們，我們將為你跟進。
+        If this is not you, or if you have any doubts towards this instruction, please contact us as soon as possible. We will help you out.
+
+        2822 0228
+
+        你亦可透過恒生Mobile App內的在線通訊與我們聯絡。
+        You may also contact us by the Live Chat function in Hang Seng Mobile App.
+
+        這是電腦編印的電郵，無須簽署。請勿回覆此電郵。本電郵的中英文文本如有歧義，概以英文本為準。
+
+        如你的聯絡資料有所變更，請使用保安編碼器或流動保安編碼登入桌面版恒生個人e-Banking或恒生Mobile App更新，或於恒生銀行網站下載更改客戶資料表格，填妥表格後交回我們任何一間分行或郵寄到香港郵政信箱3013號恒生銀行有限公司。
+
+        保安提示: 恒生銀行採納高度安全標準及程序以防止客戶之資料未經授權而外洩。我們不會以電郵聯絡你，而要求你核實個人資料，例如使用者名稱、戶口號碼或密碼等資料。如你收到此等要求，可聯絡我們。
+
+        ©恒生銀行有限公司2026。版權所有，不得轉載。
+        ©Hang Seng Bank Limited 2026. All rights reserved.
+
+        香港德輔道中83號
+        83 Des Voeux Road Central Hong Kong
+        """
+
+    func testHangSengTransferEmailMatchesByAccountNumber() async throws {
+        let backend = try makeBackend()
+        let account = try await addAccount(backend, bank: "x", bankName: "恒生银行", last4: "8482", currency: .hkd)
+        // 没填账号时对不上卡：进待处理，可以选卡
+        let before = try await backend.ingest(IngestRequest(text: Self.hangSengTransferEmail, source: .auto))
+        XCTAssertEqual(before.outcome, .pending, before.summary)
+        XCTAssertEqual(before.items.first?.kind, .transferOut)
+        XCTAssertEqual(before.items.first?.amountText, "527.28")
+
+        // 卡片信息里粘贴打码的账号后，同类邮件直接记到这张卡
+        try await backend.updateAccountNumber(accountID: account.id, accountNumber: "123-456xxx-789")
+        let stored = try await backend.accounts().first { $0.id == account.id }
+        XCTAssertEqual(stored?.accountNumber, "123-456XXX-789")
+        let text = Self.hangSengTransferEmail.replacingOccurrences(of: "HKD527.28", with: "HKD100.00").replacingOccurrences(of: "HD000A0000000001", with: "HD000A0000000002")
+        let after = try await backend.ingest(IngestRequest(text: text, source: .auto))
+        XCTAssertEqual(after.outcome, .recorded, after.summary)
+        let rows = try await backend.records(accountID: account.id)
+        let r = try XCTUnwrap(rows.first?.record)
+        XCTAssertEqual(r.amountMinor, 100_00)
+        XCTAssertEqual(r.currency, .hkd)
+        XCTAssertEqual(r.direction, .outflow)
+        XCTAssertEqual(r.kind, .transferOut)
+        XCTAssertTrue(r.needsTransferConfirmation, "没配对到自己另一张卡：问是不是转给自己的账户")
+
+        do {
+            try await backend.updateAccountNumber(accountID: account.id, accountNumber: "abc")
+            XCTFail("账号只能是数字、X 和短横线")
+        } catch BackendError.invalidAccount(.invalidAccountNumber) {}
+    }
+
+    func testMaskedNumbersMatchAccountNumberOrCardNumber() {
+        let account = Account(
+            id: "a", name: "", bankID: nil, bankName: "恒生银行", last4: "8482", cardType: .debit, currency: .hkd,
+            paletteID: "ocean", sortOrder: 0, createdAt: now, cardNumber: "4000123412348482", accountNumber: "971-634123-888"
+        )
+        XCTAssertEqual(IngestEngine.identifierTail(in: "由 From 971-634XXX-888 转账", accounts: [account]), "8482")
+        XCTAssertEqual(IngestEngine.identifierTail(in: "a/c ******888 debited", accounts: [account]), "8482", "只露出末几位时和号码末尾比较")
+        XCTAssertEqual(IngestEngine.identifierTail(in: "card 4000-12XX-XXXX-8482", accounts: [account]), "8482")
+        XCTAssertNil(IngestEngine.identifierTail(in: "由 From 971-634XXX-889 转账", accounts: [account]))
+        XCTAssertNil(IngestEngine.identifierTail(in: "电话 2822 0228", accounts: [account]))
+        XCTAssertEqual(Account.normalizedAccountNumber(" 971-634*** -888 "), "971-634XXX-888")
+        XCTAssertNil(Account.normalizedAccountNumber("XXX-XXX"), "至少 3 位数字")
+    }
+
+    func testTransferToUntrackedAccountCanBeMarkedOwn() async throws {
+        let backend = try makeBackend()
+        let account = try await addAccount(backend, last4: "0427")
+        _ = try await backend.ingest(IngestRequest(text: "您尾号0427账户10月24日14:30向张三转账500.00元【招商银行】", source: .sms))
+        var unconfirmed = try await backend.unconfirmedTransfers()
+        XCTAssertEqual(unconfirmed.count, 1)
+        var stats = try await backend.monthStats(year: 2026, month: 10)
+        XCTAssertEqual(stats.currencies.first?.expenseMinor, 500_00, "确认之前按转给别人统计")
+
+        try await backend.setTransferParty(recordID: unconfirmed[0].id, party: .own)
+        stats = try await backend.monthStats(year: 2026, month: 10)
+        XCTAssertEqual(stats.currencies.first?.expenseMinor, 0, "转给自己的账户不算支出")
+        XCTAssertEqual(stats.currencies.first?.internalTransferMinor, 500_00)
+        unconfirmed = try await backend.unconfirmedTransfers()
+        XCTAssertTrue(unconfirmed.isEmpty)
+        let count = try await backend.unconfirmedTransferCount()
+        XCTAssertEqual(count, 0)
+
+        let rows = try await backend.records(accountID: account.id)
+        try await backend.setTransferParty(recordID: try XCTUnwrap(rows.first?.id), party: .other)
+        stats = try await backend.monthStats(year: 2026, month: 10)
+        XCTAssertEqual(stats.currencies.first?.expenseMinor, 500_00)
+    }
+
     func testKnownCardTailIsFoundWithoutFixedWording() async throws {
         let backend = try makeBackend()
         let account = try await addAccount(backend, bank: "x", bankName: "Example Bank", last4: "5521", currency: .usd)

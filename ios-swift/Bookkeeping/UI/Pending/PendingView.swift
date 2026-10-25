@@ -8,6 +8,7 @@ struct PendingView: View {
     @Environment(LedgerStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var items: [PendingItem] = []
+    @State private var transfers: [RecordRow] = []
     @State private var log: [IngestLogEntry] = []
     @State private var loaded = false
     @State private var errorText: String?
@@ -17,6 +18,17 @@ struct PendingView: View {
             List {
                 if let errorText {
                     Text(errorText).foregroundStyle(.red).font(.footnote)
+                }
+                if !shownTransfers.isEmpty {
+                    Section {
+                        ForEach(shownTransfers) { row in
+                            TransferConfirmCard(row: row) { party in
+                                await run { try await store.setTransferParty(recordID: row.id, party: party) }
+                            }
+                        }
+                    } header: {
+                        Text("转账待确认")
+                    }
                 }
                 Section {
                     if shown.isEmpty && loaded {
@@ -56,6 +68,11 @@ struct PendingView: View {
         }
     }
 
+    private var shownTransfers: [RecordRow] {
+        guard let account else { return transfers }
+        return transfers.filter { $0.record.accountID == account.id }
+    }
+
     private var shown: [PendingItem] {
         guard let account else { return items }
         return items.filter { Self.belongs($0, to: account) }
@@ -68,6 +85,7 @@ struct PendingView: View {
 
     private func reload() async {
         items = await store.pendingItems()
+        transfers = await store.unconfirmedTransfers()
         log = await store.ingestLog()
         loaded = true
     }
@@ -80,6 +98,39 @@ struct PendingView: View {
             errorText = "操作失败：\(error)"
         }
         await reload()
+    }
+}
+
+/// 没配对到自己另一张卡的转账：问对方是不是自己的账户。已经照常入账，这里只决定算不算收支。
+private struct TransferConfirmCard: View {
+    let row: RecordRow
+    let choose: (TransferParty) async -> Void
+
+    var body: some View {
+        let r = row.record
+        let outflow = r.direction == .outflow
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("\(row.bankName) ·\(row.last4)").font(.subheadline.weight(.semibold))
+                Spacer()
+                Text(Fmt.dateTime(r.effectiveAt)).font(.caption).foregroundStyle(.secondary)
+            }
+            Text([r.kind.displayName, Fmt.money(r.amountMinor, r.currency), r.counterparty].compactMap { $0 }.joined(separator: " · "))
+                .font(.footnote)
+            Button {
+                Task { await choose(.own) }
+            } label: {
+                Label(outflow ? "转给自己的账户" : "来自自己的账户", systemImage: "arrow.left.arrow.right.circle")
+            }
+            .buttonStyle(.borderless)
+            Button {
+                Task { await choose(.other) }
+            } label: {
+                Label(outflow ? "转给别人（算支出）" : "来自别人（算收入）", systemImage: "person.circle")
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(.vertical, 4)
     }
 }
 

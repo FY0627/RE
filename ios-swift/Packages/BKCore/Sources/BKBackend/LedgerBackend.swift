@@ -123,6 +123,19 @@ public final class LedgerBackend: Sendable {
         }
     }
 
+    /// 设置或清除这张卡的账号（户口号码，可以是打码的形式）。传 nil 或空字符串清除。
+    public func updateAccountNumber(accountID: String, accountNumber: String?) async throws {
+        let raw = accountNumber?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var normalized: String?
+        if !raw.isEmpty {
+            guard let value = Account.normalizedAccountNumber(raw) else { throw BackendError.invalidAccount(.invalidAccountNumber) }
+            normalized = value
+        }
+        let value = normalized
+        let updated = try await database.write { try AccountDAO.updateAccountNumber($0, id: accountID, accountNumber: value) }
+        if !updated { throw BackendError.notFound }
+    }
+
     /// 设置这张卡某个币种「现在」的余额（最小货币单位）；传 nil 清除。不指定币种时为主币种。
     /// 之后到达的同币种流水会加到这个数上；更早的流水和银行通知余额不受影响。
     public func setOpeningBalance(accountID: String, currency: CurrencyCode? = nil, amountMinor: Int64?) async throws {
@@ -183,6 +196,21 @@ public final class LedgerBackend: Sendable {
 
     public func pendingCount() async throws -> Int {
         try await database.read { try PendingDAO.openCount($0) }
+    }
+
+    /// 没配对到自己另一张卡、也还没确认对方是谁的转账。已经照常入账（按转给别人统计），确认后改变统计方式。
+    public func unconfirmedTransfers() async throws -> [RecordRow] {
+        try await database.read { try RecordDAO.unconfirmedTransfers($0) }
+    }
+
+    public func unconfirmedTransferCount() async throws -> Int {
+        try await database.read { try RecordDAO.unconfirmedTransferCount($0) }
+    }
+
+    /// 确认转账的对方：自己的账户（内部转账，不计入收支）或别人。传 nil 恢复为未确认。
+    public func setTransferParty(recordID: String, party: TransferParty?) async throws {
+        let updated = try await database.write { try RecordDAO.setTransferParty($0, id: recordID, party: party) }
+        if !updated { throw BackendError.notFound }
     }
 
     /// 确认系统给出的候选。不能借此修改金额、方向、时间等字段。

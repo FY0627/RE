@@ -140,6 +140,18 @@ struct RecordDetailView: View {
                 if let ref = r.bankReference { LabeledContent("交易标识", value: ref) }
                 if let balance = r.balanceAfterMinor { LabeledContent("通知中的余额", value: Fmt.money(balance, r.currency)) }
             }
+            if (r.kind == .transferIn || r.kind == .transferOut), r.transferGroupID == nil {
+                Section("转账对方") {
+                    Picker(r.direction == .outflow ? "转给" : "来自", selection: Binding(
+                        get: { r.transferParty },
+                        set: { party in Task { await setTransferParty(party) } }
+                    )) {
+                        Text("未确认").tag(TransferParty?.none)
+                        Text("自己的账户").tag(TransferParty?.some(.own))
+                        Text("别人").tag(TransferParty?.some(.other))
+                    }
+                }
+            }
             if let peer = detail.transferPeer {
                 Section("内部转账") {
                     LabeledContent("对方账户", value: "\(peer.bankName) ·\(peer.last4)")
@@ -171,6 +183,16 @@ struct RecordDetailView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func setTransferParty(_ party: TransferParty?) async {
+        do {
+            try await store.setTransferParty(recordID: recordID, party: party)
+            detail = await store.detail(recordID: recordID)
+            saveError = nil
+        } catch {
+            saveError = "保存失败：\(error.localizedDescription)"
         }
     }
 

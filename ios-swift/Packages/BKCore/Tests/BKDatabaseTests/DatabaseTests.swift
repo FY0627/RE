@@ -121,6 +121,25 @@ final class DatabaseTests: XCTestCase {
         XCTAssertEqual(reloaded.openingBalanceMinor, -7_000, "主币种的初始余额")
     }
 
+    func testMigrationFromVersion4AddsAccountNumberAndTransferParty() throws {
+        let path = tempPath()
+        do {
+            let old = try SQLiteConnection(path: path)
+            for step in Migrations.steps where step.version <= 4 { try old.execute(step.sql) }
+            try old.setUserVersion(4)
+            try old.run(
+                "INSERT INTO accounts (id, name, bank_id, bank_name, last4, card_type, currency, palette_id, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ["a1", "测试卡", "x", "恒生银行", "8482", "debit", "HKD", "ocean", 0, Date(timeIntervalSince1970: 1_790_000_000)]
+            )
+        }
+        let db = try Database(path: path)
+        XCTAssertEqual(try db.readSync { $0.userVersion }, Migrations.latestVersion)
+        XCTAssertNil(try db.readSync { try AccountDAO.find($0, id: "a1") }?.accountNumber)
+        XCTAssertTrue(try db.writeSync { try AccountDAO.updateAccountNumber($0, id: "a1", accountNumber: "971-634XXX-888") })
+        XCTAssertEqual(try db.readSync { try AccountDAO.find($0, id: "a1") }?.accountNumber, "971-634XXX-888")
+        XCTAssertEqual(try db.readSync { try RecordDAO.unconfirmedTransferCount($0) }, 0)
+    }
+
     func testLeadingZeroLast4SurvivesReopen() throws {
         let path = tempPath()
         do {

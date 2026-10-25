@@ -15,7 +15,7 @@ struct HomeView: View {
                 } header: {
                     Text(Self.monthTitle)
                 }
-                if store.pendingCount > 0 {
+                if store.pendingCount + store.transferConfirmCount > 0 {
                     Section { pendingBanner }
                 }
                 if store.homeRows.isEmpty {
@@ -84,12 +84,19 @@ struct HomeView: View {
         }
     }
 
+    private var pendingTitle: String {
+        var parts: [String] = []
+        if store.pendingCount > 0 { parts.append("\(store.pendingCount) 条通知待处理") }
+        if store.transferConfirmCount > 0 { parts.append("\(store.transferConfirmCount) 笔转账待确认") }
+        return parts.joined(separator: "，")
+    }
+
     private var pendingBanner: some View {
         Button(action: openPending) {
             HStack(spacing: 12) {
                 Image(systemName: "tray.full").font(.title3).foregroundStyle(AppTheme.debt)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(store.pendingCount) 条通知待处理").font(.headline).foregroundStyle(.primary)
+                    Text(pendingTitle).font(.headline).foregroundStyle(.primary)
                 }
                 Spacer()
                 Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)

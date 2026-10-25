@@ -74,6 +74,9 @@ public struct Account: Identifiable, Hashable, Sendable, Codable {
     public var openingBalances: [OpeningBalance]
     /// 选填的完整卡号（纯数字），末四位必须与 `last4` 一致。
     public var cardNumber: String?
+    /// 选填的账号（户口号码），可以是打码的形式，例如 `971-634XXX-888`。
+    /// 有的银行通知（尤其是转账邮件）只写账号不写卡号尾号，靠它匹配到这张卡。
+    public var accountNumber: String?
     public var face: CardFace
 
     public init(
@@ -91,6 +94,7 @@ public struct Account: Identifiable, Hashable, Sendable, Codable {
         archived: Bool = false,
         openingBalances: [OpeningBalance] = [],
         cardNumber: String? = nil,
+        accountNumber: String? = nil,
         face: CardFace = .standard
     ) {
         self.id = id
@@ -107,6 +111,7 @@ public struct Account: Identifiable, Hashable, Sendable, Codable {
         self.archived = archived
         self.openingBalances = openingBalances
         self.cardNumber = cardNumber
+        self.accountNumber = accountNumber
         self.face = face
     }
 
@@ -139,6 +144,33 @@ public struct Account: Identifiable, Hashable, Sendable, Codable {
         let digits = String(input.filter { $0 != " " && $0 != "-" })
         guard (12...19).contains(digits.count), digits.unicodeScalars.allSatisfy({ $0.value >= 48 && $0.value <= 57 }) else { return nil }
         return digits
+    }
+
+    /// 整理用户填写的账号：去掉空格，`x`、`*`、`•` 统一成 `X`（打码位），保留短横线方便阅读。
+    /// 去掉短横线后必须是 6–30 位数字或 X，且至少有 3 位数字；否则返回 nil。
+    public static func normalizedAccountNumber(_ input: String) -> String? {
+        var output = ""
+        for char in input.uppercased() where char != " " {
+            switch char {
+            case "0"..."9", "X", "-": output.append(char)
+            case "*", "•": output.append("X")
+            default: return nil
+            }
+        }
+        let pattern = numberPattern(output)
+        guard (6...30).contains(pattern.count), pattern.filter(\.isNumber).count >= 3 else { return nil }
+        return output.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    }
+
+    /// 号码只留数字和打码位 X，用于比较：`971-634xxx-888` → `971634XXX888`
+    public static func numberPattern(_ input: String) -> String {
+        String(input.uppercased().compactMap { char -> Character? in
+            switch char {
+            case "0"..."9", "X": char
+            case "*", "•": "X"
+            default: nil
+            }
+        })
     }
 }
 
@@ -182,4 +214,6 @@ public enum AccountValidationError: Error, Equatable, Sendable {
     case duplicateAccount
     /// 完整卡号不是 12–19 位数字，或末四位与尾号不一致
     case invalidCardNumber
+    /// 账号不是 6–30 位数字或打码位
+    case invalidAccountNumber
 }
