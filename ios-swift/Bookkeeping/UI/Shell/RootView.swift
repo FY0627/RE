@@ -33,7 +33,7 @@ final class DetailMotionState {
 
     var isOpen: Bool { selectedAccountID != nil }
 
-    /// 打开 / 关闭详情的动画；资产页的卡片、返回按钮和标签栏都用它，节奏一致
+    /// 打开 / 关闭详情的动画；资产页的卡片、返回按钮和标签栏的显隐都在这个动画里，节奏一致
     static func transition(reduceMotion: Bool) -> Animation {
         reduceMotion ? .easeInOut(duration: 0.25) : .spring(response: 0.5, dampingFraction: 0.86)
     }
@@ -53,16 +53,13 @@ enum ActiveSheet: Identifiable {
 
 /// 系统原生 `TabView`：iOS 26 起标签栏自动使用液态玻璃，尺寸、字号、动效和无障碍都由系统提供。
 /// 添加银行卡的「+」在资产页右上角。
+/// 切换标签按 iOS 的默认做法：每个页面保留自己的状态（滚动位置、打开的详情）。
+/// 资产页打开卡片详情时，用系统的方式隐藏标签栏（随打开 / 关闭的动画滑出 / 滑入）。
 struct RootView: View {
     @Environment(LedgerStore.self) private var store
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var tab: AppTab = .home
     @State private var detail = DetailMotionState()
     @State private var sheet: ActiveSheet?
-    /// 离开「我的」时 +1，让它下次进入时重建：滚动位置回到最上方，二级页面也关闭
-    @State private var profileVisit = 0
-    /// 找不到系统标签栏、无法做淡出缩放时，退回系统的隐藏方式
-    @State private var systemTabBarHide = false
 
     var body: some View {
         TabView(selection: $tab) {
@@ -71,26 +68,16 @@ struct RootView: View {
             }
             Tab(AppTab.assets.title, systemImage: AppTab.assets.symbol, value: AppTab.assets) {
                 AssetsView(openAddAccount: { sheet = .addAccount })
-                    .toolbarVisibility(systemTabBarHide && detail.isOpen ? .hidden : .visible, for: .tabBar)
+                    .toolbarVisibility(detail.isOpen ? .hidden : .visible, for: .tabBar)
             }
             Tab(AppTab.stats.title, systemImage: AppTab.stats.symbol, value: AppTab.stats) {
                 StatsView()
             }
             Tab(AppTab.profile.title, systemImage: AppTab.profile.symbol, value: AppTab.profile) {
                 ProfileView()
-                    .id(profileVisit)
             }
         }
         .tabBarMinimizeBehavior(.never)
-        .onChange(of: tab) { old, _ in
-            if old == .profile { profileVisit += 1 }
-        }
-        .onChange(of: detail.isOpen) { _, open in
-            // 标签栏和返回按钮一样淡出并缩小
-            if !TabBarFader.setVisible(!open, animation: DetailMotionState.transition(reduceMotion: reduceMotion)) {
-                systemTabBarHide = true
-            }
-        }
         .sheet(item: $sheet) { sheet in
             switch sheet {
             case .addAccount:
