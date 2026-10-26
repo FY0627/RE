@@ -185,9 +185,10 @@ public enum PendingReason: String, Sendable, Codable, CaseIterable {
     }
 
     /// 是否允许用户从系统给出的候选中确认入账。
+    /// 金额有歧义时，同一条通知里认出的每个数字各是一个候选，用户确认其中一个，其余的自动忽略。
     public var allowsConfirmation: Bool {
         switch self {
-        case .ambiguousAccount, .missingCardTail, .possibleDuplicate, .noMatchingAccount: true
+        case .ambiguousAccount, .missingCardTail, .possibleDuplicate, .noMatchingAccount, .ambiguousAmount: true
         default: false
         }
     }

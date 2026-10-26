@@ -10,6 +10,8 @@ public enum BackendError: Error, Equatable, Sendable {
     /// 选择的账户不在系统给出的候选里
     case accountNotACandidate
     case alreadyResolved
+    /// 模板里没有圈出金额
+    case invalidTemplate
 }
 
 /// App 界面与 App Intent 共用的业务入口。
@@ -243,6 +245,10 @@ public final class LedgerBackend: Sendable {
             )
             if case .pending = outcome { throw BackendError.confirmationNotAllowed }
             _ = try PendingDAO.resolve(db, id: id, status: .confirmed, at: now)
+            if item.reason == .ambiguousAmount {
+                // 用户选定了这个金额：同一条通知里的其他候选金额不再需要处理
+                try PendingDAO.ignoreOtherAmounts(db, ingestID: item.ingestID, keepingPart: draft.partIndex, at: now)
+            }
         }
     }
 
@@ -256,6 +262,29 @@ public final class LedgerBackend: Sendable {
                 try RecordDAO.addEvidence(db, recordID: original, ingestID: item.ingestID, source: item.source, at: now)
             }
         }
+    }
+
+    // MARK: 识别模板
+
+    public func templates() async throws -> [MessageTemplate] {
+        try await database.read { try TemplateDAO.all($0) }
+    }
+
+    /// 保存用户在本机做的模板，并用它重新识别还没处理的待处理项。返回重新识别的通知条数。
+    public func saveTemplate(_ template: MessageTemplate) async throws -> Int {
+        guard template.pieces.contains(.amount) else { throw BackendError.invalidTemplate }
+        let now = clock()
+        let calendar = calendar
+        let newID = newID
+        return try await database.write { db in
+            try TemplateDAO.insert(db, template)
+            return try IngestEngine(db: db, now: now, calendar: calendar, newID: newID).reapply(template)
+        }
+    }
+
+    public func deleteTemplate(id: String) async throws {
+        let deleted = try await database.write { try TemplateDAO.delete($0, id: id) }
+        if !deleted { throw BackendError.notFound }
     }
 
     static func rematchOpenPending(_ db: SQLiteConnection, engine: IngestEngine) throws {

@@ -415,6 +415,28 @@ public enum PendingDAO {
     public static func resolve(_ db: SQLiteConnection, id: String, status: PendingStatus, at date: Date) throws -> Bool {
         try db.run("UPDATE pending_items SET status = ?, resolved_at = ? WHERE id = ? AND status = 'open'", [status.rawValue, date, id]) > 0
     }
+
+    /// 同一条通知里其他「金额有歧义」的候选标为已忽略。交易和它拆出的手续费共用 `part_index / 2`，手续费保留。
+    public static func ignoreOtherAmounts(_ db: SQLiteConnection, ingestID: String, keepingPart part: Int, at date: Date) throws {
+        try db.run(
+            "UPDATE pending_items SET status = 'ignored', resolved_at = ? WHERE ingest_id = ? AND status = 'open' AND reason = ? AND part_index / 2 <> ?",
+            [date, ingestID, PendingReason.ambiguousAmount.rawValue, part / 2]
+        )
+    }
+
+    /// 给这条通知新增一笔时用的序号：比已有的待处理和流水都大，偶数（奇数留给拆出的手续费）
+    public static func nextPartIndex(_ db: SQLiteConnection, ingestID: String) throws -> Int {
+        let maxPart = try db.scalarInt(
+            "SELECT MAX(COALESCE((SELECT MAX(part_index) FROM pending_items WHERE ingest_id = ?), -1), COALESCE((SELECT MAX(part_index) FROM records WHERE ingest_id = ?), -1))",
+            [ingestID, ingestID]
+        )
+        return Int(maxPart + 2) / 2 * 2
+    }
+
+    /// 这条通知是否已经有入账的流水
+    public static func ingestHasRecords(_ db: SQLiteConnection, ingestID: String) throws -> Bool {
+        try db.scalarInt("SELECT COUNT(*) FROM records WHERE ingest_id = ?", [ingestID]) > 0
+    }
 }
 
 public enum BalanceDAO {
@@ -441,6 +463,32 @@ public enum BalanceDAO {
     /// 这张卡收到过银行余额的币种
     public static func currencies(_ db: SQLiteConnection, accountID: String) throws -> [CurrencyCode] {
         try db.query("SELECT DISTINCT currency FROM balance_observations WHERE account_id = ? ORDER BY currency", [accountID]) { CurrencyCode($0.string(0)) }
+    }
+}
+
+public enum TemplateDAO {
+    /// 新做的模板在前：同一条通知能被多个模板认出时，用最新的
+    public static func all(_ db: SQLiteConnection) throws -> [MessageTemplate] {
+        try db.query("SELECT id, name, pieces_json, kind, direction, created_at FROM message_templates ORDER BY created_at DESC, id", []) { row -> MessageTemplate? in
+            guard let pieces = try? JSONDecoder().decode([TemplatePiece].self, from: Data(row.string(2).utf8)),
+                  let kind = TransactionKind(rawValue: row.string(3)),
+                  let direction = FlowDirection(rawValue: row.string(4)) else { return nil }
+            return MessageTemplate(id: row.string(0), name: row.string(1), pieces: pieces, kind: kind, direction: direction, createdAt: row.date(5))
+        }
+        .compactMap { $0 }
+    }
+
+    public static func insert(_ db: SQLiteConnection, _ t: MessageTemplate) throws {
+        let json = String(decoding: try JSONEncoder().encode(t.pieces), as: UTF8.self)
+        try db.run(
+            "INSERT INTO message_templates (id, name, pieces_json, kind, direction, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            [t.id, t.name, json, t.kind.rawValue, t.direction.rawValue, t.createdAt]
+        )
+    }
+
+    @discardableResult
+    public static func delete(_ db: SQLiteConnection, id: String) throws -> Bool {
+        try db.run("DELETE FROM message_templates WHERE id = ?", [id]) > 0
     }
 }
 

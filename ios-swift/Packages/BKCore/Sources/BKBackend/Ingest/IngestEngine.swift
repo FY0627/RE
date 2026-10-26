@@ -79,10 +79,16 @@ struct IngestEngine {
         }
 
         let ingestID = newID()
-        let parsed = MessageParser.parse(MessageContext(
+        var parsed = MessageParser.parse(MessageContext(
             text: request.text, source: request.source, sender: request.sender, subject: request.subject,
             referenceDate: request.receivedAt ?? now, calendar: calendar
         ))
+        // 用户在本机做的模板优先于通用读法：认得出时只用它认出的这一笔（验证码除外）
+        if parsed.classification != .verificationCode, parsed.classification != .empty,
+           let found = MessageTemplates.firstHit(try TemplateDAO.all(db), in: parsed.cleanedText) {
+            parsed.events = [ParsedEvent(draft: MessageTemplates.draft(found.hit, template: found.template, parsed: parsed, partIndex: 0), issue: nil)]
+            parsed.classification = .transaction
+        }
         let accounts = try AccountDAO.all(db)
         // 固定写法认不出尾号时，在正文里找已添加的卡的尾号；再找卡片信息里填的账号、完整卡号
         let fallbackTail = Self.knownTail(in: parsed.cleanedText, accounts: accounts) ?? Self.identifierTail(in: parsed.cleanedText, accounts: accounts)
@@ -236,6 +242,36 @@ struct IngestEngine {
             return false
         }
         return zip(t, aligned).allSatisfy { $0 == $1 || $0 == "X" || $1 == "X" }
+    }
+
+    /// 刚保存的模板用于还没处理的待处理项：认得出的通知按模板重新入账，或者换成新的待处理原因（例如还要选卡）；
+    /// 这条通知原来的待处理项关闭。已经有流水入账的通知不动，避免重复记账。返回重新识别的通知条数。
+    func reapply(_ template: MessageTemplate) throws -> Int {
+        let accounts = try AccountDAO.all(db)
+        var count = 0
+        for (ingestID, items) in Dictionary(grouping: try PendingDAO.open(db), by: \.ingestID) {
+            guard let first = items.first, let raw = first.rawText, try !PendingDAO.ingestHasRecords(db, ingestID: ingestID),
+                  let meta = try IngestDAO.meta(db, id: ingestID) else { continue }
+            let parsed = MessageParser.parse(MessageContext(
+                text: raw, source: meta.source, sender: meta.sender, subject: nil,
+                referenceDate: meta.receivedAt ?? meta.processedAt, calendar: calendar
+            ))
+            guard let hit = MessageTemplates.match(template, in: parsed.cleanedText) else { continue }
+            var draft = MessageTemplates.draft(hit, template: template, parsed: parsed, partIndex: try PendingDAO.nextPartIndex(db, ingestID: ingestID))
+            if draft.cardTail == nil {
+                draft.cardTail = Self.knownTail(in: parsed.cleanedText, accounts: accounts) ?? Self.identifierTail(in: parsed.cleanedText, accounts: accounts)
+            }
+            for item in items { _ = try PendingDAO.resolve(db, id: item.id, status: .ignored, at: now) }
+            let outcome = try commit(
+                draft, meta: IngestMeta(ingestID: ingestID, source: meta.source, receivedAt: meta.receivedAt, processedAt: meta.processedAt),
+                boundAccountID: nil, accounts: accounts, forcedAccount: nil, duplicateCheck: true
+            )
+            if case let .pending(reason, candidates, duplicateOf) = outcome {
+                try PendingDAO.insert(db, id: newID(), ingestID: ingestID, partIndex: draft.partIndex, reason: reason, draft: draft, candidates: candidates, duplicateOf: duplicateOf, now: now)
+            }
+            count += 1
+        }
+        return count
     }
 
     func candidateIDs(for draft: EventDraft, request: IngestRequest, accounts: [Account]) -> [String] {

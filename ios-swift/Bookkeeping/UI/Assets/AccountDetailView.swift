@@ -3,9 +3,16 @@ import BKModel
 
 /// 账户详情的内容区：待处理提示、余额、交易记录。显示在选中卡片的下方，卡片本身和顶部按钮由资产页负责。
 /// 右上角菜单（卡片信息、编辑卡面、待处理账单）在资产页的顶部按钮里；自动记账的设置在「我的」里。
+///
+/// 滚动区从页面顶端开始，最上面留出卡片所在的空白；滚动距离写进 `scroll`，资产页里选中的卡片按它上移，
+/// 看起来卡片和下面的内容是一起滚动的。空白处的点按等同于点按卡片（返回卡包）。
 struct AccountDetailView: View {
     let account: Account
     let pendingCount: Int
+    /// 滚动区顶端到卡片上边缘的距离
+    let cardTop: CGFloat
+    let cardHeight: CGFloat
+    let scroll: DetailScrollOffset
     let openPending: () -> Void
     let close: () -> Void
 
@@ -19,12 +26,24 @@ struct AccountDetailView: View {
 
     var body: some View {
         ScrollView(.vertical) {
-            content
-                .padding(.horizontal, AppLayout.cardInset)
-                .padding(.top, 8)
-                .padding(.bottom, 48)
+            VStack(spacing: 0) {
+                // 卡片画在资产页的卡包里，这里只占位，并接住点按
+                Color.clear
+                    .frame(height: cardHeight)
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: close)
+                    .padding(.top, cardTop)
+                    .accessibilityHidden(true)
+                content
+                    .padding(.top, 8)
+                    .padding(.bottom, 48)
+            }
+            .padding(.horizontal, AppLayout.cardInset)
         }
         .scrollIndicators(.hidden)
+        .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y + $0.contentInsets.top } action: { _, offset in
+            scroll.y = offset
+        }
         .simultaneousGesture(
             // 右滑返回卡包（左滑不响应，避免误触）
             DragGesture(minimumDistance: 24).onEnded { value in

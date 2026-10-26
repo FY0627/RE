@@ -23,6 +23,7 @@
 | 原型里某个效果是怎么实现的 | [architecture/performance.md#原型参考](architecture/performance.md#原型参考) | `prototype` 分支的 `lib/` |
 | **iOS Swift 版**：整体结构、分层 | [ios-swift/README.md](../ios-swift/README.md)、[decisions/0006](decisions/0006-ios-native-swift.md) | `ios-swift/` |
 | iOS Swift 版：短信 / 邮件自动记账、解析、去重、待处理 | [features/ios-swift-auto-bookkeeping.md](features/ios-swift-auto-bookkeeping.md)、[decisions/0008](decisions/0008-ios-swift-shortcuts-app-intent.md) | `ios-swift/Bookkeeping/Intents/` → `ios-swift/Packages/BKCore/Sources/BKBackend/` |
+| iOS Swift 版：用户在本机做的识别模板（从待处理做、去敏、模板优先） | [features/ios-swift-auto-bookkeeping.md#识别模板用户在本机做](features/ios-swift-auto-bookkeeping.md#识别模板用户在本机做) | `ios-swift/Bookkeeping/UI/Pending/Template*.swift`、`ios-swift/Packages/BKCore/Sources/BKBackend/Parsing/MessageTemplates.swift` |
 | iOS Swift 版：表结构、迁移、事务、并发 | [decisions/0007](decisions/0007-ios-swift-sqlite.md) | `ios-swift/Packages/BKCore/Sources/BKDatabase/` |
 | iOS Swift 版：卡包、详情转场、添加卡「+」、卡片信息与卡号、卡面编辑（自定义图片）、初始余额 | [ios-swift/README.md](../ios-swift/README.md)、[decisions/0010](decisions/0010-ios-swift-card-number-and-face.md) | `ios-swift/Bookkeeping/UI/{Assets,Shell}/` |
 | iOS Swift 版：多币种账户、主要币种、汇率换算（快捷指令导入） | [decisions/0011](decisions/0011-ios-swift-multi-currency-and-rates.md) | `ios-swift/Bookkeeping/App/ExchangeRateStore.swift`、`ios-swift/Bookkeeping/Intents/ImportExchangeRatesIntent.swift`、`ios-swift/Bookkeeping/UI/Assets/AssetsView.swift`（净资产卡）、`ios-swift/Packages/BKCore/Sources/BKBackend/{LedgerBackend,ExchangeRateFeed}.swift` |

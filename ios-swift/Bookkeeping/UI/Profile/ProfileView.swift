@@ -70,6 +70,11 @@ struct ProfileView: View {
                     } label: {
                         Label("自动记账状态", systemImage: "checkmark.seal")
                     }
+                    NavigationLink {
+                        TemplateListView()
+                    } label: {
+                        Label("识别模板", systemImage: "text.viewfinder")
+                    }
                     Picker(selection: $notifyMode) {
                         ForEach(IngestNotifier.Mode.allCases) { Text($0.title).tag($0.rawValue) }
                     } label: {

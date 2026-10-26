@@ -2,6 +2,7 @@ import SwiftUI
 import BKModel
 
 /// 待处理：只能「确认系统给出的候选」或「忽略」，不能借此手动编辑金额、方向、时间。
+/// 认不准的写法可以用这条通知「做成识别模板」，之后同样写法的通知按模板识别。
 /// 从卡片详情进入时只列出与这张卡有关的项（候选里有这张卡，或通知尾号与它相同）。
 struct PendingView: View {
     var account: Account?
@@ -12,6 +13,7 @@ struct PendingView: View {
     @State private var log: [IngestLogEntry] = []
     @State private var loaded = false
     @State private var errorText: String?
+    @State private var templateSource: PendingItem?
 
     var body: some View {
         NavigationStack {
@@ -39,6 +41,8 @@ struct PendingView: View {
                             await run { try await store.confirmPending(id: item.id, accountID: accountID) }
                         } ignore: {
                             await run { try await store.ignorePending(id: item.id) }
+                        } makeTemplate: {
+                            templateSource = item
                         }
                     }
                 } header: {
@@ -65,6 +69,9 @@ struct PendingView: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成", systemImage: "checkmark") { dismiss() } } }
             .task { await reload() }
             .refreshable { await reload() }
+            .sheet(item: $templateSource, onDismiss: { Task { await reload() } }) { item in
+                TemplateEditorView(item: item)
+            }
         }
     }
 
@@ -139,6 +146,7 @@ private struct PendingItemCard: View {
     let accounts: [Account]
     let confirm: (String) async -> Void
     let ignore: () async -> Void
+    let makeTemplate: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -155,6 +163,9 @@ private struct PendingItemCard: View {
             }
             if item.reason == .possibleDuplicate {
                 Text("可能与已有流水重复").font(.caption2).foregroundStyle(.secondary)
+            }
+            if item.reason == .ambiguousAmount {
+                Text("这条通知里认出了几个金额，每个是一条。记入正确的那一条，其余的会自动忽略。").font(.caption2).foregroundStyle(.secondary)
             }
             if item.reason.allowsConfirmation, item.draft != nil, candidates.isEmpty, !accounts.isEmpty {
                 // 通知里没认出尾号，或尾号对不上任何卡：选一张卡记入
@@ -175,6 +186,13 @@ private struct PendingItemCard: View {
                     }
                     .buttonStyle(.borderless)
                 }
+            }
+            if item.rawText != nil, item.reason != .possibleDuplicate {
+                // 用这条通知做识别模板：以后同样写法的通知按模板识别
+                Button(action: makeTemplate) {
+                    Label("做成识别模板", systemImage: "text.viewfinder")
+                }
+                .buttonStyle(.borderless)
             }
             Button(role: .destructive) {
                 Task { await ignore() }

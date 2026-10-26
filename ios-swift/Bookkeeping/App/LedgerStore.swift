@@ -178,6 +178,22 @@ final class LedgerStore {
         await refresh()
     }
 
+    func templates() async -> [MessageTemplate] {
+        (try? await backend?.templates()) ?? []
+    }
+
+    /// 保存识别模板，并用它重新识别待处理项；返回重新识别的通知条数
+    func saveTemplate(_ template: MessageTemplate) async throws -> Int {
+        guard let backend else { throw BackendError.notFound }
+        let count = try await backend.saveTemplate(template)
+        await refresh()
+        return count
+    }
+
+    func deleteTemplate(id: String) async throws {
+        try await backend?.deleteTemplate(id: id)
+    }
+
     func unconfirmedTransfers() async -> [RecordRow] {
         (try? await backend?.unconfirmedTransfers()) ?? []
     }

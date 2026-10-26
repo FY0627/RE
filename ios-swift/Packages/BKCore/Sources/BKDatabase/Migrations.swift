@@ -5,7 +5,7 @@
 /// - 每个迁移在一个事务里执行，失败整体回滚，版本号不变；
 /// - 每次修改表结构都要在 `DatabaseTests` 里补迁移测试。
 public enum Migrations {
-    public static let latestVersion = 5
+    public static let latestVersion = 6
 
     static let steps: [(version: Int, sql: String)] = [
         (1, """
@@ -149,6 +149,17 @@ public enum Migrations {
         (5, """
         ALTER TABLE accounts ADD COLUMN account_number TEXT;
         ALTER TABLE records ADD COLUMN transfer_party TEXT;
+        """),
+        // 用户在本机做的识别模板：只保存写法（文字 + 占位），不保存原文里的数字
+        (6, """
+        CREATE TABLE message_templates (
+            id TEXT PRIMARY KEY NOT NULL,
+            name TEXT NOT NULL,
+            pieces_json TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            created_at REAL NOT NULL
+        );
         """),
     ]
 

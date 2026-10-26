@@ -9,6 +9,13 @@ final class AssetsScrollBox {
     var pageHeight: CGFloat = 0
 }
 
+/// 详情内容的滚动距离。选中的卡片按它上移，和下面的内容一起滚动。
+/// 只有选中卡片的位移读取它，滚动时只刷新这一处，资产页本身不重新计算。
+@Observable
+final class DetailScrollOffset {
+    var y: CGFloat = 0
+}
+
 /// 资产页：卡包 → 点按卡片展开详情 → 返回。最下方是灰色的「已停用」卡包，也可以点开查看详情。
 ///
 /// 转场参考 Apple 钱包：选中的卡片移到顶部；它上面的卡一边上移一边缩小、向里倾斜，收到选中卡片后面；
@@ -27,6 +34,7 @@ struct AssetsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var box = AssetsScrollBox()
+    @State private var detailScroll = DetailScrollOffset()
     /// 卡包第一张卡从当前位置移到详情位置所需的位移；点按时计算一次
     @State private var openShift: CGFloat = 0
     /// 下面的卡落下的距离：页面高度；卡包顶端已滚出屏幕时再加上滚出的部分，保证落到屏幕外
@@ -59,10 +67,12 @@ struct AssetsView: View {
                     AccountDetailView(
                         account: selected,
                         pendingCount: cardPendingCount,
+                        cardTop: AppLayout.detailTop,
+                        cardHeight: cardHeight,
+                        scroll: detailScroll,
                         openPending: { sheet = .pending },
                         close: close
                     )
-                    .padding(.top, AppLayout.detailTop + cardHeight + 8)
                     .transition(.asymmetric(
                         insertion: .move(edge: .bottom).combined(with: .opacity).animation(contentEntrance),
                         removal: .move(edge: .bottom).combined(with: .opacity).animation(.easeIn(duration: 0.2))
@@ -199,6 +209,7 @@ struct AssetsView: View {
             wasBelow: index > (openedIndex ?? .max),
             reduceMotion: reduceMotion
         ))
+        .modifier(FollowsDetailScroll(scroll: detailScroll, active: role == .selected))
         .allowsHitTesting(role == .resting || role == .selected)
         .accessibilityHidden(role == .behind || role == .below)
         .accessibilityAddTraits(.isButton)
@@ -282,6 +293,7 @@ struct AssetsView: View {
         openShift = AppLayout.detailTop - stackTop
         dropDistance = box.pageHeight + max(0, -stackTop)
         openedIndex = stackAccounts.firstIndex { $0.id == account.id }
+        detailScroll.y = 0
         let signpost = AppServices.signposter.beginInterval("DetailOpen")
         withAnimation(transition) {
             motion.selectedAccountID = account.id
@@ -412,6 +424,17 @@ private struct CardPlacement: ViewModifier {
                 $0.opacity(role == .behind ? 0 : 1)
             }
             .zIndex(role == .selected ? 1 : 0)
+    }
+}
+
+/// 选中的卡片跟着详情内容滚动。只有选中的卡读取滚动距离，所以滚动时只有它的位移刷新；
+/// 关闭详情时位移在转场动画里回到 0。
+private struct FollowsDetailScroll: ViewModifier {
+    let scroll: DetailScrollOffset
+    let active: Bool
+
+    func body(content: Content) -> some View {
+        content.offset(y: active ? -scroll.y : 0)
     }
 }
 

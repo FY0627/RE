@@ -41,11 +41,15 @@ public struct ParsedMessage: Sendable {
     public var cleanedText: String
     /// 按固定写法认出的全部尾号（含对方账户的尾号）
     public var cardTails: [String]
+    /// 正文里第一个时间；用户模板认出交易时用它作交易时间
+    public var firstTime: WallClock?
+    /// 正文里只有一个交易参考号时是它
+    public var onlyReference: String?
 }
 
 /// 规则解析器：纯函数，不访问数据库，不依赖网络。
 public enum MessageParser {
-    public static let version = 2
+    public static let version = 3
 
     // MARK: 识别用正则
 
@@ -58,6 +62,9 @@ public enum MessageParser {
     ]
     private static let referencePattern = Rx(#"(?:交易流水号|流水号|交易参考号|参考号|凭证号|交易编号|交易序号|reference(?:\s+no\.?|\s+number)?|\bref(?:\.|\s+no\.?)?|txn id|transaction id)\s*[：:#]?\s*([A-Za-z0-9][A-Za-z0-9\-]{5,31})"#)
     private static let longDigits = Rx(#"\d{9,}"#)
+    /// 电话号码（「+86-183******36」「+852 3665 3665」）和打码的号码（「183******36」）：里面的数字不是金额
+    private static let phoneNumber = Rx(#"(?<![\w+])\+\d{1,4}[\s-]+[\d*xX•][\d*xX•\s-]{4,}[\d*xX•]"#)
+    private static let maskedNumber = Rx(#"\d*[*•]{2,}\d+|\d+[*•]{2,}\d*|\d+[xX]{2,}\d+"#)
     private static let counterpartyTailMarker = Rx(#"(?:向|至|到|给|对方|收款|付款|\bto|\bfrom)\s*$"#)
     private static let feeClause = Rx(#"(?:含\s*)?(?:手续费|服务费|费用)[^，,。；;)）]*"#)
     private static let cjk = Rx(#"[\x{4E00}-\x{9FFF}]"#)
@@ -77,6 +84,7 @@ public enum MessageParser {
         Rx(#"在\s*([^，,。；;\n\d][^，,。；;\n]{1,29}?)\s*(?:消费|支付|刷卡|网上支付|快捷支付|扣款|购物)"#),
         Rx(#"([^\s，,。；;\n:：]{2,30}?)\s*向您(?:尾号\s*[*xX•]*\d{4})?的?(?:账户|账号|卡)?(?:转账|汇款)"#),
         Rx(#"向\s*([^您，,。；;\n][^，,。；;\n]{1,29}?)\s*(?:转账|转出|付款|汇款)"#),
+        Rx(#"(?:转出|转账|汇款|付款)(?:至|到|给)\s*([^，,。；;\n]{2,30}?)\s*(?=[，,。；;\n]|$)"#),
         Rx(#"(?:来自|付款方)\s*([^，,。；;\n]{2,30}?)(?:的|转账|汇款|[，,。；;\n]|$)"#),
         Rx(#"\bat\s+([A-Z0-9][A-Za-z0-9 &'.\-*/]{1,40}?)(?=\s+on\b|\s+\d|[.,;]|\s*$)"#, caseInsensitive: false),
         Rx(#"\b(?:to|from)\s+([A-Z][A-Za-z0-9 &'.\-]{1,40}?)(?=\s+on\b|\s+\d|[.,;]|\s*$)"#, caseInsensitive: false),
@@ -86,7 +94,7 @@ public enum MessageParser {
         "消费", "转账", "跨行转账", "行内转账", "工资", "代发工资", "代发", "利息", "结息", "存款", "取款", "支取", "存入", "转入", "转出",
         "汇款", "退款", "还款", "手续费", "年费", "快捷支付", "网上支付", "支付", "扣款", "收入", "支出", "其他", "无",
     ]
-    private static let counterpartyNoise = Rx(#"尾号|账户|卡号|您的|贵|本行|余额|人民币|\d{2}[：:]\d{2}|\d+月\d+日|^\d+$|^[\s\p{P}]+$"#)
+    private static let counterpartyNoise = Rx(#"尾号|账户|卡号|您的|贵|本行|余额|人民币|\d{2}[：:]\d{2}|\d+月\d+日|^\d+$|^[\s\p{P}]+$|^(?:收款人|收款方|付款人|付款方|对方)$"#)
 
     private static let sentenceBreak = Rx(#"[。；;!！?？\n]|\.\s+(?=[A-Z【\[])"#, caseInsensitive: false)
     private static let clauseBreak = Rx(#"[，、()（）]|,(?!\d)|\s-\s"#, caseInsensitive: false)
@@ -111,17 +119,27 @@ public enum MessageParser {
 
     // MARK: 入口
 
-    public static func parse(_ context: MessageContext) -> ParsedMessage {
-        var cleaned = TextNormalizer.normalize(context.text)
+    /// 解析和用户模板使用的正文：格式统一，邮件去掉引用的历史邮件。
+    public static func cleaned(_ text: String, source: SourceKind) -> String {
+        var cleaned = TextNormalizer.normalize(text)
         // 来源分不出时也按邮件处理引用历史：短信和 App 通知里不会出现「原始邮件」分隔线或「>」引用行
-        if context.source == .email || context.source == .auto { cleaned = EmailCleaner.stripQuotedHistory(cleaned) }
-        cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        if source == .email || source == .auto { cleaned = EmailCleaner.stripQuotedHistory(cleaned) }
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    public static func parse(_ context: MessageContext) -> ParsedMessage {
+        let cleaned = MessageParser.cleaned(context.text, source: context.source)
         let subject = context.subject.map(TextNormalizer.normalize) ?? ""
         let bankHint = BankDirectory.identify(sender: context.sender, text: cleaned + "\n" + subject)
 
         var foundTails: [String] = []
+        var firstTime: WallClock?
+        var references: [Mention<String>] = []
         func result(_ classification: MessageClassification, _ events: [ParsedEvent] = [], _ balances: [ParsedBalance] = []) -> ParsedMessage {
-            ParsedMessage(classification: classification, events: events, balances: balances, bankHint: bankHint, cleanedText: cleaned, cardTails: foundTails)
+            ParsedMessage(
+                classification: classification, events: events, balances: balances, bankHint: bankHint, cleanedText: cleaned, cardTails: foundTails,
+                firstTime: firstTime, onlyReference: references.count == 1 ? references[0].value : nil
+            )
         }
 
         guard !cleaned.isEmpty else { return result(.empty) }
@@ -195,14 +213,16 @@ public enum MessageParser {
         }
         times.sort { $0.range.location < $1.range.location }
         times = mergeAdjacentDateAndTime(times, in: ns)
+        firstTime = times.first?.value
 
-        // 3. 交易参考号、长数字串
-        var references: [Mention<String>] = []
+        // 3. 交易参考号、长数字串、电话号码和打码的号码
         for m in referencePattern.matches(ns) where isFree(m.range) {
             if let value = m.group(1, in: ns) { references.append(Mention(range: m.range, value: value)) }
             mask(m.range)
         }
         for m in longDigits.matches(ns) where isFree(m.range) { mask(m.range) }
+        for m in phoneNumber.matches(ns) { mask(m.range) }
+        for m in maskedNumber.matches(ns) { mask(m.range) }
 
         // 4. 句子与分句
         let sentences = splitRanges(ns, by: sentenceBreak)

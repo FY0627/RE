@@ -140,6 +140,25 @@ final class DatabaseTests: XCTestCase {
         XCTAssertEqual(try db.readSync { try RecordDAO.unconfirmedTransferCount($0) }, 0)
     }
 
+    func testMigrationFromVersion5AddsMessageTemplates() throws {
+        let path = tempPath()
+        do {
+            let old = try SQLiteConnection(path: path)
+            for step in Migrations.steps where step.version <= 5 { try old.execute(step.sql) }
+            try old.setUserVersion(5)
+        }
+        let db = try Database(path: path)
+        XCTAssertEqual(try db.readSync { $0.userVersion }, Migrations.latestVersion)
+        let template = MessageTemplate(
+            id: "t1", name: "测试", pieces: [.text("您尾号"), .cardTail, .text("消费"), .amount, .text("元，余额"), .anyNumber],
+            kind: .purchase, direction: .outflow, createdAt: Date(timeIntervalSince1970: 1_790_000_000)
+        )
+        try db.writeSync { try TemplateDAO.insert($0, template) }
+        XCTAssertEqual(try db.readSync { try TemplateDAO.all($0) }, [template])
+        XCTAssertTrue(try db.writeSync { try TemplateDAO.delete($0, id: "t1") })
+        XCTAssertEqual(try db.readSync { try TemplateDAO.all($0) }, [])
+    }
+
     func testLeadingZeroLast4SurvivesReopen() throws {
         let path = tempPath()
         do {

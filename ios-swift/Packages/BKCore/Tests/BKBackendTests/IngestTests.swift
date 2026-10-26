@@ -886,6 +886,40 @@ final class IngestTests: XCTestCase {
         XCTAssertEqual(seen.count, 7)
         XCTAssertEqual(Set(seen).count, 7)
     }
+
+    // MARK: 金额有歧义、电话号码
+
+    func testPhoneNumberTransferWithoutTailCanBeAssigned() async throws {
+        let backend = try makeBackend()
+        let account = try await addAccount(backend, bank: "x", bankName: "众安银行", last4: "5566", currency: .hkd)
+        let result = try await backend.ingest(IngestRequest(text: ParserSampleTests.phoneTransfer, source: .sms))
+        XCTAssertEqual(result.pendingCount, 1, "手机号里的数字不再各算一笔：\(result.summary)")
+        let items = try await backend.openPendingItems()
+        let item = try XCTUnwrap(items.first)
+        XCTAssertEqual(item.reason, .missingCardTail)
+        try await backend.confirmPending(id: item.id, accountID: account.id)
+        let rows = try await backend.records(accountID: account.id)
+        let r = try XCTUnwrap(rows.first?.record)
+        XCTAssertEqual(r.amountMinor, 16_49)
+        XCTAssertEqual(r.currency, .hkd)
+        XCTAssertEqual(r.kind, .transferOut)
+        XCTAssertEqual(r.counterparty, "+86-183******36")
+    }
+
+    func testChoosingOneOfAmbiguousAmountsIgnoresTheOthers() async throws {
+        let backend = try makeBackend()
+        let account = try await addAccount(backend, last4: "0427")
+        let result = try await backend.ingest(IngestRequest(text: "【招商银行】您尾号0427的账户10月24日12:00消费100.00元，实际扣款95.00元。", source: .sms, sender: "95555"))
+        XCTAssertEqual(result.pendingCount, 2, result.summary)
+        let items = try await backend.openPendingItems()
+        XCTAssertEqual(Set(items.map(\.reason)), [.ambiguousAmount])
+        let chosen = try XCTUnwrap(items.first { $0.draft?.amount.digits == "95.00" })
+        try await backend.confirmPending(id: chosen.id, accountID: account.id)
+        let rows = try await backend.records(accountID: account.id)
+        XCTAssertEqual(rows.map(\.record.amountMinor), [95_00])
+        let open = try await backend.pendingCount()
+        XCTAssertEqual(open, 0, "同一条通知里的其他候选金额自动忽略")
+    }
 }
 
 final class ClockBox: @unchecked Sendable {

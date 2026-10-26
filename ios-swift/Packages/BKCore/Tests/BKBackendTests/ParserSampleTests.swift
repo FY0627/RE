@@ -351,4 +351,20 @@ final class ParserSampleTests: XCTestCase {
         XCTAssertEqual(d.cardTail, "0427")
         XCTAssertEqual(d.amount.digits, "38.00")
     }
+
+    // MARK: 电话号码和打码的号码
+
+    /// 众安银行转账到手机号（脱敏）：手机号、区号、客服电话里的数字都不是金额
+    static let phoneTransfer = #"【众安银行】ZA Bank:你已于 2026-10-18 18:13:03 将 HKD 16.49 转出至"+86-183******36"。交易类型：手机号转出。如你无递交以上指示，可致电 +852 3665 3665。"#
+
+    func testPhoneNumbersAreNotAmounts() throws {
+        let d = try XCTUnwrap(single(Self.phoneTransfer))
+        XCTAssertEqual(d.amount.digits, "16.49")
+        XCTAssertEqual(d.amount.currencyCandidates, [.hkd])
+        XCTAssertEqual(d.kind, .transferOut)
+        XCTAssertEqual(d.direction, .outflow)
+        XCTAssertEqual(d.counterparty, "+86-183******36")
+        XCTAssertNil(d.cardTail)
+        XCTAssertEqual(d.transactionTime, WallClock(year: 2026, month: 10, day: 18, hour: 18, minute: 13, second: 3))
+    }
 }
