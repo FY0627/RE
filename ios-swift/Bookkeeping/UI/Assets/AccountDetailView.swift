@@ -5,7 +5,8 @@ import BKModel
 /// 右上角菜单（卡片信息、编辑卡面、待处理账单）在资产页的顶部按钮里；自动记账的设置在「我的」里。
 ///
 /// 滚动区从页面顶端开始，最上面是卡片，和下面的内容在同一个滚动区里，一起由系统滚动。
-/// 打开 / 关闭的转场由资产页卡包里的卡完成，卡片停稳后才在这里显示（`showsCard`）；内容随转场升起 / 淡出。
+/// 打开时这里的卡片和卡包里那张走同样的动画（`cardLift`），资产页在下面的卡离场后切换成显示这里的（`showsCard`），
+/// 卡片剩下的移动在滚动区里完成，所以动画没结束也能顺畅滚动；内容随转场升起 / 淡出。
 /// 和钱包一样，在顶部往下拉时卡片不动，只有下面的内容被拉开。点按卡片返回卡包。
 struct AccountDetailView: View {
     let account: Account
@@ -13,8 +14,10 @@ struct AccountDetailView: View {
     /// 滚动区顶端到卡片上边缘的距离
     let cardTop: CGFloat
     let cardHeight: CGFloat
-    /// 卡片是否画在这里；转场中由卡包里的卡代替
+    /// 卡片是否画在这里；交接前由卡包里的卡代替
     let showsCard: Bool
+    /// 卡片相对顶部位置的位移：打开后为 0，打开前是它在卡包里的位置
+    let cardLift: CGFloat
     let contentShown: Bool
     /// 记录滚动距离，关闭时资产页据此算出卡片当前的位置
     let box: AssetsScrollBox
@@ -46,8 +49,10 @@ struct AccountDetailView: View {
                         content.offset(y: min(0, restY - proxy.frame(in: .scrollView(axis: .vertical)).minY))
                     }
                     .opacity(showsCard ? 1 : 0)
+                    // 点按区域放在位移之前，跟着卡片移动
                     .contentShape(Rectangle())
                     .onTapGesture(perform: close)
+                    .offset(y: cardLift)
                     .padding(.top, cardTop)
                     // 往下拉时内容在卡片下面被拉开，不会盖住卡片
                     .zIndex(1)

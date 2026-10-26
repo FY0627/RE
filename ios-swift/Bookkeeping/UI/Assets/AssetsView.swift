@@ -17,8 +17,10 @@ final class AssetsScrollBox {
 /// 它下面的卡同时向下落出屏幕；详情内容跟在卡片下面升起、淡入。返回时内容先淡出，卡片回到原位，
 /// 下面的卡同时升回来，像原来一样压住它的下半部分。
 ///
-/// 转场全程由卡包里的卡完成，叠放顺序和卡包一致（下面的卡始终在选中卡的上层），不会出现选中的卡盖住下面的卡：
-/// - 打开：卡片停稳后交给详情的滚动区（位置相同，看不出变化），之后和内容一起滚动；交接前详情不接收点按和滚动；
+/// 下面的卡还在屏幕上时，转场由卡包里的卡完成，叠放顺序和卡包一致（下面的卡在选中卡的上层），不会出现选中的卡盖住下面的卡：
+/// - 打开：详情里也有一张卡，和卡包里那张走完全相同的弹簧动画（同一个事务、同样的起点和终点），只是先隐藏。
+///   下面的卡落出屏幕后两张互换显示（位置相同，看不出变化），卡片剩下的移动在详情的滚动区里完成，
+///   从这时起就能滚动，卡片和内容一起动、不抖；交接前详情不接收点按和滚动，点按交给卡包里的卡；
 /// - 关闭：先交回卡包——卡包里那张不带动画放到详情里卡片当前的位置（滚动过就更靠上），再一起回到卡包。
 /// 性能做法（参考 Apple 关于 SwiftUI 动画与渲染卡顿的建议）：
 /// - 打开 / 关闭只改一个状态（选中的卡），放在一个弹簧动画事务里；所有卡片按新状态一次算出终点，
@@ -38,8 +40,12 @@ struct AssetsView: View {
     @State private var detailAccountID: String?
     /// 每次打开 +1，详情重新创建，从顶部开始
     @State private var detailSession = 0
-    /// 卡片是否已交给详情：打开动画停稳后交给详情，关闭时立即交回卡包
+    /// 卡片是否已交给详情：下面的卡落出屏幕后交给详情，关闭时立即交回卡包
     @State private var detailOwnsCard = false
+    /// 详情里的卡片相对顶部位置的位移：打开前是它在卡包里的位置，和卡包里那张一起动画到 0
+    @State private var detailLift: CGFloat = 0
+    /// 返回动画还没结束：这时重新打开，卡包里的卡从半路出发，和详情里的卡轨迹不同，要等停稳再交接
+    @State private var closeInFlight = false
     /// 详情的内容（卡片下面的部分）是否显示
     @State private var contentShown = false
     /// 每次打开 / 关闭 +1；动画完成回调据此判断自己是否已经过时
@@ -82,6 +88,7 @@ struct AssetsView: View {
                         cardTop: AppLayout.detailTop,
                         cardHeight: cardHeight,
                         showsCard: detailOwnsCard,
+                        cardLift: detailLift,
                         contentShown: contentShown,
                         box: box,
                         openPending: { sheet = .pending },
@@ -112,6 +119,7 @@ struct AssetsView: View {
                 motionToken += 1
                 detailAccountID = nil
                 detailOwnsCard = false
+                closeInFlight = false
                 motion.selectedAccountID = nil
             }
         }
@@ -330,34 +338,49 @@ struct AssetsView: View {
         box.detailOffset = 0
         motionToken += 1
         let token = motionToken
-        // 详情先不带动画出现（还没有卡片，内容在下面、透明）；返回途中重新打开时换一个新的，从顶部开始
+        // 卡包里的卡停在原位时，两张卡起点相同，可以在下面的卡离场后就交接
+        let earlyHandover = !closeInFlight
+        // 详情先不带动画出现：卡片（隐藏）放在它在卡包里的位置，内容在下面、透明；
+        // 返回途中重新打开时换一个新的，从顶部开始
         withoutAnimation {
             detailAccountID = account.id
             detailSession += 1
             detailOwnsCard = false
+            detailLift = stackLayout(width: box.pageSize.width).restY(index) - openShift
             contentShown = false
         }
-        // 下一帧（详情已经画出来）再开始转场，内容才有起点可以动画
+        // 下一帧（详情已经画出来）再开始转场，卡片和内容才有起点可以动画
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(10))
             guard token == motionToken else { return }
-            animateOpen(account.id, token: token)
+            animateOpen(account.id, token: token, earlyHandover: earlyHandover)
         }
     }
 
-    private func animateOpen(_ id: String, token: Int) {
+    private func animateOpen(_ id: String, token: Int, earlyHandover: Bool) {
         let signpost = AppServices.signposter.beginInterval("DetailOpen")
-        // 卡包里所有卡按新状态一起动：选中的卡移到顶部，上面的卡收到后面，下面的卡落出屏幕
+        // 卡包里所有卡按新状态一起动：选中的卡移到顶部，上面的卡收到后面，下面的卡落出屏幕；
+        // 详情里隐藏的那张在同一个事务里走同样的动画
         withAnimation(transition, completionCriteria: .removed) {
             scrollShift = 0
             motion.selectedAccountID = id
+            detailLift = 0
         } completion: {
             AppServices.signposter.endInterval("DetailOpen", signpost)
             guard token == motionToken else { return }
-            // 卡片完全停稳后交给详情：位置相同，看不出变化；之后和内容一起滚动
+            closeInFlight = false
+            // 没能提前交接时（返回途中重新打开），停稳后交接
+            if !detailOwnsCard { withoutAnimation { detailOwnsCard = true } }
+        }
+        // 内容在卡片移动的同时入场
+        withAnimation(contentEntrance) { contentShown = true }
+        guard earlyHandover else { return }
+        // 下面的卡落出屏幕后交给详情：两张卡此刻位置相同，之后可以滚动，卡片剩下的移动在滚动区里完成
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(CardPlacement.dropDuration + 0.02))
+            guard token == motionToken else { return }
             withoutAnimation { detailOwnsCard = true }
         }
-        withAnimation(contentEntrance) { contentShown = true }
     }
 
     private func close() {
@@ -365,12 +388,12 @@ struct AssetsView: View {
         motionToken += 1
         let token = motionToken
         guard detailOwnsCard else {
-            // 打开动画还没结束：卡片还在卡包里，直接从当前位置返回
+            // 还没交接：卡片还在卡包里，直接从当前位置返回
             animateClose(token)
             return
         }
         // 交回卡包：卡包里那张（和收在后面的卡）不带动画放到详情里卡片现在的位置，详情里那张同时隐藏；
-        // 往下拉时详情里的卡不动，按没滚动算
+        // 往下拉时详情里的卡不动，按没滚动算。没滚动过时两张卡本来就在同一位置（打开动画没结束也一样），不用移动
         withoutAnimation {
             scrollShift = max(0, box.detailOffset)
             detailOwnsCard = false
@@ -385,6 +408,7 @@ struct AssetsView: View {
 
     private func animateClose(_ token: Int) {
         let signpost = AppServices.signposter.beginInterval("DetailClose")
+        closeInFlight = true
         withAnimation(contentExit) { contentShown = false } completion: {
             guard token == motionToken else { return }
             withoutAnimation { detailAccountID = nil }
@@ -394,6 +418,8 @@ struct AssetsView: View {
             motion.selectedAccountID = nil
         } completion: {
             AppServices.signposter.endInterval("DetailClose", signpost)
+            guard token == motionToken else { return }
+            closeInFlight = false
         }
     }
 
