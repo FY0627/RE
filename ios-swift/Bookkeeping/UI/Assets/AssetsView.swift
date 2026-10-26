@@ -17,11 +17,12 @@ final class AssetsScrollBox {
 /// 它下面的卡同时向下落出屏幕；详情内容跟在卡片下面升起、淡入。返回时内容先淡出，卡片回到原位，
 /// 下面的卡同时升回来，像原来一样压住它的下半部分。
 ///
-/// 下面的卡还在屏幕上时，转场由卡包里的卡完成，叠放顺序和卡包一致（下面的卡在选中卡的上层），不会出现选中的卡盖住下面的卡：
-/// - 打开：详情里也有一张卡，和卡包里那张走完全相同的弹簧动画（同一个事务、同样的起点和终点），只是先隐藏。
-///   下面的卡落出屏幕后两张互换显示（位置相同，看不出变化），卡片剩下的移动在详情的滚动区里完成，
-///   从这时起就能滚动，卡片和内容一起动、不抖；交接前详情不接收点按和滚动，点按交给卡包里的卡；
-/// - 关闭：先交回卡包——卡包里那张不带动画放到详情里卡片当前的位置（滚动过就更靠上），再一起回到卡包。
+/// 选中的卡从点按起就只画在详情的滚动区里（卡包里那张隐藏），和下面的内容是同一个滚动区，
+/// 打开动画还没结束也能滚动，卡片和内容始终一起动。滚动区本身不移动、不淡入，只有区内的卡片和内容做位移动画：
+/// - 打开：详情先不带动画出现，卡片画在它在卡包里的位置（看不出变化），下一帧卡片移到顶部、内容跟着升起；
+/// - 关闭：卡片从当前位置（滚动过就更靠上）移回它在卡包里的位置，到位后详情移除，卡包里那张同时出现。
+/// 详情在卡包上层，为了让下面的卡看起来仍压在选中的卡上面，详情里的卡按下面那几张卡的上边缘裁掉被压住的部分；
+/// 这条边缘和下面的卡用同样的动画落下 / 升起，所以始终对齐。只有一张卡，转场中没有交接。
 /// 性能做法（参考 Apple 关于 SwiftUI 动画与渲染卡顿的建议）：
 /// - 打开 / 关闭只改一个状态（选中的卡），放在一个弹簧动画事务里；所有卡片按新状态一次算出终点，
 ///   动画只插值 offset / scaleEffect / rotation3DEffect / opacity 这些渲染变换，不重新布局、不每帧执行 body；
@@ -36,16 +37,14 @@ struct AssetsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var box = AssetsScrollBox()
-    /// 详情显示的卡。和选中的卡分开：关闭时内容淡出后才移除
+    /// 详情显示的卡。和选中的卡分开：关闭动画结束后才移除，在这之前卡片仍画在详情里
     @State private var detailAccountID: String?
-    /// 每次打开 +1，详情重新创建，从顶部开始
-    @State private var detailSession = 0
-    /// 卡片是否已交给详情：下面的卡落出屏幕后交给详情，关闭时立即交回卡包
-    @State private var detailOwnsCard = false
-    /// 详情里的卡片相对顶部位置的位移：打开前是它在卡包里的位置，和卡包里那张一起动画到 0
+    /// 详情里的卡片相对顶部位置的位移：打开后为 0，打开前 / 关闭后是它在卡包里的位置
     @State private var detailLift: CGFloat = 0
-    /// 返回动画还没结束：这时重新打开，卡包里的卡从半路出发，和详情里的卡轨迹不同，要等停稳再交接
-    @State private var closeInFlight = false
+    /// 下面的卡是否已落出屏幕；详情里的卡按它裁掉被下面的卡压住的部分
+    @State private var coverDropped = false
+    /// 关闭动画中详情不能滚动，卡片才能准确回到卡包
+    @State private var scrollLocked = false
     /// 详情的内容（卡片下面的部分）是否显示
     @State private var contentShown = false
     /// 每次打开 / 关闭 +1；动画完成回调据此判断自己是否已经过时
@@ -87,16 +86,16 @@ struct AssetsView: View {
                         pendingCount: cardPendingCount,
                         cardTop: AppLayout.detailTop,
                         cardHeight: cardHeight,
-                        showsCard: detailOwnsCard,
                         cardLift: detailLift,
+                        coverTop: coverTop(width: proxy.size.width),
                         contentShown: contentShown,
+                        scrollLocked: scrollLocked,
                         box: box,
                         openPending: { sheet = .pending },
+                        tapCard: tapDetailCard,
                         close: close
                     )
-                    .id(detailSession)
-                    // 交接前（转场中）点按交给下面卡包里的卡：点选中的卡返回，返回途中点卡片重新打开
-                    .allowsHitTesting(detailOwnsCard)
+                    .id(detailAccount.id)
                 }
 
                 topBar
@@ -118,8 +117,7 @@ struct AssetsView: View {
             } else {
                 motionToken += 1
                 detailAccountID = nil
-                detailOwnsCard = false
-                closeInFlight = false
+                scrollLocked = false
                 motion.selectedAccountID = nil
             }
         }
@@ -224,8 +222,8 @@ struct AssetsView: View {
         )
         .grayscale(account.archived ? 1 : 0)
         .frame(height: height)
-        // 卡片交给详情后，卡包里这张隐藏（不带动画，见 animateOpen() / close()）
-        .opacity(detailOwnsCard && detailAccountID == account.id ? 0 : 1)
+        // 卡片画在详情里时，卡包里这张隐藏（不带动画，见 open() / animateClose()）
+        .opacity(detailAccountID == account.id ? 0 : 1)
         // 点按区域要放在位移之前，才会跟着卡片移动；放在之后时所有卡的点按区域都叠在卡包顶部，总是点到最上面那张
         .contentShape(Rectangle())
         .onTapGesture {
@@ -327,59 +325,74 @@ struct AssetsView: View {
         )
     }
 
+    /// 卡片在卡包里的位置相对详情顶部位置的距离（不算详情的滚动）
+    private func restLift(_ index: Int) -> CGFloat {
+        stackLayout(width: box.pageSize.width).restY(index) - (openShift - scrollShift)
+    }
+
+    /// 下面那几张卡的上边缘（就是紧挨着的下一张的上边缘），相对详情里卡片的顶部位置；没有下面的卡时为 nil。
+    /// 卡包打开时不能滚动，下面的卡只按 dropDistance 落下 / 升起，不受 scrollShift 影响
+    private func coverTop(width: CGFloat) -> CGFloat? {
+        guard let index = openedIndex, index + 1 < stackAccounts.count else { return nil }
+        let rest = stackLayout(width: width).restY(index + 1) - openShift
+        return coverDropped ? rest + dropDistance : rest
+    }
+
+    /// 遮罩边缘的动画，和下面的卡（CardPlacement）完全相同，两者才始终对齐
+    private var coverDrop: Animation { reduceMotion ? transition : CardPlacement.drop }
+    private var coverRise: Animation { reduceMotion ? transition : CardPlacement.rise }
+
     private func open(_ account: Account) {
-        guard selectedID == nil,
+        // 关闭动画没结束时详情还在、挡着卡包，点不到这里
+        guard selectedID == nil, detailAccountID == nil,
               let index = stackAccounts.firstIndex(where: { $0.id == account.id }) else { return }
         // 卡包顶端当前在屏幕上的位置 = 标题区高度 - 滚动偏移；移到详情位置所需的位移对每张卡都相同
         let stackTop = box.headerHeight - box.scrollOffset
         openShift = AppLayout.detailTop - stackTop
+        scrollShift = 0
         dropDistance = box.pageSize.height + max(0, -stackTop)
         openedIndex = index
         box.detailOffset = 0
         motionToken += 1
         let token = motionToken
-        // 卡包里的卡停在原位时，两张卡起点相同，可以在下面的卡离场后就交接
-        let earlyHandover = !closeInFlight
-        // 详情先不带动画出现：卡片（隐藏）放在它在卡包里的位置，内容在下面、透明；
-        // 返回途中重新打开时换一个新的，从顶部开始
+        // 详情先不带动画出现，卡片画在它在卡包里的位置、按下面的卡裁好，卡包里那张同时隐藏，看不出变化
         withoutAnimation {
             detailAccountID = account.id
-            detailSession += 1
-            detailOwnsCard = false
-            detailLift = stackLayout(width: box.pageSize.width).restY(index) - openShift
+            detailLift = restLift(index)
+            coverDropped = false
             contentShown = false
+            scrollLocked = false
         }
-        // 下一帧（详情已经画出来）再开始转场，卡片和内容才有起点可以动画
+        // 下一帧（详情已经画出来）再开始转场，卡片才有起点可以动画
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(10))
             guard token == motionToken else { return }
-            animateOpen(account.id, token: token, earlyHandover: earlyHandover)
+            animateOpen(account.id)
         }
     }
 
-    private func animateOpen(_ id: String, token: Int, earlyHandover: Bool) {
+    private func animateOpen(_ id: String) {
+        motionToken += 1
+        scrollLocked = false
         let signpost = AppServices.signposter.beginInterval("DetailOpen")
-        // 卡包里所有卡按新状态一起动：选中的卡移到顶部，上面的卡收到后面，下面的卡落出屏幕；
-        // 详情里隐藏的那张在同一个事务里走同样的动画
-        withAnimation(transition, completionCriteria: .removed) {
-            scrollShift = 0
+        // 卡包里的卡按新状态一起动：上面的卡收到后面，下面的卡落出屏幕；详情里的卡移到顶部
+        withAnimation(transition) {
             motion.selectedAccountID = id
             detailLift = 0
         } completion: {
             AppServices.signposter.endInterval("DetailOpen", signpost)
-            guard token == motionToken else { return }
-            closeInFlight = false
-            // 没能提前交接时（返回途中重新打开），停稳后交接
-            if !detailOwnsCard { withoutAnimation { detailOwnsCard = true } }
         }
+        withAnimation(coverDrop) { coverDropped = true }
         // 内容在卡片移动的同时入场
         withAnimation(contentEntrance) { contentShown = true }
-        guard earlyHandover else { return }
-        // 下面的卡落出屏幕后交给详情：两张卡此刻位置相同，之后可以滚动，卡片剩下的移动在滚动区里完成
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(CardPlacement.dropDuration + 0.02))
-            guard token == motionToken else { return }
-            withoutAnimation { detailOwnsCard = true }
+    }
+
+    /// 打开时点卡片返回卡包；关闭动画中点它再次打开
+    private func tapDetailCard() {
+        if isOpen {
+            close()
+        } else if let detailAccountID {
+            animateOpen(detailAccountID)
         }
     }
 
@@ -387,18 +400,15 @@ struct AssetsView: View {
         guard selectedID != nil else { return }
         motionToken += 1
         let token = motionToken
-        guard detailOwnsCard else {
-            // 还没交接：卡片还在卡包里，直接从当前位置返回
+        scrollLocked = true
+        // 往下拉时详情里的卡不动，按没滚动算
+        let scrolled = max(0, box.detailOffset)
+        guard scrolled != scrollShift else {
             animateClose(token)
             return
         }
-        // 交回卡包：卡包里那张（和收在后面的卡）不带动画放到详情里卡片现在的位置，详情里那张同时隐藏；
-        // 往下拉时详情里的卡不动，按没滚动算。没滚动过时两张卡本来就在同一位置（打开动画没结束也一样），不用移动
-        withoutAnimation {
-            scrollShift = max(0, box.detailOffset)
-            detailOwnsCard = false
-        }
-        // 下一帧再一起回卡包，动画才从交接后的位置开始
+        // 详情滚动过：卡包里的卡（隐藏的选中卡和收在后面的卡）先不带动画上移到卡片现在的位置，下一帧再一起回卡包
+        withoutAnimation { scrollShift = scrolled }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(10))
             guard token == motionToken else { return }
@@ -407,19 +417,23 @@ struct AssetsView: View {
     }
 
     private func animateClose(_ token: Int) {
+        guard let index = openedIndex else { return }
         let signpost = AppServices.signposter.beginInterval("DetailClose")
-        closeInFlight = true
-        withAnimation(contentExit) { contentShown = false } completion: {
-            guard token == motionToken else { return }
-            withoutAnimation { detailAccountID = nil }
-        }
-        // 选中的卡回到卡包里的位置，上面的卡从它后面出来，下面的卡升回来压住它的下半部分
-        withAnimation(transition) {
+        withAnimation(contentExit) { contentShown = false }
+        withAnimation(coverRise) { coverDropped = false }
+        // 详情里的卡和卡包里隐藏的那张走同样的动画、到同一个位置；下面的卡同时升回来压住它的下半部分。
+        // 完全停稳后再交回卡包，交接时两张都静止在原位
+        withAnimation(transition, completionCriteria: .removed) {
             motion.selectedAccountID = nil
+            detailLift = restLift(index)
         } completion: {
             AppServices.signposter.endInterval("DetailClose", signpost)
             guard token == motionToken else { return }
-            closeInFlight = false
+            // 交回卡包：详情移除，卡包里那张同时出现（都已停在原位）
+            withoutAnimation {
+                detailAccountID = nil
+                scrollLocked = false
+            }
         }
     }
 
@@ -506,8 +520,12 @@ private struct CardPlacement: ViewModifier {
     /// 收到后面时的缩放和倾斜角度
     static let behindScale: CGFloat = 0.86
     static let behindTilt: Double = 30
-    /// 下面的卡落下的时长
-    static let dropDuration: Double = 0.3
+    /// 下面的卡落下的时长；落出屏幕后不再绘制
+    static let dropDuration: Double = 0.25
+    /// 下面的卡落出屏幕：加速下落
+    static let drop: Animation = .easeIn(duration: dropDuration)
+    /// 返回时下面的卡升回来：和选中的卡同样的弹簧，稍晚一点，让详情内容先开始淡出
+    static var rise: Animation { DetailMotionState.transition(reduceMotion: false).delay(0.06) }
 
     private var y: CGFloat {
         switch role {
@@ -521,8 +539,8 @@ private struct CardPlacement: ViewModifier {
     /// 其余情况沿用转场的弹簧动画。
     private var offsetAnimation: Animation? {
         guard !reduceMotion else { return nil }
-        if role == .below { return .easeIn(duration: Self.dropDuration) }
-        if role == .resting, wasBelow { return DetailMotionState.transition(reduceMotion: false).delay(0.06) }
+        if role == .below { return Self.drop }
+        if role == .resting, wasBelow { return Self.rise }
         return nil
     }
 
