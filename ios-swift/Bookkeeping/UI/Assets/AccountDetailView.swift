@@ -4,19 +4,25 @@ import BKModel
 /// 账户详情的内容区：待处理提示、余额、交易记录。显示在选中卡片的下方，卡片本身和顶部按钮由资产页负责。
 /// 右上角菜单（卡片信息、编辑卡面、待处理账单）在资产页的顶部按钮里；自动记账的设置在「我的」里。
 ///
-/// 滚动区从页面顶端开始，最上面是卡片，和下面的内容一起由系统滚动。
-/// 转场中卡片画在资产页的卡包里，这里同一位置先留空（`showsCard` 为 false，也不能滚动）；
-/// 转场结束后由这里画卡片，卡包里那张隐藏。点按卡片返回卡包。
+/// 滚动区从页面顶端开始，最上面是卡片，和下面的内容在同一个滚动区里，一起由系统滚动。
+/// 滚动区本身不做动画；打开 / 关闭时只有区内的卡片（`cardLift`）和内容（`contentShown`）做位移动画，
+/// 所以动画中途也能顺畅滚动。点按卡片返回卡包。
 struct AccountDetailView: View {
     let account: Account
     let pendingCount: Int
     /// 滚动区顶端到卡片上边缘的距离
     let cardTop: CGFloat
     let cardHeight: CGFloat
-    let showsCard: Bool
-    /// 记录滚动距离，关闭时资产页据此把卡包里的卡放到卡片当前的位置
+    /// 卡片相对顶部位置的位移：打开后为 0，打开前 / 关闭后是它在卡包里的位置
+    let cardLift: CGFloat
+    let contentShown: Bool
+    /// 内容隐藏时向下移开的距离
+    let contentDrop: CGFloat
+    let scrollLocked: Bool
+    /// 记录滚动距离，关闭时资产页据此算出卡片当前的位置
     let box: AssetsScrollBox
     let openPending: () -> Void
+    let tapCard: () -> Void
     let close: () -> Void
 
     @Environment(LedgerStore.self) private var store
@@ -34,22 +40,26 @@ struct AccountDetailView: View {
                 WalletCardView(account: account, balanceText: store.balances[account.id]?.cardText ?? "余额未知")
                     .grayscale(account.archived ? 1 : 0)
                     .frame(height: cardHeight)
-                    .opacity(showsCard ? 1 : 0)
+                    // 点按区域放在位移之前，跟着卡片移动
                     .contentShape(Rectangle())
-                    .onTapGesture(perform: close)
+                    .onTapGesture(perform: tapCard)
+                    .offset(y: cardLift)
                     .padding(.top, cardTop)
-                    .accessibilityHidden(!showsCard)
+                    // 移回卡包时盖在正在退下的内容上面
+                    .zIndex(1)
                     .accessibilityAddTraits(.isButton)
                     .accessibilityHint("返回卡包")
                 content
                     .padding(.top, 8)
                     .padding(.bottom, 48)
+                    .offset(y: contentShown ? 0 : contentDrop)
+                    .opacity(contentShown ? 1 : 0)
+                    .accessibilityHidden(!contentShown)
             }
             .padding(.horizontal, AppLayout.cardInset)
         }
         .scrollIndicators(.hidden)
-        // 交接前卡片还在卡包里，滚动会让两者错开
-        .scrollDisabled(!showsCard)
+        .scrollDisabled(scrollLocked)
         .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y + $0.contentInsets.top } action: { _, offset in
             box.detailOffset = offset
         }

@@ -6,8 +6,8 @@ import BKBackend
 final class AssetsScrollBox {
     var scrollOffset: CGFloat = 0
     var headerHeight: CGFloat = 0
-    var pageHeight: CGFloat = 0
-    /// 详情内容的滚动距离；关闭详情时用它算出卡片当前在哪
+    var pageSize: CGSize = .zero
+    /// 详情的滚动距离；关闭详情时用它算出卡片当前在哪
     var detailOffset: CGFloat = 0
 }
 
@@ -16,9 +16,11 @@ final class AssetsScrollBox {
 /// 转场参考 Apple 钱包：选中的卡片移到顶部；它上面的卡一边上移一边缩小、向里倾斜，收到选中卡片后面；
 /// 它下面的卡直接向下落出屏幕。下面的卡离场后，详情内容再从下往上进入。返回时按相反的顺序。
 ///
-/// 卡片的交接：转场中卡片画在卡包里；转场结束后，详情的滚动区在同一位置画出同一张卡，卡包里那张隐藏，
-/// 所以滚动详情时卡片和内容一起由系统滚动，不会一帧慢一帧地抖。关闭时先把卡包里那张放到卡片当前的位置
-/// （详情滚动过就更靠上），隐藏详情里那张，下一帧再按转场动画回到卡包。
+/// 选中的卡从点按起就画在详情的滚动区里（卡包里那张隐藏），和下面的内容是同一个滚动区，
+/// 打开动画还没结束也能滚动，卡片和内容始终一起动。滚动区本身不移动、不淡入，只有区内的卡片和内容做位移动画：
+/// - 打开：详情先不带动画出现，卡片画在它在卡包里的位置（看不出变化），下一帧卡片移到顶部、内容从下往上进入；
+/// - 关闭：卡片从当前位置（滚动过就更靠上）移回它在卡包里的位置，到位后详情移除，卡包里那张同时出现。
+///   卡包里那张隐藏期间一直和详情里的卡走同样的动画，所以任何时候交回都在同一个位置。
 /// 性能做法（参考 Apple 关于 SwiftUI 动画与渲染卡顿的建议）：
 /// - 打开 / 关闭只改一个状态（选中的卡），放在一个弹簧动画事务里；所有卡片按新状态一次算出终点，
 ///   动画只插值 offset / scaleEffect / rotation3DEffect / opacity 这些渲染变换，不重新布局、不每帧执行 body；
@@ -33,14 +35,20 @@ struct AssetsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var box = AssetsScrollBox()
-    /// 详情内容显示的卡。和选中的卡分开：内容的进入 / 退出有自己的动画，进入完成时交接卡片
+    /// 详情显示的卡。和选中的卡分开：关闭动画结束后才移除，在这之前卡片仍画在详情里
     @State private var detailAccountID: String?
-    /// 卡片已交给详情的滚动区（卡包里那张隐藏）
-    @State private var cardInDetail = false
+    /// 详情里的卡片相对顶部位置的位移：打开后为 0，打开前 / 关闭后是它在卡包里的位置
+    @State private var detailLift: CGFloat = 0
+    /// 详情的内容（卡片下面的部分）是否显示
+    @State private var contentShown = false
+    /// 关闭动画中详情不能滚动，卡片才能准确回到卡包
+    @State private var scrollLocked = false
     /// 每次打开 / 关闭 +1；动画完成回调据此判断自己是否已经过时
     @State private var motionToken = 0
     /// 卡包第一张卡从当前位置移到详情位置所需的位移；点按时计算一次
     @State private var openShift: CGFloat = 0
+    /// 关闭时详情已滚动的距离：卡包里的卡按这个距离上移，和详情里的卡对齐
+    @State private var scrollShift: CGFloat = 0
     /// 下面的卡落下的距离：页面高度；卡包顶端已滚出屏幕时再加上滚出的部分，保证落到屏幕外
     @State private var dropDistance: CGFloat = 0
     /// 最近一次打开的卡在卡包里的位置；关闭后保留，用来让原来在下面的卡晚一点升回来
@@ -68,18 +76,22 @@ struct AssetsView: View {
                 stack(size: proxy.size)
 
                 if let detailAccount {
-                    // 进入 / 退出的动画由 open() / close() 里的 withAnimation 决定
+                    // 不带转场：出现和移除都不带动画，动画只在详情里面的卡片和内容上
                     AccountDetailView(
                         account: detailAccount,
                         pendingCount: cardPendingCount,
                         cardTop: AppLayout.detailTop,
                         cardHeight: cardHeight,
-                        showsCard: cardInDetail,
+                        cardLift: detailLift,
+                        contentShown: contentShown,
+                        contentDrop: proxy.size.height,
+                        scrollLocked: scrollLocked,
                         box: box,
                         openPending: { sheet = .pending },
+                        tapCard: tapDetailCard,
                         close: close
                     )
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .id(detailAccount.id)
                 }
 
                 topBar
@@ -87,7 +99,7 @@ struct AssetsView: View {
                     .padding(.top, 2)
             }
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { box.pageHeight = $0 }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { box.pageSize = $0 }
         // 详情展开时标签栏隐藏；忽略底部安全区，避免标签栏显隐改变页面尺寸
         .ignoresSafeArea(.container, edges: .bottom)
         .background(Color(.systemGroupedBackground))
@@ -99,8 +111,8 @@ struct AssetsView: View {
                 openedIndex = index
             } else {
                 motionToken += 1
-                cardInDetail = false
                 detailAccountID = nil
+                scrollLocked = false
                 motion.selectedAccountID = nil
             }
         }
@@ -121,9 +133,8 @@ struct AssetsView: View {
 
     private func stack(size: CGSize) -> some View {
         let cardHeight = AppLayout.cardHeight(size.width)
-        let peek = AppLayout.peek(size.width)
         let accounts = stackAccounts
-        let layout = StackLayout(active: store.accounts.count, archived: store.archivedAccounts.count, cardHeight: cardHeight, peek: peek)
+        let layout = stackLayout(width: size.width)
         return ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 0) {
                 header(count: store.accounts.count)
@@ -206,8 +217,8 @@ struct AssetsView: View {
         )
         .grayscale(account.archived ? 1 : 0)
         .frame(height: height)
-        // 卡片交给详情的滚动区后，卡包里这张隐藏（不带动画，见 open() / close()）
-        .opacity(role == .selected && cardInDetail ? 0 : 1)
+        // 卡片画在详情里时，卡包里这张隐藏（不带动画，见 open() / animateClose()）
+        .opacity(detailAccountID == account.id ? 0 : 1)
         // 点按区域要放在位移之前，才会跟着卡片移动；放在之后时所有卡的点按区域都叠在卡包顶部，总是点到最上面那张
         .contentShape(Rectangle())
         .onTapGesture {
@@ -216,7 +227,7 @@ struct AssetsView: View {
         .modifier(CardPlacement(
             role: role,
             restY: restY,
-            openY: openShift,
+            openY: openShift - scrollShift,
             dropDistance: dropDistance,
             wasBelow: index > (openedIndex ?? .max),
             reduceMotion: reduceMotion
@@ -297,60 +308,106 @@ struct AssetsView: View {
         reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.45, dampingFraction: 0.9).delay(CardPlacement.dropDuration * 0.8)
     }
 
+    private func stackLayout(width: CGFloat) -> StackLayout {
+        StackLayout(
+            active: store.accounts.count,
+            archived: store.archivedAccounts.count,
+            cardHeight: AppLayout.cardHeight(width),
+            peek: AppLayout.peek(width)
+        )
+    }
+
+    /// 卡片在卡包里的位置相对详情顶部位置的距离（不算详情的滚动）
+    private func restLift(_ index: Int) -> CGFloat {
+        stackLayout(width: box.pageSize.width).restY(index) - (openShift - scrollShift)
+    }
+
     private func open(_ account: Account) {
-        guard selectedID == nil else { return }
+        // 关闭动画没结束时详情还在、挡着卡包，点不到这里
+        guard selectedID == nil, detailAccountID == nil,
+              let index = stackAccounts.firstIndex(where: { $0.id == account.id }) else { return }
         // 卡包顶端当前在屏幕上的位置 = 标题区高度 - 滚动偏移；移到详情位置所需的位移对每张卡都相同
         let stackTop = box.headerHeight - box.scrollOffset
         openShift = AppLayout.detailTop - stackTop
-        dropDistance = box.pageHeight + max(0, -stackTop)
-        openedIndex = stackAccounts.firstIndex { $0.id == account.id }
+        scrollShift = 0
+        dropDistance = box.pageSize.height + max(0, -stackTop)
+        openedIndex = index
         box.detailOffset = 0
         motionToken += 1
         let token = motionToken
+        // 详情先不带动画出现，卡片画在它在卡包里的位置，卡包里那张同时隐藏，看不出变化
+        withoutAnimation {
+            detailAccountID = account.id
+            detailLift = restLift(index)
+            contentShown = false
+            scrollLocked = false
+        }
+        // 下一帧（详情已经画出来）再开始转场，卡片才有起点可以动画
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(10))
+            guard token == motionToken else { return }
+            animateOpen(account.id)
+        }
+    }
+
+    private func animateOpen(_ id: String) {
+        motionToken += 1
+        scrollLocked = false
         let signpost = AppServices.signposter.beginInterval("DetailOpen")
         withAnimation(transition) {
-            motion.selectedAccountID = account.id
+            motion.selectedAccountID = id
+            detailLift = 0
         } completion: {
             AppServices.signposter.endInterval("DetailOpen", signpost)
         }
-        // 内容在下面的卡离场后进入；进入完成时卡片也已到位，交给详情的滚动区
-        withAnimation(contentEntrance) {
-            detailAccountID = account.id
-        } completion: {
-            guard token == motionToken else { return }
-            withoutAnimation { cardInDetail = true }
+        // 内容在下面的卡离场后进入
+        withAnimation(contentEntrance) { contentShown = true }
+    }
+
+    /// 打开时点卡片返回卡包；关闭动画中点它再次打开
+    private func tapDetailCard() {
+        if isOpen {
+            close()
+        } else if let detailAccountID {
+            animateOpen(detailAccountID)
         }
     }
 
     private func close() {
         guard selectedID != nil else { return }
         motionToken += 1
-        guard cardInDetail else {
-            animateClose()
+        let token = motionToken
+        scrollLocked = true
+        let scrolled = box.detailOffset
+        guard scrolled != scrollShift else {
+            animateClose(token)
             return
         }
-        // 卡片交回卡包：先不带动画放到卡片现在的位置，下一帧（这一帧画出来以后）再按转场动画回去
-        let token = motionToken
-        withoutAnimation {
-            openShift -= box.detailOffset
-            cardInDetail = false
-        }
+        // 详情滚动过：卡包里的卡（隐藏的选中卡和收在后面的卡）先不带动画上移到卡片现在的位置，下一帧再一起回卡包
+        withoutAnimation { scrollShift = scrolled }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(10))
             guard token == motionToken else { return }
-            animateClose()
+            animateClose(token)
         }
     }
 
-    private func animateClose() {
+    private func animateClose(_ token: Int) {
+        guard let index = openedIndex else { return }
         let signpost = AppServices.signposter.beginInterval("DetailClose")
-        withAnimation(.easeIn(duration: 0.2)) {
-            detailAccountID = nil
-        }
+        withAnimation(.easeIn(duration: 0.2)) { contentShown = false }
+        // 详情里的卡和卡包里隐藏的那张走同样的动画、到同一个位置
         withAnimation(transition) {
             motion.selectedAccountID = nil
+            detailLift = restLift(index)
         } completion: {
             AppServices.signposter.endInterval("DetailClose", signpost)
+            guard token == motionToken else { return }
+            // 交回卡包：详情移除，卡包里那张同时出现
+            withoutAnimation {
+                detailAccountID = nil
+                scrollLocked = false
+            }
         }
     }
 
