@@ -2,262 +2,97 @@ import SwiftUI
 import BKModel
 import BKBackend
 
-/// 滚动位置和标题区高度。普通 class，不是 @Observable：滚动时写入不会触发重新渲染，只在点按卡片时读取。
-final class AssetsScrollBox {
-    var scrollOffset: CGFloat = 0
-    var headerHeight: CGFloat = 0
-    var pageSize: CGSize = .zero
-    /// 详情的滚动距离；关闭详情时用它算出卡片当前在哪
-    var detailOffset: CGFloat = 0
-}
-
 /// 资产页：卡包 → 点按卡片展开详情 → 返回。最下方是灰色的「已停用」卡包，也可以点开查看详情。
 ///
-/// 转场参考 Apple 钱包：选中的卡片移到顶部；它上面的卡一边上移一边缩小、向里倾斜，收到选中卡片后面；
-/// 它下面的卡同时向下落出屏幕；详情内容从屏幕底下整块升上来。返回时内容先淡出，卡片回到原位，
-/// 下面的卡同时升回来，像原来一样压住它的下半部分。
-///
-/// 选中的卡和它下面的卡在卡包和详情里各有一份，两份从同一帧开始走同样的动画，位置始终相同，只切换显示哪一份（`cardInDetail`）：
-/// - 打开：详情先不带动画出现在卡包上层，卡片画在它们在卡包里的位置（看不出变化），下一帧选中的卡移到顶部、
-///   下面的卡落下、内容跟着升起。选中的卡和内容在同一个滚动区，点开马上就能滚动；下面的卡叠在选中的卡和内容上层，
-///   和卡包里一样压住选中卡的下半部分，不用遮罩；
-/// - 关闭：卡片一开始就交回卡包，由卡包里的卡从当前位置（详情滚动过就更靠上）回到原位；详情移到卡包下层，只剩内容淡出。
-///   卡包马上能滑动、能点；返回途中再点同一张卡会转向重新打开（卡包没滑动过时两份仍同步，直接交回详情），
-///   点别的卡或卡包已滑动时，先在卡包里转向打开，停稳后再交给详情。
-/// 性能做法（参考 Apple 关于 SwiftUI 动画与渲染卡顿的建议）：
-/// - 打开 / 关闭只改一个状态（选中的卡），放在一个弹簧动画事务里；所有卡片按新状态一次算出终点，
-///   动画只插值 offset / scaleEffect / rotation3DEffect / opacity 这些渲染变换，不重新布局、不每帧执行 body；
-/// - 卡片在卡包和详情里尺寸相同，转场中不改变 frame；
-/// - 滚动时不逐卡记录位置，只记录一个滚动偏移，点按时算出卡片要移动的距离；
-/// - 弹簧动画可以被打断并平滑转向，动画中途再点也不会跳帧。
+/// 卡包、详情和它们之间的转场在 `WalletController`（UIKit + Core Animation，ADR 0012）。
+/// 这里是 SwiftUI 的外壳：顶部按钮、标签栏显隐和各个弹出页面。打开 / 关闭时 `WalletController` 通知这里，
+/// 返回按钮、「+」的液态玻璃合并和标签栏用同样参数的弹簧，和卡片同时开始。
 struct AssetsView: View {
     let openAddAccount: () -> Void
 
     @Environment(LedgerStore.self) private var store
+    @Environment(ExchangeRateStore.self) private var rates
     @Environment(DetailMotionState.self) private var motion
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @State private var box = AssetsScrollBox()
-    /// 详情显示的卡。和选中的卡分开：关闭动画结束后才移除，在这之前内容在卡包下层淡出
-    @State private var detailAccountID: String?
-    /// 每次新建详情 +1，作为详情的标识
-    @State private var detailSession = 0
-    /// 选中的卡和下面的卡画在详情里（卡包里那几张隐藏）；为 false 时由卡包里的卡显示，详情在卡包下层
-    @State private var cardInDetail = false
-    /// 详情里的卡片相对顶部位置的位移：打开后为 0，打开前 / 关闭后是它在卡包里的位置
-    @State private var detailLift: CGFloat = 0
-    /// 下面的卡是否已落出屏幕（详情里那份按它定位）
-    @State private var belowDropped = false
-    /// 卡片不在详情里时详情不能滚动，卡片和内容才能对齐
-    @State private var scrollLocked = false
-    /// 开始关闭时卡包的滚动位置；返回途中卡包没滑动过，详情里的卡才和卡包里的同步，可以直接重新打开
-    @State private var closeStackOffset: CGFloat?
-    /// 详情的内容（卡片下面的部分）是否显示
-    @State private var contentShown = false
-    /// 每次打开 / 关闭 +1；动画完成回调据此判断自己是否已经过时
-    @State private var motionToken = 0
-    /// 卡包第一张卡从当前位置移到详情位置所需的位移；点按时计算一次
-    @State private var openShift: CGFloat = 0
-    /// 关闭时详情已滚动的距离：卡包里的卡按这个距离上移，和详情里的卡对齐
-    @State private var scrollShift: CGFloat = 0
-    /// 下面的卡落下的距离：页面高度；卡包顶端已滚出屏幕时再加上滚出的部分，保证落到屏幕外
-    @State private var dropDistance: CGFloat = 0
-    /// 最近一次打开的卡在卡包里的位置；关闭后保留，用来让原来在下面的卡晚一点升回来
-    @State private var openedIndex: Int?
-    @State private var cardPendingCount = 0
+    @State private var detail = WalletDetailModel()
+    @State private var bridge = WalletBridge()
     @State private var sheet: AssetsSheet?
     @Namespace private var glass
 
     private var selectedID: String? { motion.selectedAccountID }
     private var isOpen: Bool { selectedID != nil }
 
-    enum AssetsSheet: Identifiable {
+    enum AssetsSheet: Identifiable, Hashable {
         case info, face, pending, manage
+        case record(RecordRow)
+        case openingBalance(CurrencyCode)
         var id: Self { self }
     }
 
-    /// 卡包顺序：使用中的卡在前，已停用的卡在后
-    private var stackAccounts: [Account] { store.accounts + store.archivedAccounts }
-
     var body: some View {
-        GeometryReader { proxy in
-            let cardHeight = AppLayout.cardHeight(proxy.size.width)
-            let detailAccount = detailAccountID.flatMap { store.account(id: $0) }
-            ZStack(alignment: .top) {
-                stack(size: proxy.size)
-
-                if let detailAccount {
-                    // 不带转场：出现和移除都不带动画，动画只在详情里面的内容上
-                    AccountDetailView(
-                        account: detailAccount,
-                        pendingCount: cardPendingCount,
-                        cardTop: AppLayout.detailTop,
-                        cardHeight: cardHeight,
-                        cardLift: detailLift,
-                        belowCards: belowCards(width: proxy.size.width),
-                        showsCards: cardInDetail,
-                        contentShown: contentShown,
-                        scrollLocked: scrollLocked,
-                        box: box,
-                        openPending: { sheet = .pending },
-                        close: close
-                    )
-                    .id(detailSession)
-                    // 卡片交回卡包后（返回途中）详情移到卡包下层、不接收触摸，卡包马上能滑动、能点。
-                    // 在卡包里转向打开、还没交接时详情虽在下层，也由它接收触摸（卡包这时不接收），内容一出现就能点
-                    .zIndex(cardInDetail ? 0 : -1)
-                    .allowsHitTesting(cardInDetail || isOpen)
-                }
-
-                topBar
-                    .padding(.horizontal, AppLayout.cardInset)
-                    .padding(.top, 2)
+        ZStack(alignment: .top) {
+            GeometryReader { proxy in
+                WalletPage(
+                    accounts: store.accounts + store.archivedAccounts,
+                    activeCount: store.accounts.count,
+                    balanceTexts: store.balances.mapValues(\.cardText),
+                    revision: store.revision,
+                    safeTop: proxy.safeAreaInsets.top,
+                    store: store,
+                    rates: rates,
+                    detail: detail,
+                    bridge: bridge,
+                    actions: actions
+                )
             }
-        }
-        .onGeometryChange(for: CGSize.self) { $0.size } action: { box.pageSize = $0 }
-        // 详情展开时标签栏隐藏；忽略底部安全区，避免标签栏显隐改变页面尺寸
-        .ignoresSafeArea(.container, edges: .bottom)
-        .background(Color(.systemGroupedBackground))
-        // 按详情显示的卡加载：点按时就开始，尽量在内容升起前算好，「N 条账单待处理」不在入场途中插进来把余额往下推
-        .task(id: PendingKey(account: detailAccountID, revision: store.revision)) { await loadPendingCount() }
-        .onChange(of: stackAccounts.map(\.id)) { _, ids in
-            // 详情里停用 / 启用后卡片换了位置：详情保持打开，按新位置重新区分上面和下面的卡
-            guard let selectedID else { return }
-            if let index = ids.firstIndex(of: selectedID) {
-                openedIndex = index
-            } else {
-                motionToken += 1
-                detailAccountID = nil
-                cardInDetail = false
-                scrollLocked = false
-                motion.selectedAccountID = nil
-            }
-        }
-        .sheet(item: $sheet) { sheet in
-            if sheet == .manage {
-                AccountManagerView()
-            } else if let selectedID {
-                switch sheet {
-                case .info: CardInfoView(accountID: selectedID)
-                case .face: CardFaceEditor(accountID: selectedID)
-                default: PendingView(account: store.account(id: selectedID))
-                }
-            }
-        }
-    }
+            // 铺满屏幕：标签栏显隐不改变页面尺寸；内容从状态栏下面开始由 WalletController 按 safeTop 处理
+            .ignoresSafeArea()
 
-    // MARK: 卡包
-
-    private func stack(size: CGSize) -> some View {
-        let cardHeight = AppLayout.cardHeight(size.width)
-        let accounts = stackAccounts
-        let layout = stackLayout(width: size.width)
-        return ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 0) {
-                header(count: store.accounts.count)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { box.headerHeight = $0 }
-
-                // 两个卡包放在同一个 ZStack 里：打开任何一张卡时，其他卡都按同一套规则收到后面或落出屏幕
-                if !accounts.isEmpty {
-                    ZStack(alignment: .top) {
-                        if layout.archived > 0 {
-                            sectionTitle("已停用", count: layout.archived)
-                                .frame(height: StackLayout.sectionTitleHeight, alignment: .bottom)
-                                .offset(y: layout.archivedTitleY)
-                                .fadesWhenOpen(isOpen)
-                        }
-                        ForEach(Array(accounts.enumerated()), id: \.element.id) { index, account in
-                            card(account, index: index, height: cardHeight, restY: layout.restY(index))
-                        }
-                    }
-                    .frame(height: layout.height, alignment: .top)
-                }
-                // 标签栏下方留白（页面忽略了底部安全区）
-                Color.clear.frame(height: 120)
-            }
-            .padding(.horizontal, AppLayout.cardInset)
-        }
-        .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y + $0.contentInsets.top } action: { _, offset in
-            box.scrollOffset = offset
-        }
-        .scrollDisabled(isOpen)
-        .scrollIndicators(.hidden)
-        // 详情打开时卡包完全不接收触摸：卡包里隐藏的选中卡停在顶部，详情滚动后流水正好在它的位置，
-        // 点流水时会同时点到它，既打开流水详情又返回卡包
-        .allowsHitTesting(!isOpen && !cardInDetail)
-    }
-
-    /// 「资产」标题、净资产卡、「银行卡」一行（没有使用中的卡时是添加卡片的占位）。打开详情时向上淡出，返回时在卡片回位后淡入。
-    private func header(count: Int) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("资产")
-                .font(.largeTitle.weight(.bold))
-                .frame(height: 44)
-                .padding(.horizontal, 4)
+            topBar
+                .padding(.horizontal, AppLayout.cardInset)
                 .padding(.top, 2)
-                .accessibilityAddTraits(.isHeader)
+        }
+        // 详情展开时用系统的方式隐藏标签栏（随打开 / 关闭的动画滑出 / 滑入）。
+        // 放在资产页里而不是根视图上：打开详情时只有资产页重新计算，其他标签页不受影响
+        .toolbarVisibility(isOpen ? .hidden : .visible, for: .tabBar)
+        .sheet(item: $sheet) { sheet in
+            sheetContent(sheet)
+        }
+    }
 
-            OverviewCard()
-                .padding(.top, 8)
+    private var actions: WalletActions {
+        WalletActions(
+            selectionChanged: { [motion, reduceMotion] id in
+                withAnimation(DetailMotionState.transition(reduceMotion: reduceMotion)) {
+                    motion.selectedAccountID = id
+                }
+            },
+            addAccount: openAddAccount,
+            openPending: { sheet = .pending },
+            openRecord: { sheet = .record($0) },
+            editOpeningBalance: { sheet = .openingBalance($0) }
+        )
+    }
 
-            if count > 0 {
-                sectionTitle("银行卡", count: count)
-            } else {
-                EmptyWalletCard(action: openAddAccount)
-                    .padding(.top, 24)
-                    .padding(.bottom, 10)
+    @ViewBuilder
+    private func sheetContent(_ sheet: AssetsSheet) -> some View {
+        switch sheet {
+        case .manage:
+            AccountManagerView()
+        case .record(let row):
+            RecordDetailSheet(recordID: row.id)
+        case .pending:
+            PendingView(account: selectedID.flatMap { store.account(id: $0) })
+        case .info:
+            if let selectedID { CardInfoView(accountID: selectedID) }
+        case .face:
+            if let selectedID { CardFaceEditor(accountID: selectedID) }
+        case .openingBalance(let currency):
+            if let account = selectedID.flatMap({ store.account(id: $0) }) {
+                OpeningBalanceEditor(account: account, currency: currency)
             }
         }
-        .fadesWhenOpen(isOpen)
-    }
-
-    private func sectionTitle(_ title: String, count: Int) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(title).font(.title3.weight(.semibold))
-            Spacer()
-            Text("共 \(count) 张").font(.subheadline).foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 4)
-        .padding(.top, 24)
-        .padding(.bottom, 10)
-    }
-
-    private func card(_ account: Account, index: Int, height: CGFloat, restY: CGFloat) -> some View {
-        let role: CardRole
-        if selectedID == nil {
-            role = .resting
-        } else if selectedID == account.id {
-            role = .selected
-        } else {
-            role = index < (openedIndex ?? 0) ? .behind : .below
-        }
-        return WalletCardView(
-            account: account,
-            balanceText: store.balances[account.id]?.cardText ?? "余额未知"
-        )
-        .grayscale(account.archived ? 1 : 0)
-        .frame(height: height)
-        // 选中的卡和下面的卡画在详情里时，卡包里这几张隐藏（不带动画，见 open() / animateClose()）。
-        // 只看 cardInDetail 和 openedIndex：切换显示的那一帧它们不带动画，不会跟着转场的动画淡入淡出
-        .opacity(cardInDetail && index >= (openedIndex ?? .max) ? 0 : 1)
-        // 点按区域要放在位移之前，才会跟着卡片移动；放在之后时所有卡的点按区域都叠在卡包顶部，总是点到最上面那张
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if role == .selected { close() } else { open(account) }
-        }
-        .modifier(CardPlacement(
-            role: role,
-            restY: restY,
-            openY: openShift,
-            scrollShift: scrollShift,
-            dropDistance: dropDistance,
-            wasBelow: index > (openedIndex ?? .max),
-            reduceMotion: reduceMotion
-        ))
-        .allowsHitTesting(role == .resting || role == .selected)
-        .accessibilityHidden(role == .behind || role == .below)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityHint(role == .selected ? "返回卡包" : account.archived ? "已停用，打开账户详情" : "打开账户详情")
     }
 
     // MARK: 顶部按钮
@@ -267,7 +102,7 @@ struct AssetsView: View {
     private var topBar: some View {
         HStack {
             if isOpen {
-                Button(action: close) {
+                Button { bridge.close() } label: {
                     ToolbarIcon("chevron.left")
                 }
                 .buttonStyle(.plain)
@@ -305,7 +140,7 @@ struct AssetsView: View {
         Menu {
             Button("卡片信息", systemImage: "creditcard") { sheet = .info }
             Button("编辑卡面", systemImage: "paintbrush") { sheet = .face }
-            Button(cardPendingCount > 0 ? "待处理账单（\(cardPendingCount)）" : "待处理账单", systemImage: "tray") { sheet = .pending }
+            Button(detail.pendingCount > 0 ? "待处理账单（\(detail.pendingCount)）" : "待处理账单", systemImage: "tray") { sheet = .pending }
         } label: {
             ToolbarIcon("ellipsis")
         }
@@ -320,310 +155,68 @@ struct AssetsView: View {
         }
         .accessibilityLabel(isOpen ? "更多" : "管理银行卡")
     }
+}
 
-    // MARK: 转场
+// MARK: - 标题区
 
-    private var transition: Animation { DetailMotionState.transition(reduceMotion: reduceMotion) }
+/// 卡包上方的标题区：「资产」、净资产卡、「银行卡」一行（没有使用中的卡时是添加卡片的占位）。
+/// 由 `WalletController` 放在卡包的滚动区里，打开详情时向上淡出。
+struct WalletHeader: View {
+    let count: Int
+    let store: LedgerStore
+    let rates: ExchangeRateStore
+    let addAccount: () -> Void
 
-    /// 详情内容在卡片上移的同时从屏幕底下整块升上来，和卡片差不多同时到位；不回弹，不会顶到卡片下面
-    private var contentEntrance: Animation {
-        reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.5, dampingFraction: 1)
-    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("资产")
+                .font(.largeTitle.weight(.bold))
+                .frame(height: 44)
+                .padding(.horizontal, 4)
+                .padding(.top, 2)
+                .accessibilityAddTraits(.isHeader)
 
-    /// 在卡包里转向打开时用固定时长的曲线：动画停住的那一刻正好交给详情、可以滑动，没有看不出来的弹簧尾巴。
-    /// 卡片和内容用同一条曲线，一起到位
-    private var reopenTransition: Animation {
-        reduceMotion ? transition : .timingCurve(0.25, 1, 0.5, 1, duration: 0.45)
-    }
+            OverviewCard()
+                .padding(.top, 8)
 
-    /// 返回时内容先快速淡出，卡片同时开始回卡包
-    private var contentExit: Animation { .easeIn(duration: 0.15) }
-
-    private func stackLayout(width: CGFloat) -> StackLayout {
-        StackLayout(
-            active: store.accounts.count,
-            archived: store.archivedAccounts.count,
-            cardHeight: AppLayout.cardHeight(width),
-            peek: AppLayout.peek(width)
-        )
-    }
-
-    /// 卡片在卡包里的位置相对详情顶部位置的距离（不算详情的滚动）
-    private func restLift(_ index: Int) -> CGFloat {
-        stackLayout(width: box.pageSize.width).restY(index) - (openShift - scrollShift)
-    }
-
-    /// 详情里画的下面那几张卡，位置相对详情里卡片的顶部位置。
-    /// 卡包打开时不能滚动，下面的卡只按 dropDistance 落下 / 升起，不受 scrollShift 影响
-    private func belowCards(width: CGFloat) -> [AccountDetailView.BelowCard] {
-        guard let index = openedIndex else { return [] }
-        let layout = stackLayout(width: width)
-        let accounts = stackAccounts
-        return accounts.indices.dropFirst(index + 1).map { i in
-            .init(account: accounts[i], lift: layout.restY(i) - openShift + (belowDropped ? dropDistance : 0))
-        }
-    }
-
-    /// 详情里下面的卡的动画，和卡包里那几张（CardPlacement）完全相同，两份才始终对齐
-    private var belowDrop: Animation { reduceMotion ? transition : CardPlacement.drop }
-    private var belowRise: Animation { reduceMotion ? transition : CardPlacement.rise }
-
-    private func open(_ account: Account) {
-        guard selectedID == nil, let index = stackAccounts.firstIndex(where: { $0.id == account.id }) else { return }
-        if detailAccountID == account.id, index == openedIndex, closeStackOffset == box.scrollOffset {
-            // 返回途中再点同一张卡，卡包没滑动过：详情里的卡一直和卡包里的同步，直接交回详情、从当前位置转向打开
-            withoutAnimation {
-                cardInDetail = true
-                scrollLocked = false
-            }
-            animateOpen(account.id)
-            return
-        }
-        let reopening = detailAccountID != nil
-        // 卡包顶端当前在屏幕上的位置 = 标题区高度 - 滚动偏移；移到详情位置所需的位移对每张卡都相同
-        let stackTop = box.headerHeight - box.scrollOffset
-        openShift = AppLayout.detailTop - stackTop
-        scrollShift = 0
-        dropDistance = box.pageSize.height + max(0, -stackTop)
-        openedIndex = index
-        box.detailOffset = 0
-        motionToken += 1
-        let token = motionToken
-        withoutAnimation {
-            detailSession += 1
-            detailAccountID = account.id
-            contentShown = false
-            if reopening {
-                // 返回动画还没结束，卡包里的卡还在动：先由卡包里的卡转向打开，详情里那份直接放在终点，停稳后再交接
-                cardInDetail = false
-                detailLift = 0
-                belowDropped = true
-                scrollLocked = true
+            if count > 0 {
+                WalletSectionTitle(title: "银行卡", count: count)
             } else {
-                // 详情不带动画出现，卡片画在它们在卡包里的位置，卡包里那几张同时隐藏，看不出变化
-                cardInDetail = true
-                detailLift = restLift(index)
-                belowDropped = false
-                scrollLocked = false
+                EmptyWalletCard(action: addAccount)
+                    .padding(.top, 24)
+                    .padding(.bottom, 10)
             }
         }
-        // 下一帧（详情已经画出来）再开始转场，卡片和内容才有起点可以动画
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(10))
-            guard token == motionToken else { return }
-            if reopening {
-                animateOpenInStack(account.id)
-            } else {
-                animateOpen(account.id)
-            }
-        }
-    }
-
-    private func animateOpen(_ id: String) {
-        motionToken += 1
-        let signpost = AppServices.signposter.beginInterval("DetailOpen")
-        // 卡包里的卡按新状态一起动：上面的卡收到后面，下面的卡落出屏幕；详情里那份走同样的动画
-        withAnimation(transition) {
-            motion.selectedAccountID = id
-            detailLift = 0
-        } completion: {
-            AppServices.signposter.endInterval("DetailOpen", signpost)
-        }
-        withAnimation(belowDrop) { belowDropped = true }
-        // 内容在卡片移动的同时入场
-        withAnimation(contentEntrance) { contentShown = true }
-    }
-
-    /// 卡包里的卡从当前位置转向打开；动画结束时交给详情，之后才能滚动
-    private func animateOpenInStack(_ id: String) {
-        motionToken += 1
-        let token = motionToken
-        let signpost = AppServices.signposter.beginInterval("DetailOpen")
-        withAnimation(reopenTransition, completionCriteria: .removed) {
-            motion.selectedAccountID = id
-        } completion: {
-            AppServices.signposter.endInterval("DetailOpen", signpost)
-            guard token == motionToken else { return }
-            withoutAnimation {
-                cardInDetail = true
-                scrollLocked = false
-            }
-        }
-        withAnimation(reopenTransition) { contentShown = true }
-    }
-
-    private func close() {
-        guard selectedID != nil else { return }
-        motionToken += 1
-        let token = motionToken
-        scrollLocked = true
-        // 往下拉时详情里的卡不动，按没滚动算
-        let scrolled = max(0, box.detailOffset)
-        guard cardInDetail, scrolled != scrollShift else {
-            animateClose(token)
-            return
-        }
-        // 详情滚动过：卡包里隐藏的卡（选中的卡和收在后面的卡）先不带动画上移到卡片现在的位置，下一帧再交回卡包。
-        // scrollShift 是单独的一层位移，不打断还在进行的打开动画
-        withoutAnimation { scrollShift = scrolled }
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(10))
-            guard token == motionToken else { return }
-            animateClose(token)
-        }
-    }
-
-    private func animateClose(_ token: Int) {
-        guard let index = openedIndex else { return }
-        let signpost = AppServices.signposter.beginInterval("DetailClose")
-        // 卡片在详情里时两份同步；在卡包里转向打开、还没交接时详情里那份停在终点，不同步，不能直接重新打开
-        closeStackOffset = cardInDetail ? box.scrollOffset : nil
-        // 交回卡包：卡包里的卡和详情里的位置相同，接着从当前位置动；详情移到卡包下层，卡包马上能滑动、能点
-        withoutAnimation { cardInDetail = false }
-        withAnimation(contentExit) { contentShown = false }
-        // 详情里隐藏的那份也走同样的动画，返回途中再点同一张卡时可以直接交回详情
-        withAnimation(belowRise) { belowDropped = false }
-        // 卡片已在卡包里，详情只剩淡出的内容，看起来停稳（不必等弹簧完全静止）就移除；
-        // 之后再点卡片走普通的打开，马上能点、能滑
-        withAnimation(transition, completionCriteria: .logicallyComplete) {
-            motion.selectedAccountID = nil
-            detailLift = restLift(index)
-        } completion: {
-            AppServices.signposter.endInterval("DetailClose", signpost)
-            guard token == motionToken else { return }
-            withoutAnimation {
-                detailAccountID = nil
-                scrollLocked = false
-            }
-        }
-    }
-
-    private func withoutAnimation(_ body: () -> Void) {
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction, body)
-    }
-
-    private struct PendingKey: Hashable {
-        let account: String?
-        let revision: Int
-    }
-
-    private func loadPendingCount() async {
-        guard let detailAccountID, let account = store.account(id: detailAccountID), store.pendingCount > 0 else {
-            cardPendingCount = 0
-            return
-        }
-        cardPendingCount = await store.pendingItems().filter { PendingView.belongs($0, to: account) }.count
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .environment(store)
+        .environment(rates)
     }
 }
 
-// MARK: - 卡片位置
+/// 卡包上方的分组标题：「银行卡 共 N 张」「已停用 共 N 张」
+struct WalletSectionTitle: View {
+    let title: String
+    let count: Int
 
-/// 卡包里每张卡静止时的位置：使用中的卡从顶端开始叠放；已停用的卡在下面，中间隔一行「已停用」标题。
-private struct StackLayout {
-    let active: Int
-    let archived: Int
-    let cardHeight: CGFloat
-    let peek: CGFloat
-
-    static let sectionTitleHeight: CGFloat = 64
-
-    private func pileHeight(_ count: Int) -> CGFloat {
-        count > 0 ? cardHeight + CGFloat(count - 1) * peek : 0
-    }
-
-    var archivedTitleY: CGFloat { pileHeight(active) }
-    private var archivedTop: CGFloat { archivedTitleY + Self.sectionTitleHeight }
-
-    func restY(_ index: Int) -> CGFloat {
-        index < active ? CGFloat(index) * peek : archivedTop + CGFloat(index - active) * peek
-    }
-
-    var height: CGFloat { archived > 0 ? archivedTop + pileHeight(archived) : pileHeight(active) }
-}
-
-private extension View {
-    /// 标题区随详情打开向上淡出，返回时在卡片回位后淡入
-    func fadesWhenOpen(_ isOpen: Bool) -> some View {
-        self
-            .offset(y: isOpen ? -32 : 0)
-            .animation(isOpen ? .easeOut(duration: 0.18) : .easeIn(duration: 0.2).delay(0.18)) {
-                $0.opacity(isOpen ? 0 : 1)
-            }
-            .allowsHitTesting(!isOpen)
-            .accessibilityHidden(isOpen)
-    }
-}
-
-private enum CardRole {
-    /// 卡包里按顺序叠放
-    case resting
-    /// 选中的卡：移到详情位置
-    case selected
-    /// 选中卡上面的卡：移到选中卡后面，缩小并向里倾斜，最后隐藏
-    case behind
-    /// 选中卡下面的卡：直接向下落出屏幕
-    case below
-}
-
-/// 只使用渲染变换：位移、缩放、3D 旋转、透明度。这些属性的动画由 SwiftUI 直接插值，不触发布局。
-private struct CardPlacement: ViewModifier {
-    let role: CardRole
-    let restY: CGFloat
-    let openY: CGFloat
-    /// 关闭时详情已滚动的距离；选中的卡和收在后面的卡按它上移。单独一层位移，设置它不会打断还在进行的转场动画
-    let scrollShift: CGFloat
-    /// 下面的卡落出屏幕的距离
-    let dropDistance: CGFloat
-    /// 刚关闭的详情打开时，这张卡在选中卡下面
-    let wasBelow: Bool
-    let reduceMotion: Bool
-
-    /// 收到后面时的缩放和倾斜角度
-    static let behindScale: CGFloat = 0.86
-    static let behindTilt: Double = 30
-    /// 下面的卡落下的时长；落出屏幕后不再绘制
-    static let dropDuration: Double = 0.25
-    /// 下面的卡落出屏幕：加速下落
-    static let drop: Animation = .easeIn(duration: dropDuration)
-    /// 返回时下面的卡升回来：和选中的卡同样的弹簧，稍晚一点，让详情内容先开始淡出
-    static var rise: Animation { DetailMotionState.transition(reduceMotion: false).delay(0.06) }
-
-    private var y: CGFloat {
-        switch role {
-        case .resting: restY
-        case .selected, .behind: openY
-        case .below: restY + dropDistance
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title).font(.title3.weight(.semibold))
+            Spacer()
+            Text("共 \(count) 张").font(.subheadline).foregroundStyle(.secondary)
         }
+        .padding(.horizontal, 4)
+        .padding(.top, 24)
+        .padding(.bottom, 10)
     }
+}
 
-    /// 下面的卡单独用「加速下落」；返回时和选中的卡一起升回来，稍晚一点，让详情内容先开始淡出。
-    /// 其余情况沿用转场的弹簧动画。
-    private var offsetAnimation: Animation? {
-        guard !reduceMotion else { return nil }
-        if role == .below { return Self.drop }
-        if role == .resting, wasBelow { return Self.rise }
-        return nil
-    }
+/// 已停用卡包上方的标题，贴着下面的卡
+struct ArchivedPileTitle: View {
+    let count: Int
 
-    func body(content: Content) -> some View {
-        let behind = role == .behind && !reduceMotion
-        let animation = offsetAnimation
-        content
-            .scaleEffect(behind ? Self.behindScale : 1)
-            .rotation3DEffect(.degrees(behind ? Self.behindTilt : 0), axis: (x: 1, y: 0, z: 0), anchor: .center, perspective: 0.6)
-            .offset(y: y)
-            .offset(y: role == .selected || role == .behind ? -scrollShift : 0)
-            // 只替换有动画的事务（打开 / 关闭）；滚动、数据刷新等没有动画的更新保持原样
-            .transaction { transaction in
-                if let animation, transaction.animation != nil { transaction.animation = animation }
-            }
-            // 打开时先收到后面，末段再淡出（这时已被选中的卡挡住，淡出后不再参与绘制）；返回时立即淡入
-            .animation(role == .behind ? .easeIn(duration: 0.15).delay(0.25) : .easeOut(duration: 0.1)) {
-                $0.opacity(role == .behind ? 0 : 1)
-            }
-            // 不调整层级：按卡包顺序叠放，上面的卡在选中卡后面，下面的卡在选中卡上层，和钱包一样
+    var body: some View {
+        WalletSectionTitle(title: "已停用", count: count)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
     }
 }
 

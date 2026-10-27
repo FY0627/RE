@@ -25,7 +25,8 @@ enum AppTab: Hashable {
     }
 }
 
-/// 资产页当前展开的卡片；详情展开时隐藏标签栏。
+/// 资产页当前展开的卡片；详情展开时资产页隐藏标签栏。
+/// 只有资产页读它：根视图不读，打开详情时其他标签页不重新计算。
 @MainActor
 @Observable
 final class DetailMotionState {
@@ -33,7 +34,7 @@ final class DetailMotionState {
 
     var isOpen: Bool { selectedAccountID != nil }
 
-    /// 打开 / 关闭详情的动画；资产页的卡片、返回按钮和标签栏的显隐都在这个动画里，节奏一致
+    /// 打开 / 关闭详情时返回按钮和标签栏显隐的动画；卡片的 Core Animation 弹簧（`CardMotion.transition`）参数相同，节奏一致
     static func transition(reduceMotion: Bool) -> Animation {
         reduceMotion ? .easeInOut(duration: 0.25) : .spring(response: 0.5, dampingFraction: 0.86)
     }
@@ -54,7 +55,7 @@ enum ActiveSheet: Identifiable {
 /// 系统原生 `TabView`：iOS 26 起标签栏自动使用液态玻璃，尺寸、字号、动效和无障碍都由系统提供。
 /// 添加银行卡的「+」在资产页右上角。
 /// 切换标签按 iOS 的默认做法：每个页面保留自己的状态（滚动位置、打开的详情）。
-/// 资产页打开卡片详情时，用系统的方式隐藏标签栏（随打开 / 关闭的动画滑出 / 滑入）。
+/// 资产页打开卡片详情时，资产页用系统的方式隐藏标签栏（随打开 / 关闭的动画滑出 / 滑入）。
 struct RootView: View {
     @Environment(LedgerStore.self) private var store
     @State private var tab: AppTab = .home
@@ -68,7 +69,6 @@ struct RootView: View {
             }
             Tab(AppTab.assets.title, systemImage: AppTab.assets.symbol, value: AppTab.assets) {
                 AssetsView(openAddAccount: { sheet = .addAccount })
-                    .toolbarVisibility(detail.isOpen ? .hidden : .visible, for: .tabBar)
             }
             Tab(AppTab.stats.title, systemImage: AppTab.stats.symbol, value: AppTab.stats) {
                 StatsView()
