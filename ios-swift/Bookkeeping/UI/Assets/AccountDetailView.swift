@@ -37,6 +37,9 @@ struct AccountDetailView: View {
     let close: () -> Void
 
     @Environment(LedgerStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// 第一页流水和笔数是否已读到。读到之前内容不升起：否则内容先升完，流水才突然出现在原位
+    @State private var loaded = false
     @State private var rows: [RecordRow] = []
     @State private var hasMore = true
     @State private var total = 0
@@ -75,7 +78,7 @@ struct AccountDetailView: View {
                     .padding(.top, 8)
                     .padding(.bottom, 48)
                     // 隐藏时移到屏幕下方：打开时整块从屏幕底下升上来，返回时退下去
-                    .offset(y: contentShown ? 0 : box.pageSize.height)
+                    .offset(y: contentShown && loaded ? 0 : box.pageSize.height)
                     .opacity(contentShown ? 1 : 0)
                     .accessibilityHidden(!contentShown)
             }
@@ -138,9 +141,13 @@ struct AccountDetailView: View {
 
     private func reload() async {
         let first = await store.records(accountID: account.id, after: nil)
+        let count = await store.recordCount(accountID: account.id)
         rows = first
         hasMore = first.count == 40
-        total = await store.recordCount(accountID: account.id)
+        total = count
+        guard !loaded else { return }
+        // 资产页的入场动画开始后才读到：内容和流水一起从底下升上来（和资产页的入场动画相同）
+        withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.5, dampingFraction: 1)) { loaded = true }
     }
 
     private func loadMore() async {
