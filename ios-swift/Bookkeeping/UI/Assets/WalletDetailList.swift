@@ -87,6 +87,8 @@ final class WalletDetailList: NSObject, UICollectionViewDelegate {
                     editOpeningBalance: { [weak self] currency in self?.onEditOpeningBalance(currency) }
                 )
                 .environment(store)
+                // 行滚到状态栏下面时内容不因安全区移动
+                .ignoresSafeArea()
             }
             .margins(.all, 0)
         }
@@ -94,6 +96,7 @@ final class WalletDetailList: NSObject, UICollectionViewDelegate {
             guard case .record(let id) = item, let row = self?.rowsByID[id] else { return }
             cell.contentConfiguration = UIHostingConfiguration {
                 RecordRowView(row: row, showAccount: false, boxed: true)
+                    .ignoresSafeArea()
             }
             .margins(.all, 0)
         }

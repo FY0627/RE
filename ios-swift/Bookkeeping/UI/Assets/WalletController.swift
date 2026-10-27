@@ -241,8 +241,10 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
             closeImmediately()
             return
         }
-        selectedIndex = index
         detailList.update(account: accounts[index])
+        // 位置没变（例如只改了卡面、初始余额）时不动卡片，正在进行的转场继续
+        guard index != selectedIndex else { return }
+        selectedIndex = index
         let reduceMotion = UIAccessibility.isReduceMotionEnabled
         for (i, card) in cards.enumerated() {
             let behind = role(i) == .behind
