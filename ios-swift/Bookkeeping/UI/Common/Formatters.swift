@@ -38,6 +38,27 @@ enum Fmt {
 
     static func monthTitle(year: Int, month: Int) -> String { "\(year)年\(month)月" }
 
+    /// 「10月1日」；不是今年时带年份
+    static func shortDate(_ date: Date, now: Date = Date()) -> String {
+        let c = calendar.dateComponents([.year, .month, .day], from: date)
+        if c.year == calendar.component(.year, from: now) { return "\(c.month ?? 0)月\(c.day ?? 0)日" }
+        return "\(c.year ?? 0)年\(c.month ?? 0)月\(c.day ?? 0)日"
+    }
+
+    /// 汇率的日期 `2026-10-24` → 「10月24日」；不是今年时带年份
+    static func rateDay(_ key: String, now: Date = Date()) -> String {
+        let parts = key.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else { return key }
+        if parts[0] == calendar.component(.year, from: now) { return "\(parts[1])月\(parts[2])日" }
+        return "\(parts[0])年\(parts[1])月\(parts[2])日"
+    }
+
+    /// 卡里没有的币种的交易按主币种扣的款：估算的写「约」，用户填的实际金额写「合」，还没有汇率写「缺汇率」
+    static func charge(_ charge: RecordCharge) -> String {
+        guard let amount = charge.amountMinor else { return "缺汇率" }
+        return (charge.isActual ? "合 " : "约 ") + money(amount, charge.currency)
+    }
+
     /// 列表里的交易时间：优先显示通知正文写明的时间，否则显示系统接收/处理时间。
     static func recordTime(_ r: LedgerRecord) -> String {
         if let t = r.transactionTime, t.hasTime || t.hasDate { return t.displayText }

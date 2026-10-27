@@ -159,6 +159,40 @@ final class DatabaseTests: XCTestCase {
         XCTAssertEqual(try db.readSync { try TemplateDAO.all($0) }, [])
     }
 
+    func testMigrationFromVersion6AddsSettlementAndDailyRates() throws {
+        let path = tempPath()
+        do {
+            let old = try SQLiteConnection(path: path)
+            for step in Migrations.steps where step.version <= 6 { try old.execute(step.sql) }
+            try old.setUserVersion(6)
+        }
+        let db = try Database(path: path)
+        XCTAssertEqual(try db.readSync { $0.userVersion }, Migrations.latestVersion)
+        let fetched = Date(timeIntervalSince1970: 1_790_000_000)
+        let rates = ExchangeRates(base: .usd, rates: ["CNY": 7.2, "HKD": 7.8, "BAD": 0], updatedAt: fetched, fetchedAt: fetched)
+        XCTAssertTrue(try db.writeSync { try RateDAO.save($0, day: "2026-10-24", rates: rates) })
+        XCTAssertFalse(try db.writeSync { try RateDAO.save($0, day: "2026-10-24", rates: rates) }, "同一份下载不重复写")
+        XCTAssertEqual(try db.readSync { try RateDAO.days($0) }, ["2026-10-24"])
+        XCTAssertEqual(try db.readSync { try RateDAO.rates($0, day: "2026-10-24") }, ["USD": 1, "CNY": 7.2, "HKD": 7.8], "基准币种补上 1，无效汇率去掉")
+        var newer = rates
+        newer.fetchedAt = fetched.addingTimeInterval(3600)
+        newer.rates["CNY"] = 7.3
+        XCTAssertTrue(try db.writeSync { try RateDAO.save($0, day: "2026-10-24", rates: newer) }, "同一天更晚的下载覆盖")
+        XCTAssertEqual(try db.readSync { try RateDAO.rates($0, day: "2026-10-24") }["CNY"], 7.3)
+    }
+
+    func testAmountKeywordsMatchEachMinorUnit() {
+        XCTAssertEqual(RecordDAO.amountMinors("38").map(\.minor), [38, 3800, 38000])
+        XCTAssertEqual(RecordDAO.amountMinors("38.5").map(\.exponent), [2, 3])
+        XCTAssertEqual(RecordDAO.amountMinors("38.5").map(\.minor), [3850, 38500])
+        XCTAssertEqual(RecordDAO.amountMinors("1,234.56").map(\.minor), [123_456, 1_234_560])
+        XCTAssertEqual(RecordDAO.amountMinors("12,50").map(\.minor), [1250, 12500], "欧洲写法的小数逗号")
+        XCTAssertEqual(RecordDAO.amountMinors("38.00").map(\.minor), [38, 3800, 38000])
+        XCTAssertTrue(RecordDAO.amountMinors("星巴克").isEmpty)
+        XCTAssertTrue(RecordDAO.amountMinors("38.").isEmpty)
+        XCTAssertEqual(RecordDAO.escapeLike("50%_a\\b"), "50\\%\\_a\\\\b")
+    }
+
     func testLeadingZeroLast4SurvivesReopen() throws {
         let path = tempPath()
         do {

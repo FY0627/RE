@@ -1,3 +1,5 @@
+import Foundation
+
 /// 币种代码（ISO 4217）。只保存代码本身，不从设备地区推断。
 public struct CurrencyCode: Hashable, Sendable, Codable, RawRepresentable, Comparable, CustomStringConvertible {
     public let rawValue: String
@@ -28,8 +30,20 @@ public struct CurrencyCode: Hashable, Sendable, Codable, RawRepresentable, Compa
 
     private static let exponents: [String: Int] = [
         "JPY": 0, "KRW": 0, "VND": 0, "ISK": 0, "CLP": 0, "PYG": 0, "UGX": 0,
+        "BIF": 0, "DJF": 0, "GNF": 0, "KMF": 0, "RWF": 0, "VUV": 0, "XAF": 0, "XOF": 0, "XPF": 0,
         "BHD": 3, "KWD": 3, "OMR": 3, "JOD": 3, "TND": 3, "IQD": 3, "LYD": 3,
     ]
+
+    /// 汇率数据源（ExchangeRate-API）支持的全部币种，添加账户、选主要币种时都可以选。
+    public static let supported: [CurrencyCode] = """
+        AED AFN ALL AMD ANG AOA ARS AUD AWG AZN BAM BBD BDT BGN BHD BIF BMD BND BOB BRL BSD BTN BWP BYN BZD
+        CAD CDF CHF CLP CNY COP CRC CUP CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD FKP FOK GBP GEL GGP GHS
+        GIP GMD GNF GTQ GYD HKD HNL HRK HTG HUF IDR ILS IMP INR IQD IRR ISK JEP JMD JOD JPY KES KGS KHR KID
+        KMF KRW KWD KYD KZT LAK LBP LKR LRD LSL LYD MAD MDL MGA MKD MMK MNT MOP MRU MUR MVR MWK MXN MYR MZN
+        NAD NGN NIO NOK NPR NZD OMR PAB PEN PGK PHP PKR PLN PYG QAR RON RSD RUB RWF SAR SBD SCR SDG SEK SGD
+        SHP SLE SLL SOS SRD SSP STN SYP SZL THB TJS TMT TND TOP TRY TTD TVD TWD TZS UAH UGX USD UYU UZS VES
+        VND VUV WST XAF XCD XCG XDR XOF XPF YER ZAR ZMW ZWL
+        """.split(whereSeparator: \.isWhitespace).map { CurrencyCode(String($0)) }
 
     public static let cny = CurrencyCode("CNY")
     public static let eur = CurrencyCode("EUR")
@@ -65,30 +79,42 @@ public struct CurrencyCode: Hashable, Sendable, Codable, RawRepresentable, Compa
         }
     }
 
+    /// 中文名称：常用币种用习惯叫法（港币、澳元），其他用系统提供的名称
     public var chineseName: String {
-        switch rawValue {
-        case "CNY": "人民币"
-        case "EUR": "欧元"
-        case "USD": "美元"
-        case "HKD": "港币"
-        case "GBP": "英镑"
-        case "JPY": "日元"
-        case "CHF": "瑞士法郎"
-        case "SGD": "新加坡元"
-        case "AUD": "澳元"
-        case "CAD": "加元"
-        case "MOP": "澳门元"
-        case "TWD": "新台币"
-        case "KRW": "韩元"
-        case "SEK": "瑞典克朗"
-        case "NOK": "挪威克朗"
-        case "DKK": "丹麦克朗"
-        case "PLN": "波兰兹罗提"
-        case "CZK": "捷克克朗"
-        case "HUF": "匈牙利福林"
-        default: rawValue
-        }
+        if let name = Self.chineseNames[rawValue] { return name }
+        return Self.localizedName(rawValue, in: Self.simplifiedChinese) ?? rawValue
     }
+
+    public var englishName: String {
+        if let name = Self.englishNames[rawValue] { return name }
+        return Self.localizedName(rawValue, in: Self.english) ?? rawValue
+    }
+
+    private static let simplifiedChinese = Locale(identifier: "zh_Hans")
+    private static let english = Locale(identifier: "en")
+
+    /// 系统没有名称时返回 nil（有的系统直接返回代码本身）
+    private static func localizedName(_ code: String, in locale: Locale) -> String? {
+        guard let name = locale.localizedString(forCurrencyCode: code), name.uppercased() != code else { return nil }
+        return name
+    }
+
+    private static let chineseNames: [String: String] = [
+        "CNY": "人民币", "EUR": "欧元", "USD": "美元", "HKD": "港币", "GBP": "英镑", "JPY": "日元", "CHF": "瑞士法郎",
+        "SGD": "新加坡元", "AUD": "澳元", "CAD": "加元", "MOP": "澳门元", "TWD": "新台币", "KRW": "韩元",
+        "SEK": "瑞典克朗", "NOK": "挪威克朗", "DKK": "丹麦克朗", "PLN": "波兰兹罗提", "CZK": "捷克克朗", "HUF": "匈牙利福林",
+        "NZD": "新西兰元", "THB": "泰铢", "MYR": "马来西亚林吉特", "PHP": "菲律宾比索", "IDR": "印尼盾", "VND": "越南盾",
+        "INR": "印度卢比", "AED": "阿联酋迪拉姆", "SAR": "沙特里亚尔", "RUB": "俄罗斯卢布", "TRY": "土耳其里拉",
+        "BRL": "巴西雷亚尔", "MXN": "墨西哥比索", "ZAR": "南非兰特",
+        // 数据源里有、但不是国际标准代码的属地货币
+        "FOK": "法罗群岛克朗", "GGP": "根西岛镑", "IMP": "马恩岛镑", "JEP": "泽西岛镑", "KID": "基里巴斯元", "TVD": "图瓦卢元",
+        "XCG": "加勒比盾",
+    ]
+
+    private static let englishNames: [String: String] = [
+        "FOK": "Faroese Króna", "GGP": "Guernsey Pound", "IMP": "Manx Pound", "JEP": "Jersey Pound",
+        "KID": "Kiribati Dollar", "TVD": "Tuvaluan Dollar", "XCG": "Caribbean Guilder",
+    ]
 }
 
 /// 金额：最小货币单位的整数 + 币种。账务运算全部用整数，不经过 Float/Double。

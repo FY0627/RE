@@ -40,7 +40,7 @@ struct WalletCardView: View {
                     Circle()
                         .fill(text.opacity(0.15))
                         .frame(width: 30 * s, height: 30 * s)
-                        .overlay(Text(String(account.bankName.prefix(1))).font(.system(size: 14 * s, weight: .bold)))
+                        .overlay(Text(Self.badge(account)).font(.system(size: 14 * s, weight: .bold)))
                     VStack(alignment: .leading, spacing: 0) {
                         Text(account.name).font(.system(size: 14 * s, weight: .bold)).lineLimit(1)
                         Text("\(account.bankName) · \(account.cardType.displayName)")
@@ -67,6 +67,11 @@ struct WalletCardView: View {
         .foregroundStyle(text)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background { background(palette, imageID: style.imageID) }
+    }
+
+    /// 圆标里的字：列表里的银行用它的简称（「中国工商银行」写「工」），自己填的银行用名称的第一个字
+    static func badge(_ account: Account) -> String {
+        BankCatalog.entry(id: account.bankID)?.badge ?? String(account.bankName.prefix(1))
     }
 
     /// 单币种显示币种代码；多币种显示主币种和其他币种的数量，例如「HKD +2」。

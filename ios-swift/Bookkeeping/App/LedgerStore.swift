@@ -41,7 +41,10 @@ final class LedgerStore {
         guard backend == nil else { return }
         do {
             // 打开数据库（含迁移）放在后台线程
-            backend = try await Task.detached(priority: .userInitiated) { try AppServices.shared.backend() }.value
+            let opened = try await Task.detached(priority: .userInitiated) { try AppServices.shared.backend() }.value
+            backend = opened
+            // 更新前只缓存了最新一份汇率：放进按天保存的汇率表（已有就跳过）
+            if let cached = ExchangeRateStore.cached() { _ = try? await opened.saveExchangeRates(cached) }
             await refresh()
             _ = try? await backend?.purgeExpiredRawContent()
         } catch {
@@ -109,14 +112,27 @@ final class LedgerStore {
         }
     }
 
-    func records(accountID: String, after last: RecordRow?) async -> [RecordRow] {
+    /// 按条件查流水（卡片详情、首页搜索），接在 `last` 后面分页
+    func records(_ filter: RecordFilter, after last: RecordRow?, limit: Int) async -> [RecordRow] {
         guard let backend else { return [] }
         let cursor = last.map { RecordCursor(effectiveAt: $0.record.effectiveAt, id: $0.id) }
-        return (try? await backend.records(accountID: accountID, before: cursor, limit: 40)) ?? []
+        return (try? await backend.records(filter: filter, before: cursor, limit: limit)) ?? []
     }
 
-    func recordCount(accountID: String) async -> Int {
-        (try? await backend?.recordCount(accountID: accountID)) ?? 0
+    func recordCount(_ filter: RecordFilter) async -> Int {
+        (try? await backend?.recordCount(filter: filter)) ?? 0
+    }
+
+    func updateRecord(id: String, _ edit: RecordEdit) async throws {
+        guard let backend else { throw BackendError.notFound }
+        try await backend.updateRecord(id: id, edit)
+        await refresh()
+    }
+
+    func deleteRecord(id: String) async throws {
+        guard let backend else { throw BackendError.notFound }
+        try await backend.deleteRecord(id: id)
+        await refresh()
     }
 
     func addAccount(_ draft: AccountDraft) async throws -> Account {
@@ -132,16 +148,9 @@ final class LedgerStore {
         await refresh()
     }
 
-    func updateCardInfo(accountID: String, name: String, cardNumber: String?, accountNumber: String?, extraCurrencies: [CurrencyCode]?) async throws {
+    func updateAccount(id: String, _ edit: AccountEdit) async throws {
         guard let backend else { throw BackendError.notFound }
-        try await backend.updateCardInfo(accountID: accountID, name: name, cardNumber: cardNumber, extraCurrencies: extraCurrencies)
-        try await backend.updateAccountNumber(accountID: accountID, accountNumber: accountNumber)
-        await refresh()
-    }
-
-    func setOpeningBalance(accountID: String, currency: CurrencyCode, amountMinor: Int64?) async throws {
-        guard let backend else { throw BackendError.notFound }
-        try await backend.setOpeningBalance(accountID: accountID, currency: currency, amountMinor: amountMinor)
+        try await backend.updateAccount(id: id, edit)
         await refresh()
     }
 
@@ -155,13 +164,6 @@ final class LedgerStore {
 
     func detail(recordID: String) async -> RecordDetail? {
         try? await backend?.recordDetail(id: recordID)
-    }
-
-    func updateNote(recordID: String, note: String) async throws {
-        guard let backend else { return }
-        try await backend.updateNote(recordID: recordID, note: note)
-        if let index = homeRows.firstIndex(where: { $0.id == recordID }) { homeRows[index].record.note = note }
-        revision += 1
     }
 
     func pendingItems() async -> [PendingItem] {

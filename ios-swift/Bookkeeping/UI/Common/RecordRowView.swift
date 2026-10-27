@@ -1,8 +1,8 @@
 import SwiftUI
 import BKModel
 
-/// 流水行：金额、方向、交易对方、尾号、时间、备注。字号用系统文字样式，跟随「更大字体」设置。
-/// 在系统列表里直接使用；在自定义滚动页面里用 `boxed: true` 自带卡片背景。
+/// 流水行：金额、方向、交易对方、尾号、时间、备注。卡里没有这笔流水的币种时，金额下面写按主币种扣了多少。
+/// 字号用系统文字样式，跟随「更大字体」设置。在系统列表里直接使用；在自定义滚动页面里用 `boxed: true` 自带卡片背景。
 struct RecordRowView: View {
     let row: RecordRow
     var showAccount = true
@@ -31,12 +31,17 @@ struct RecordRowView: View {
                 }
             }
             Spacer(minLength: 8)
-            Text(Fmt.signed(r))
-                .font(.body.weight(.semibold))
-                .monospacedDigit()
-                .foregroundStyle(r.direction == .inflow ? AppTheme.income : Color.primary)
-                .strikethrough(r.status == .failed)
-                .opacity(counted ? 1 : 0.55)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(Fmt.signed(r))
+                    .font(.body.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(r.direction == .inflow ? AppTheme.income : Color.primary)
+                    .strikethrough(r.status == .failed)
+                if let charge = row.charge {
+                    Text(Fmt.charge(charge)).font(.caption).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            .opacity(counted ? 1 : 0.55)
         }
         .padding(.vertical, boxed ? 12 : 2)
         .padding(.horizontal, boxed ? 14 : 0)
@@ -81,15 +86,17 @@ struct RecordDetailSheet: View {
     }
 }
 
-/// 单笔流水详情：所有字段只读，唯一可编辑的是备注。
+/// 单笔流水详情。右上角「编辑」可以改金额、币种、收支、类型、账户、交易对方、时间、备注和实际扣款；最下面可以删除。
+/// 来源和通知原文只能看。
 struct RecordDetailView: View {
     let recordID: String
     @Environment(LedgerStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
     @State private var detail: RecordDetail?
-    @State private var note = ""
-    @State private var saving = false
     @State private var saveError: String?
     @State private var showRaw = false
+    @State private var editing = false
+    @State private var confirmDelete = false
 
     var body: some View {
         Group {
@@ -103,14 +110,21 @@ struct RecordDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button("保存备注") { Task { await save() } }
-                    .disabled(saving || detail == nil || note == detail?.row.record.note)
+                Button("编辑") { editing = true }
+                    .disabled(detail == nil)
             }
         }
-        .task {
-            detail = await store.detail(recordID: recordID)
-            note = detail?.row.record.note ?? ""
+        .sheet(isPresented: $editing) {
+            if let detail {
+                RecordEditor(detail: detail) { Task { await reload() } }
+            }
         }
+        .confirmationDialog("删除这笔流水？", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("删除", role: .destructive) { Task { await delete() } }
+        } message: {
+            Text("删除后不能恢复。收到它的那条通知再来，也不会重新记上。")
+        }
+        .task { await reload() }
     }
 
     private func form(_ detail: RecordDetail) -> some View {
@@ -125,6 +139,9 @@ struct RecordDetailView: View {
                         .foregroundStyle(r.direction == .inflow ? AppTheme.income : Color.primary)
                 }
                 .padding(.vertical, 4)
+                if let charge = detail.row.charge {
+                    chargeRow(charge, record: r)
+                }
                 LabeledContent("方向", value: r.direction.displayName)
                 LabeledContent("交易性质", value: r.kind.displayName)
                 LabeledContent("状态", value: r.status.displayName)
@@ -166,12 +183,13 @@ struct RecordDetailView: View {
                     RecordRowView(row: related)
                 }
             }
-            Section {
-                TextField("添加备注", text: $note, axis: .vertical)
-                    .lineLimit(1...5)
-                if let saveError { Text(saveError).font(.footnote).foregroundStyle(.red) }
-            } header: {
-                Text("备注")
+            if !r.note.isEmpty {
+                Section("备注") {
+                    Text(r.note).textSelection(.enabled)
+                }
+            }
+            if let saveError {
+                Section { Text(saveError).font(.footnote).foregroundStyle(.red) }
             }
             Section {
                 DisclosureGroup("原始通知（仅本机保存）", isExpanded: $showRaw) {
@@ -183,28 +201,48 @@ struct RecordDetailView: View {
                     }
                 }
             }
+            Section {
+                Button("删除这笔流水", systemImage: "trash", role: .destructive) { confirmDelete = true }
+            }
         }
+    }
+
+    /// 卡里没有这个币种：按主币种扣了多少（估算的写明用哪天的汇率）
+    private func chargeRow(_ charge: RecordCharge, record: LedgerRecord) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            LabeledContent(record.direction == .inflow ? "存入\(charge.currency.chineseName)" : "从\(charge.currency.chineseName)扣款") {
+                Text(charge.amountMinor.map { Fmt.money($0, charge.currency) } ?? "还没有汇率").monospacedDigit()
+            }
+            Text(chargeNote(charge)).font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    private func chargeNote(_ charge: RecordCharge) -> String {
+        if charge.isActual { return "你填写的实际金额" }
+        guard let day = charge.rateDay else { return "导入汇率后按交易当天的汇率估算，可以在编辑里改成实际金额" }
+        return "按 \(Fmt.rateDay(day)) 的汇率估算，可以在编辑里改成实际金额"
+    }
+
+    private func reload() async {
+        detail = await store.detail(recordID: recordID)
     }
 
     private func setTransferParty(_ party: TransferParty?) async {
         do {
             try await store.setTransferParty(recordID: recordID, party: party)
-            detail = await store.detail(recordID: recordID)
+            await reload()
             saveError = nil
         } catch {
             saveError = "保存失败：\(error.localizedDescription)"
         }
     }
 
-    private func save() async {
-        saving = true
-        defer { saving = false }
+    private func delete() async {
         do {
-            try await store.updateNote(recordID: recordID, note: note)
-            detail?.row.record.note = note
-            saveError = nil
+            try await store.deleteRecord(id: recordID)
+            dismiss()
         } catch {
-            saveError = "保存失败：\(error.localizedDescription)"
+            saveError = "删除失败：\(error.localizedDescription)"
         }
     }
 }

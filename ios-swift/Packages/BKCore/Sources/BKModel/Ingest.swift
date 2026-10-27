@@ -329,6 +329,7 @@ public struct AccountBalances: Hashable, Sendable {
 }
 
 /// 某张卡某个币种的余额：从用户填写的初始余额出发，加上之后已入账的流水。
+/// 主币种还要加上这张卡不持有的币种的交易（按主币种扣款，`RecordCharge`）。
 /// 银行通知里写的余额不使用（很多银行不提供，写法也不统一）。
 public struct AccountBalanceSummary: Hashable, Sendable {
     public var accountID: String
@@ -340,6 +341,8 @@ public struct AccountBalanceSummary: Hashable, Sendable {
     public var ledgerDerivedMinor: Int64?
     /// 推算用到的、晚于初始余额的流水笔数
     public var recordsAfterBase: Int
+    /// 不持有的币种的交易里，还没有任何汇率、算不出扣款而没有计入的笔数
+    public var unconvertedCount: Int
 
     public init(
         accountID: String,
@@ -347,7 +350,8 @@ public struct AccountBalanceSummary: Hashable, Sendable {
         ledgerDerivedMinor: Int64?,
         recordsAfterBase: Int,
         openingBalanceMinor: Int64? = nil,
-        openingBalanceAt: Date? = nil
+        openingBalanceAt: Date? = nil,
+        unconvertedCount: Int = 0
     ) {
         self.accountID = accountID
         self.currency = currency
@@ -355,6 +359,7 @@ public struct AccountBalanceSummary: Hashable, Sendable {
         self.recordsAfterBase = recordsAfterBase
         self.openingBalanceMinor = openingBalanceMinor
         self.openingBalanceAt = openingBalanceAt
+        self.unconvertedCount = unconvertedCount
     }
 }
 

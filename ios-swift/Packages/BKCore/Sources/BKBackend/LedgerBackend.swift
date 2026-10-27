@@ -12,6 +12,8 @@ public enum BackendError: Error, Equatable, Sendable {
     case alreadyResolved
     /// 模板里没有圈出金额
     case invalidTemplate
+    /// 流水金额必须大于 0
+    case invalidAmount
 }
 
 /// App 界面与 App Intent 共用的业务入口。
@@ -82,7 +84,7 @@ public final class LedgerBackend: Sendable {
                 if let minor = draft.extraOpeningBalances[currency] { openings.append(OpeningBalance(currency: currency, amountMinor: minor, at: now)) }
             }
             let account = Account(
-                id: id, name: name.isEmpty ? "\(bankName)\(draft.cardType.displayName)" : name, bankID: draft.bankID, bankName: bankName,
+                id: id, name: name.isEmpty ? Account.defaultName(bankName: bankName, cardType: draft.cardType) : name, bankID: draft.bankID, bankName: bankName,
                 last4: draft.last4, cardType: draft.cardType, currency: draft.currency, extraCurrencies: extras, paletteID: draft.paletteID,
                 sortOrder: try AccountDAO.nextSortOrder(db), createdAt: now, openingBalances: openings
             )
@@ -125,6 +127,45 @@ public final class LedgerBackend: Sendable {
         }
     }
 
+    /// 卡片信息里修改账户：名称、卡类型、主币种、其他币种、完整卡号、账号、各币种的初始余额（银行和尾号不能改）。
+    /// 改了主币种：已有流水保持原来的币种，之后没写币种的通知记为新的主币种；不再持有的币种，初始余额一起删除。
+    public func updateAccount(id: String, _ edit: AccountEdit) async throws {
+        let rawNumber = edit.cardNumber?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var normalizedNumber: String?
+        if !rawNumber.isEmpty {
+            guard let value = Account.normalizedCardNumber(rawNumber) else { throw BackendError.invalidAccount(.invalidCardNumber) }
+            normalizedNumber = value
+        }
+        let rawAccountNumber = edit.accountNumber?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var normalizedAccountNumber: String?
+        if !rawAccountNumber.isEmpty {
+            guard let value = Account.normalizedAccountNumber(rawAccountNumber) else { throw BackendError.invalidAccount(.invalidAccountNumber) }
+            normalizedAccountNumber = value
+        }
+        let cardNumber = normalizedNumber
+        let accountNumber = normalizedAccountNumber
+        let trimmedName = edit.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let now = clock()
+        try await database.write { db in
+            guard let account = try AccountDAO.find(db, id: id) else { throw BackendError.notFound }
+            if let cardNumber, !cardNumber.hasSuffix(account.last4) { throw BackendError.invalidAccount(.invalidCardNumber) }
+            let others = try AccountDAO.all(db).filter { $0.id != id }
+            if others.contains(where: { $0.last4 == account.last4 && $0.bankName == account.bankName && $0.cardType == edit.cardType }) {
+                throw BackendError.invalidAccount(.duplicateAccount)
+            }
+            let extras = Account.normalizedExtras(edit.extraCurrencies, primary: edit.currency)
+            let name = trimmedName.isEmpty ? Account.defaultName(bankName: account.bankName, cardType: edit.cardType) : trimmedName
+            try AccountDAO.updateDetails(
+                db, id: id, name: name, cardType: edit.cardType, currency: edit.currency, extras: extras,
+                cardNumber: cardNumber, accountNumber: accountNumber
+            )
+            let held = Set([edit.currency] + extras)
+            for change in edit.openingBalanceChanges where held.contains(change.currency) {
+                try AccountDAO.setOpeningBalance(db, id: id, currency: change.currency, amountMinor: change.amountMinor, at: now)
+            }
+        }
+    }
+
     /// 设置或清除这张卡的账号（户口号码，可以是打码的形式）。传 nil 或空字符串清除。
     public func updateAccountNumber(accountID: String, accountNumber: String?) async throws {
         let raw = accountNumber?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -163,16 +204,87 @@ public final class LedgerBackend: Sendable {
     // MARK: 流水
 
     public func records(accountID: String? = nil, before cursor: RecordCursor? = nil, limit: Int = 50) async throws -> [RecordRow] {
-        try await database.read { try RecordDAO.page($0, accountID: accountID, before: cursor, limit: limit) }
+        try await records(filter: RecordFilter(accountID: accountID), before: cursor, limit: limit)
+    }
+
+    /// 按条件查流水（卡片详情按币种、时间段；首页搜索按关键字、支出 / 收入）。
+    /// 账户不持有的币种的流水带上按主币种扣款的金额
+    public func records(filter: RecordFilter, before cursor: RecordCursor? = nil, limit: Int = 50) async throws -> [RecordRow] {
+        let calendar = calendar
+        return try await database.read { db in
+            try Self.withCharges(try RecordDAO.page(db, filter: filter, before: cursor, limit: limit), db: db, calendar: calendar)
+        }
     }
 
     public func recordCount(accountID: String? = nil) async throws -> Int {
-        try await database.read { try RecordDAO.count($0, accountID: accountID) }
+        try await recordCount(filter: RecordFilter(accountID: accountID))
+    }
+
+    public func recordCount(filter: RecordFilter) async throws -> Int {
+        try await database.read { try RecordDAO.count($0, filter: filter) }
+    }
+
+    static func withCharges(_ rows: [RecordRow], db: SQLiteConnection, calendar: Calendar) throws -> [RecordRow] {
+        guard rows.contains(where: \.isForeignCurrency) else { return rows }
+        let calculator = ChargeCalculator(db: db, calendar: calendar)
+        return try rows.map { row in
+            guard row.isForeignCurrency, let primary = row.accountCurrencies.first else { return row }
+            var row = row
+            row.charge = try calculator.charge(row.record, primary: primary)
+            return row
+        }
+    }
+
+    /// 修改一笔流水。改了时间：交易时间和接收时间都改成它（影响排序和余额推算）；没改时间则保持原样。
+    /// 配对的内部转账改了账户、金额、币种、方向，或不再是转账类，就不再配对。
+    public func updateRecord(id: String, _ edit: RecordEdit) async throws {
+        guard edit.amountMinor > 0 else { throw BackendError.invalidAmount }
+        let calendar = calendar
+        try await database.write { db in
+            guard var record = try RecordDAO.find(db, id: id) else { throw BackendError.notFound }
+            guard let account = try AccountDAO.find(db, id: edit.accountID) else { throw BackendError.notFound }
+            let original = record
+            record.accountID = account.id
+            record.amountMinor = edit.amountMinor
+            record.currency = edit.currency
+            record.direction = edit.direction
+            record.kind = edit.kind
+            let counterparty = edit.counterparty?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            record.counterparty = counterparty.isEmpty ? nil : String(counterparty.prefix(200))
+            record.note = String(edit.note.prefix(500))
+            if let time = edit.time {
+                let c = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: time)
+                record.transactionTime = WallClock(year: c.year, month: c.month, day: c.day, hour: c.hour, minute: c.minute)
+                record.receivedAt = time
+            }
+            // 账户不持有这个币种：保存用户填写的实际扣款（账户主币种）
+            if !account.currencies.contains(edit.currency), let minor = edit.settlementMinor, minor > 0 {
+                record.settlement = Money(minorUnits: minor, currency: account.currency)
+            } else {
+                record.settlement = nil
+            }
+            if record.kind != .transferIn, record.kind != .transferOut { record.transferParty = nil }
+            if let group = original.transferGroupID,
+               original.accountID != record.accountID || original.amountMinor != record.amountMinor || original.currency != record.currency
+                   || original.direction != record.direction || !record.kind.isTransferLike {
+                try RecordDAO.clearTransferGroup(db, group: group)
+                record.transferGroupID = nil
+            }
+            try RecordDAO.update(db, record)
+        }
+    }
+
+    /// 删除一笔流水。收到它的那条通知仍记着，同一条通知再来不会重新记上
+    public func deleteRecord(id: String) async throws {
+        let deleted = try await database.write { try RecordDAO.delete($0, id: id) }
+        if !deleted { throw BackendError.notFound }
     }
 
     public func recordDetail(id: String) async throws -> RecordDetail {
-        try await database.read { db in
-            guard let row = try RecordDAO.findRow(db, id: id) else { throw BackendError.notFound }
+        let calendar = calendar
+        return try await database.read { db in
+            guard let found = try RecordDAO.findRow(db, id: id) else { throw BackendError.notFound }
+            let row = try Self.withCharges([found], db: db, calendar: calendar)[0]
             let evidence = try RecordDAO.evidence(db, recordID: id)
             var peer: RecordRow?
             if let group = row.record.transferGroupID {
@@ -183,7 +295,7 @@ public final class LedgerBackend: Sendable {
         }
     }
 
-    /// 账单唯一允许用户修改的业务字段：备注。
+    /// 只改备注（其他字段一起改用 `updateRecord`）。
     public func updateNote(recordID: String, note: String) async throws {
         let trimmed = String(note.prefix(500))
         let updated = try await database.write { try RecordDAO.updateNote($0, id: recordID, note: trimmed) }
@@ -311,10 +423,12 @@ public final class LedgerBackend: Sendable {
 
     /// 每张卡每个币种的余额，币种顺序与账户一致（主币种在前）。
     public func balanceSummaries() async throws -> [String: AccountBalances] {
-        try await database.read { db in
+        let calendar = calendar
+        return try await database.read { db in
+            let charges = ChargeCalculator(db: db, calendar: calendar)
             var result: [String: AccountBalances] = [:]
             for account in try AccountDAO.all(db, includeArchived: true) {
-                let items = try account.currencies.map { try Self.balanceSummary(db, account: account, currency: $0) }
+                let items = try account.currencies.map { try Self.balanceSummary(db, account: account, currency: $0, charges: charges) }
                 result[account.id] = AccountBalances(accountID: account.id, items: items)
             }
             return result
@@ -322,25 +436,48 @@ public final class LedgerBackend: Sendable {
     }
 
     /// 推算余额：从用户填写的初始余额出发，加上之后到达的已入账流水。没有初始余额时余额未知，不用部分流水冒充。
+    /// 主币种还要减去（或加上）这张卡不持有的币种的交易按主币种扣的款；还没有任何汇率、估算不出的不计入。
     /// 银行通知里写的余额不使用：很多银行的通知不带余额，写法和含义也不统一。
     ///
     /// 初始余额是用户在手机上填写的时刻；流水按「通知到达手机的时间」和它比较
     /// （通知内时间是银行所在地的时间，和手机时区可能不同）。
-    static func balanceSummary(_ db: SQLiteConnection, account: Account, currency: CurrencyCode) throws -> AccountBalanceSummary {
+    static func balanceSummary(_ db: SQLiteConnection, account: Account, currency: CurrencyCode, charges: ChargeCalculator) throws -> AccountBalanceSummary {
         guard let opening = account.openingBalance(currency) else {
             return AccountBalanceSummary(accountID: account.id, currency: currency, ledgerDerivedMinor: nil, recordsAfterBase: 0)
         }
         var total = opening.amountMinor
         var count = 0
+        var unconverted = 0
         for record in try RecordDAO.postedAfter(db, accountID: account.id, currency: currency) {
             guard (record.receivedAt ?? record.processedAt) > opening.at else { continue }
             total += record.direction == .inflow ? record.amountMinor : -record.amountMinor
             count += 1
         }
+        if currency == account.currency {
+            for record in try RecordDAO.postedForeign(db, accountID: account.id) {
+                guard (record.receivedAt ?? record.processedAt) > opening.at else { continue }
+                guard let amount = try charges.charge(record, primary: currency).amountMinor else {
+                    unconverted += 1
+                    continue
+                }
+                total += record.direction == .inflow ? amount : -amount
+                count += 1
+            }
+        }
         return AccountBalanceSummary(
             accountID: account.id, currency: currency, ledgerDerivedMinor: total, recordsAfterBase: count,
-            openingBalanceMinor: opening.amountMinor, openingBalanceAt: opening.at
+            openingBalanceMinor: opening.amountMinor, openingBalanceAt: opening.at, unconvertedCount: unconverted
         )
+    }
+
+    // MARK: 汇率
+
+    /// 保存快捷指令导入的完整汇率表，按数据源的更新日期一天一份（同一天保留最后下载的）。
+    /// 外币交易按交易当天的汇率估算扣款；以前的日期都保留。
+    @discardableResult
+    public func saveExchangeRates(_ rates: ExchangeRates) async throws -> Bool {
+        let day = RateDay.key(rates.updatedAt, calendar: calendar)
+        return try await database.write { try RateDAO.save($0, day: day, rates: rates) }
     }
 
     // MARK: 统计

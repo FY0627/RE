@@ -52,11 +52,12 @@ public struct OpeningBalance: Hashable, Sendable, Codable {
 
 /// 银行卡账户。自动记账只用后四位匹配；完整卡号是选填的，只为在卡片信息里查看。不保存密码或邮箱凭据。
 /// 多币种账户（例如一张卡里存港币、美元、人民币）：`currency` 是主币种，通知没写币种时记为主币种；
-/// 其余币种在 `extraCurrencies`。每个币种的余额分开推算，不做换算。
+/// 其余币种在 `extraCurrencies`。每个币种的余额分开推算，不互相换算。
+/// 账户不持有的币种的交易按主币种扣款，计入主币种余额（`RecordCharge`）。
 public struct Account: Identifiable, Hashable, Sendable, Codable {
     public var id: String
     public var name: String
-    /// 已知银行的标识（见 `BankDirectory`），自定义银行为 nil。
+    /// 银行的标识（见 `BankCatalog`；其中能识别通知的在 `BankDirectory`），自己填写的银行为 nil。
     public var bankID: String?
     public var bankName: String
     /// 后四位，字符串保存以保留前导零。
@@ -139,6 +140,9 @@ public struct Account: Identifiable, Hashable, Sendable, Codable {
 
     public var displayTitle: String { "\(bankName) ·\(last4)" }
 
+    /// 没填账户名称时的默认名称，例如「招商银行借记卡」
+    public static func defaultName(bankName: String, cardType: CardType) -> String { "\(bankName)\(cardType.displayName)" }
+
     /// 去掉空格和短横线后的卡号；不是 12–19 位数字时返回 nil。
     public static func normalizedCardNumber(_ input: String) -> String? {
         let digits = String(input.filter { $0 != " " && $0 != "-" })
@@ -204,6 +208,45 @@ public struct AccountDraft: Sendable, Hashable {
         self.paletteID = paletteID
         self.openingBalanceMinor = openingBalanceMinor
         self.extraOpeningBalances = extraOpeningBalances
+    }
+}
+
+/// 卡片信息里修改账户。银行和尾号不能改。
+public struct AccountEdit: Sendable, Hashable {
+    /// 留空恢复默认名称
+    public var name: String
+    public var cardType: CardType
+    public var currency: CurrencyCode
+    public var extraCurrencies: [CurrencyCode]
+    /// 选填的完整卡号；nil 或空白清除
+    public var cardNumber: String?
+    /// 选填的账号；nil 或空白清除
+    public var accountNumber: String?
+    /// 改了的初始余额。改过的记为「现在」的余额；没列出的币种不变
+    public var openingBalanceChanges: [OpeningBalanceChange]
+
+    public init(
+        name: String, cardType: CardType, currency: CurrencyCode, extraCurrencies: [CurrencyCode],
+        cardNumber: String?, accountNumber: String?, openingBalanceChanges: [OpeningBalanceChange] = []
+    ) {
+        self.name = name
+        self.cardType = cardType
+        self.currency = currency
+        self.extraCurrencies = extraCurrencies
+        self.cardNumber = cardNumber
+        self.accountNumber = accountNumber
+        self.openingBalanceChanges = openingBalanceChanges
+    }
+}
+
+public struct OpeningBalanceChange: Sendable, Hashable {
+    public var currency: CurrencyCode
+    /// 最小货币单位；nil 表示清除
+    public var amountMinor: Int64?
+
+    public init(currency: CurrencyCode, amountMinor: Int64?) {
+        self.currency = currency
+        self.amountMinor = amountMinor
     }
 }
 

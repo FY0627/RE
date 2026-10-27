@@ -40,7 +40,15 @@ struct ImportExchangeRatesIntent: AppIntent {
             throw ImportFailure.unreadable
         }
         ExchangeRateStore.save(rates)
-        await MainActor.run { NotificationCenter.default.post(name: .exchangeRatesDidChange, object: nil) }
+        // 每天的完整汇率表都留着：外币交易按交易当天的汇率估算扣款。账本暂时打不开（开机后没解锁过）时只更新最新汇率
+        if let backend = try? AppServices.shared.backend() {
+            _ = try? await backend.saveExchangeRates(rates)
+        }
+        await MainActor.run {
+            NotificationCenter.default.post(name: .exchangeRatesDidChange, object: nil)
+            // 外币交易的估算扣款可能变了：余额重新推算
+            NotificationCenter.default.post(name: .ledgerDidChange, object: nil)
+        }
         AppServices.logger.info("exchange rates imported count=\(rates.rates.count)")
         return .result(value: "已导入 \(rates.rates.count) 个币种的汇率")
     }

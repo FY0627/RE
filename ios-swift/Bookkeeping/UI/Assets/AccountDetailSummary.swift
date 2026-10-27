@@ -1,37 +1,37 @@
 import SwiftUI
 import BKModel
 
-/// 卡片详情里卡片下面、流水之前的部分：待处理提示、余额、「交易记录」标题（没有流水时还有「暂无流水」）。
-/// 放在详情列表（`WalletDetailList`）里；卡片本身、流水和顶部按钮在别处。
-/// 右上角菜单（卡片信息、编辑卡面、待处理账单）在资产页的顶部按钮里；自动记账的设置在「我的」里。
+/// 卡片详情里卡片下面、流水之前的部分：待处理提示；多币种的卡按币种分开看流水；
+/// 「交易记录」标题、时间段和笔数（没有流水时还有「暂无流水」）。
+/// 放在详情列表（`WalletDetailList`）里；卡片本身、流水和顶部按钮在别处。余额在卡片上，初始余额在「卡片信息」里。
 struct AccountDetailSummary: View {
-    let accountID: String
     let model: WalletDetailModel
     let openPending: () -> Void
-    let editOpeningBalance: (CurrencyCode) -> Void
-
-    @Environment(LedgerStore.self) private var store
+    let selectCurrency: (CurrencyCode) -> Void
+    let selectPeriod: (RecordPeriod) -> Void
+    let chooseCustomPeriod: () -> Void
 
     var body: some View {
-        if let account = store.account(id: accountID) {
-            VStack(alignment: .leading, spacing: 0) {
-                if model.pendingCount > 0 {
-                    pendingStrip.padding(.bottom, 16)
-                }
-                balanceCard(account)
-                HStack(alignment: .firstTextBaseline) {
-                    Text("交易记录").font(.title3.weight(.semibold))
-                    Spacer()
-                    Text("共 \(model.recordTotal) 笔").font(.subheadline).foregroundStyle(.secondary)
-                }
-                .padding(.top, 24)
-                .padding(.bottom, 10)
-                if !model.hasRecords {
-                    Text("暂无流水")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity).padding(.vertical, 28)
-                        .multilineTextAlignment(.center)
-                }
+        VStack(alignment: .leading, spacing: 0) {
+            if model.pendingCount > 0 {
+                pendingStrip.padding(.bottom, 16)
+            }
+            if model.currencies.count > 1 {
+                currencyPicker.padding(.bottom, 16)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("交易记录").font(.title3.weight(.semibold))
+                periodMenu
+                Spacer()
+                Text("共 \(model.recordTotal) 笔").font(.subheadline).foregroundStyle(.secondary)
+            }
+            .padding(.top, 8)
+            .padding(.bottom, 10)
+            if !model.hasRecords {
+                Text("暂无流水")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(.vertical, 28)
+                    .multilineTextAlignment(.center)
             }
         }
     }
@@ -50,62 +50,48 @@ struct AccountDetailSummary: View {
         .tapAction(openPending)
     }
 
-    /// 单币种：大字余额 + 初始余额。多币种：每个币种一组，各自的余额和初始余额，不做换算。
-    private func balanceCard(_ account: Account) -> some View {
-        let items = store.balances[account.id]?.items ?? []
-        let currencies = items.isEmpty ? account.currencies : items.map(\.currency)
-        return VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(account.isMultiCurrency ? "余额（多币种）" : "余额").font(.subheadline).foregroundStyle(.secondary)
-                Spacer()
-                Text(account.cardType.displayName)
-                    .font(.footnote.weight(.medium))
-                    .padding(.horizontal, 10).padding(.vertical, 4)
-                    .background(Color.primary.opacity(0.06), in: Capsule())
+    /// 每个币种的流水分开看。卡里没有的币种的交易按主币种扣款，放在主币种里
+    @ViewBuilder
+    private var currencyPicker: some View {
+        let selection = Binding<CurrencyCode> {
+            model.currency ?? model.currencies.first ?? .cny
+        } set: { selectCurrency($0) }
+        if model.currencies.count <= 4 {
+            Picker("币种", selection: selection) {
+                ForEach(model.currencies, id: \.self) { Text(Self.shortName($0)).tag($0) }
             }
-            ForEach(Array(currencies.enumerated()), id: \.element) { index, currency in
-                if index > 0 { Divider().padding(.vertical, 12) }
-                currencyBalance(account, currency, summary: items.first { $0.currency == currency }, large: currencies.count == 1)
+            .pickerStyle(.segmented)
+        } else {
+            Picker("币种", selection: selection) {
+                ForEach(model.currencies, id: \.self) { Text("\($0.chineseName) \($0.rawValue)").tag($0) }
             }
+            .pickerStyle(.menu)
         }
-        .padding(16)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
-    @ViewBuilder
-    private func currencyBalance(_ account: Account, _ currency: CurrencyCode, summary: AccountBalanceSummary?, large: Bool) -> some View {
-        let amountFont: Font = large ? .system(.largeTitle, design: .rounded).weight(.bold) : .system(.title2, design: .rounded).weight(.bold)
-        VStack(alignment: .leading, spacing: 0) {
-            if !large {
-                Text("\(currency.chineseName) \(currency.rawValue)").font(.subheadline.weight(.medium)).padding(.top, 2)
-            }
-            if let derived = summary?.ledgerDerivedMinor {
-                Text(Fmt.money(derived, currency))
-                    .font(amountFont)
-                    .monospacedDigit()
-                    .foregroundStyle(derived < 0 ? AppTheme.debt : Color.primary)
-                    .lineLimit(1).minimumScaleFactor(0.6)
-                    .padding(.top, 2)
-            } else {
-                Text("未知").font(amountFont).foregroundStyle(.secondary).padding(.top, 2)
-            }
+    /// 分段控件放得下的名称：中文名不超过 4 个字，否则用代码
+    private static func shortName(_ code: CurrencyCode) -> String {
+        code.chineseName.count <= 4 ? code.chineseName : code.rawValue
+    }
 
-            if large { Divider().padding(.vertical, 12) }
-
-            LabeledContent("初始余额") {
-                HStack(spacing: 6) {
-                    if let opening = account.openingBalance(currency) {
-                        Text(Fmt.money(opening.amountMinor, currency)).monospacedDigit()
-                    } else {
-                        Text("未填写")
-                    }
-                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+    private var periodMenu: some View {
+        Menu {
+            ForEach(RecordPeriod.presets, id: \.self) { period in
+                Button { selectPeriod(period) } label: {
+                    if model.period == period { Label(period.title, systemImage: "checkmark") } else { Text(period.title) }
                 }
             }
-            .padding(.vertical, 4)
-            .tapAction { editOpeningBalance(currency) }
-            .accessibilityHint("填写或修改这个币种的初始余额")
+            Button(action: chooseCustomPeriod) {
+                if model.period.isCustom { Label(model.period.title, systemImage: "checkmark") } else { Text("自定义…") }
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Text(model.period.title)
+                Image(systemName: "chevron.up.chevron.down").font(.caption2.weight(.semibold))
+            }
+            .font(.subheadline.weight(.medium))
         }
+        .accessibilityLabel("时间：\(model.period.title)")
     }
 }
 
@@ -118,73 +104,99 @@ private extension View {
     }
 }
 
-/// 填写或修改某个币种的初始余额：记为「现在」的余额，之后到达的同币种流水在它的基础上推算。
-struct OpeningBalanceEditor: View {
-    let account: Account
-    let currency: CurrencyCode
-    @Environment(LedgerStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
-    @State private var text = ""
-    @State private var isDebt = false
-    @State private var saving = false
-    @State private var errorText: String?
+/// 卡片详情里看哪段时间的流水（按收到通知的时间）
+enum RecordPeriod: Hashable {
+    case all
+    case thisWeek
+    case thisMonth
+    case lastMonth
+    case thisYear
+    /// 含开始和结束那天
+    case custom(from: Date, to: Date)
 
-    private var value: MoneyInput.Value { MoneyInput.parse(text, negative: isDebt, currency: currency) }
+    static let presets: [RecordPeriod] = [.all, .thisWeek, .thisMonth, .lastMonth, .thisYear]
 
-    private var canSave: Bool {
-        guard !saving, case .valid = value else { return false }
-        return true
+    var isCustom: Bool {
+        if case .custom = self { return true }
+        return false
     }
+
+    var title: String {
+        switch self {
+        case .all: "全部"
+        case .thisWeek: "本周"
+        case .thisMonth: "本月"
+        case .lastMonth: "上月"
+        case .thisYear: "今年"
+        case .custom(let from, let to): "\(Fmt.shortDate(from))–\(Fmt.shortDate(to))"
+        }
+    }
+
+    /// 查询的时间范围：含 `from`，不含 `to`
+    func range(now: Date = Date(), calendar: Calendar = .current) -> (from: Date?, to: Date?) {
+        func interval(_ component: Calendar.Component, _ date: Date) -> (from: Date?, to: Date?) {
+            guard let interval = calendar.dateInterval(of: component, for: date) else { return (nil, nil) }
+            return (interval.start, interval.end)
+        }
+        switch self {
+        case .all:
+            return (nil, nil)
+        case .thisWeek:
+            return interval(.weekOfYear, now)
+        case .thisMonth:
+            return interval(.month, now)
+        case .lastMonth:
+            return interval(.month, calendar.date(byAdding: .month, value: -1, to: now) ?? now)
+        case .thisYear:
+            return interval(.year, now)
+        case .custom(let from, let to):
+            let start = calendar.startOfDay(for: min(from, to))
+            let end = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: max(from, to)))
+            return (start, end)
+        }
+    }
+
+    /// 自定义时打开的初始日期：当前的自定义范围，否则本月 1 日到今天
+    var customDates: (from: Date, to: Date) {
+        if case .custom(let from, let to) = self { return (from, to) }
+        let now = Date()
+        let start = Calendar.current.dateInterval(of: .month, for: now)?.start ?? now
+        return (start, now)
+    }
+}
+
+/// 自定义时间段：选开始和结束日期
+struct CustomPeriodSheet: View {
+    let initial: (from: Date, to: Date)
+    let apply: (RecordPeriod) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var from = Date()
+    @State private var to = Date()
 
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    OpeningBalanceFields(text: $text, isDebt: $isDebt, currency: currency)
-                } header: {
-                    Text("\(account.bankName) ·\(account.last4) · \(currency.chineseName)")
-                }
-                if account.openingBalance(currency) != nil {
-                    Section {
-                        Button("清除初始余额", role: .destructive) { Task { await save(nil) } }
-                    }
-                }
-                if let errorText {
-                    Section { Text(errorText).foregroundStyle(.red) }
-                }
+                DatePicker("开始", selection: $from, in: ...to, displayedComponents: .date)
+                DatePicker("结束", selection: $to, in: from..., displayedComponents: .date)
             }
-            .navigationTitle("初始余额")
+            .navigationTitle("自定义时间")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消", systemImage: "xmark") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("保存", systemImage: "checkmark") {
-                        if case .valid(let minor) = value { Task { await save(minor) } }
+                    Button("完成", systemImage: "checkmark") {
+                        apply(.custom(from: from, to: to))
+                        dismiss()
                     }
-                    .disabled(!canSave)
                 }
             }
             .onAppear {
-                if let opening = account.openingBalance(currency) {
-                    isDebt = opening.amountMinor < 0
-                    text = MoneyInput.editingText(opening.amountMinor, currency: currency)
-                } else {
-                    isDebt = account.cardType == .credit
-                }
+                from = initial.from
+                to = initial.to
             }
         }
-        .presentationDetents([.medium, .large])
-    }
-
-    private func save(_ minor: Int64?) async {
-        saving = true
-        defer { saving = false }
-        do {
-            try await store.setOpeningBalance(accountID: account.id, currency: currency, amountMinor: minor)
-            dismiss()
-        } catch {
-            errorText = "保存失败：\(error)"
-        }
+        .presentationDetents([.medium])
     }
 }
 

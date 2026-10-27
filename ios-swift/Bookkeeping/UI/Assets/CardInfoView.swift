@@ -3,8 +3,9 @@ import UIKit
 import BKModel
 import BKBackend
 
-/// 卡片信息：银行、卡类型、币种、完整卡号（选填，默认遮住）。可以改账户名称、卡号、多币种账户的其他币种，也可以停用 / 启用这张卡。
-/// 银行、尾号、卡类型、主币种决定自动记账的匹配，这里只显示不修改。
+/// 卡片信息：银行、卡类型、币种、每个币种的余额和初始余额、完整卡号（选填，默认遮住）、账号。
+/// 编辑时可以改账户名称、卡类型、主币种、多币种账户的其他币种、每个币种的初始余额、卡号和账号（银行和尾号不能改）；
+/// 也可以停用 / 启用这张卡。
 struct CardInfoView: View {
     let accountID: String
 
@@ -12,10 +13,13 @@ struct CardInfoView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var editing = false
     @State private var name = ""
-    @State private var number = ""
-    @State private var accountNumber = ""
+    @State private var cardType: CardType = .debit
+    @State private var currency: CurrencyCode?
     @State private var multiCurrency = false
     @State private var extras: [CurrencyCode] = []
+    @State private var balances: [CurrencyCode: BalanceInput] = [:]
+    @State private var number = ""
+    @State private var accountNumber = ""
     @State private var revealed = false
     @State private var copied = false
     @State private var saving = false
@@ -31,19 +35,10 @@ struct CardInfoView: View {
 
     private func form(_ account: Account) -> some View {
         Form {
-            Section {
-                if editing {
-                    TextField("账户名称", text: $name)
-                } else {
-                    LabeledContent("账户名称", value: account.name)
-                }
-                LabeledContent("银行", value: account.bankName)
-                LabeledContent("卡类型", value: account.cardType.displayName)
-                LabeledContent(account.isMultiCurrency ? "主币种" : "币种", value: "\(account.currency.chineseName) \(account.currency.rawValue)")
-                if account.isMultiCurrency, !editing {
-                    LabeledContent("其他币种", value: account.extraCurrencies.map(\.chineseName).joined(separator: "、"))
-                }
-                LabeledContent("添加时间", value: Fmt.dateTime(account.createdAt))
+            if editing {
+                editFields(account)
+            } else {
+                infoFields(account)
             }
 
             Section {
@@ -77,17 +72,6 @@ struct CardInfoView: View {
                 Text("卡号")
             }
 
-            if editing {
-                Section {
-                    Toggle("多币种账户", isOn: $multiCurrency)
-                    if multiCurrency {
-                        ExtraCurrencyList(primary: account.currency, selection: $extras)
-                    }
-                } header: {
-                    Text("币种")
-                }
-            }
-
             if let errorText {
                 Section { Text(errorText).foregroundStyle(.red) }
             }
@@ -105,6 +89,12 @@ struct CardInfoView: View {
         }
         .navigationTitle(account.displayTitle)
         .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: cardType) { old, new in
+            // 名称还是默认的（例如「招商银行借记卡」）：跟着卡类型改
+            if editing, name.trimmingCharacters(in: .whitespaces) == Account.defaultName(bankName: account.bankName, cardType: old) {
+                name = Account.defaultName(bankName: account.bankName, cardType: new)
+            }
+        }
         .toolbar {
             if editing {
                 ToolbarItem(placement: .cancellationAction) {
@@ -115,25 +105,115 @@ struct CardInfoView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存", systemImage: "checkmark") { Task { await save(account) } }
-                        .disabled(saving)
+                        .disabled(saving || currency == nil)
                 }
             } else {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("编辑") {
-                        name = account.name
-                        number = account.cardNumber ?? ""
-                        accountNumber = account.accountNumber ?? ""
-                        multiCurrency = account.isMultiCurrency
-                        extras = account.extraCurrencies
-                        errorText = nil
-                        editing = true
-                    }
+                    Button("编辑") { startEditing(account) }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成", systemImage: "checkmark") { dismiss() }
                 }
             }
         }
+    }
+
+    // MARK: 查看
+
+    @ViewBuilder
+    private func infoFields(_ account: Account) -> some View {
+        Section {
+            LabeledContent("账户名称", value: account.name)
+            LabeledContent("银行", value: account.bankName)
+            LabeledContent("卡类型", value: account.cardType.displayName)
+            LabeledContent(account.isMultiCurrency ? "主币种" : "币种", value: Self.title(account.currency))
+            if account.isMultiCurrency {
+                LabeledContent("其他币种", value: account.extraCurrencies.map(\.chineseName).joined(separator: "、"))
+            }
+            LabeledContent("添加时间", value: Fmt.dateTime(account.createdAt))
+        }
+        Section("余额") {
+            ForEach(account.currencies, id: \.self) { code in
+                let summary = store.balances[account.id]?.item(code)
+                let prefix = account.isMultiCurrency ? code.chineseName : ""
+                LabeledContent("\(prefix)余额") {
+                    Text(summary?.ledgerDerivedMinor.map { Fmt.money($0, code) } ?? "未知").monospacedDigit()
+                }
+                LabeledContent("\(prefix)初始余额") {
+                    Text(account.openingBalance(code).map { Fmt.money($0.amountMinor, code) } ?? "未填写").monospacedDigit()
+                }
+                if let unconverted = summary?.unconvertedCount, unconverted > 0 {
+                    Text("另有 \(unconverted) 笔外币交易还没有汇率，没算进余额").font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    // MARK: 编辑
+
+    @ViewBuilder
+    private func editFields(_ account: Account) -> some View {
+        Section {
+            TextField("账户名称", text: $name)
+            LabeledContent("银行", value: account.bankName)
+            Picker("卡类型", selection: $cardType) {
+                ForEach(CardType.allCases, id: \.self) { Text($0.displayName).tag($0) }
+            }
+        }
+        Section("币种与初始余额") {
+            CurrencyLink(title: multiCurrency ? "主币种" : "币种", currency: primaryCurrency)
+            if let currency {
+                OpeningBalanceRow(currency: currency, label: multiCurrency ? currency.chineseName : nil, input: balance(currency))
+            }
+            Toggle("多币种账户", isOn: $multiCurrency)
+            if multiCurrency {
+                NavigationLink {
+                    CurrencyPicker(title: "其他币种", selection: $extras, multiple: true, fixed: currency)
+                } label: {
+                    LabeledContent("其他币种", value: heldExtras.isEmpty ? "请选择" : heldExtras.map(\.chineseName).joined(separator: "、"))
+                }
+                ForEach(heldExtras, id: \.self) { code in
+                    OpeningBalanceRow(currency: code, label: code.chineseName, input: balance(code))
+                }
+            }
+        }
+    }
+
+    private var heldExtras: [CurrencyCode] {
+        multiCurrency ? extras.filter { $0 != currency } : []
+    }
+
+    /// 选主币种：选的是其他币种之一时，和原来的主币种互换
+    private var primaryCurrency: Binding<CurrencyCode?> {
+        Binding { currency } set: { newValue in
+            guard let newValue, newValue != currency else { return }
+            if let index = extras.firstIndex(of: newValue) {
+                if let old = currency { extras[index] = old } else { extras.remove(at: index) }
+            }
+            currency = newValue
+        }
+    }
+
+    /// 没填过初始余额的币种：信用卡默认是欠款
+    private func balance(_ code: CurrencyCode) -> Binding<BalanceInput> {
+        Binding { balances[code] ?? BalanceInput(isDebt: cardType == .credit) } set: { balances[code] = $0 }
+    }
+
+    private func startEditing(_ account: Account) {
+        name = account.name
+        cardType = account.cardType
+        currency = account.currency
+        multiCurrency = account.isMultiCurrency
+        extras = account.extraCurrencies
+        var inputs: [CurrencyCode: BalanceInput] = [:]
+        for opening in account.openingBalances {
+            inputs[opening.currency] = .existing(opening.amountMinor, currency: opening.currency)
+        }
+        balances = inputs
+        number = account.cardNumber ?? ""
+        accountNumber = account.accountNumber ?? ""
+        errorText = nil
+        editing = true
     }
 
     private func setArchived(_ account: Account, _ archived: Bool) {
@@ -158,6 +238,8 @@ struct CardInfoView: View {
         }
     }
 
+    static func title(_ code: CurrencyCode) -> String { "\(code.chineseName) \(code.rawValue)" }
+
     static func grouped(_ digits: String) -> String {
         var result = ""
         for (index, char) in digits.enumerated() {
@@ -172,13 +254,36 @@ struct CardInfoView: View {
     }
 
     private func save(_ account: Account) async {
+        guard let currency else { return }
+        let held = [currency] + heldExtras
+        // 只有改过的初始余额才重新记（记为「现在」的余额）；没动的保持原来的时间点
+        var changes: [OpeningBalanceChange] = []
+        for code in held {
+            let value = balance(code).wrappedValue.value(code)
+            let entered: Int64?
+            switch value {
+            case .invalid:
+                errorText = "\(code.chineseName)的初始余额格式不对，例如 1234.56"
+                return
+            case .empty: entered = nil
+            case .valid(let minor): entered = minor
+            }
+            if entered != account.openingBalance(code)?.amountMinor {
+                changes.append(OpeningBalanceChange(currency: code, amountMinor: entered))
+            }
+        }
         saving = true
         defer { saving = false }
         do {
-            try await store.updateCardInfo(accountID: account.id, name: name, cardNumber: number, accountNumber: accountNumber, extraCurrencies: multiCurrency ? extras : [])
+            try await store.updateAccount(id: account.id, AccountEdit(
+                name: name, cardType: cardType, currency: currency, extraCurrencies: Array(held.dropFirst()),
+                cardNumber: number, accountNumber: accountNumber, openingBalanceChanges: changes
+            ))
             errorText = nil
             revealed = false
             editing = false
+        } catch BackendError.invalidAccount(.duplicateAccount) {
+            errorText = "已经有一张同一银行、同一尾号的\(cardType.displayName)。"
         } catch BackendError.invalidAccount(.invalidAccountNumber) {
             errorText = "账号只能包含数字、X 和短横线，至少 6 位。"
         } catch BackendError.invalidAccount(.invalidCardNumber) {

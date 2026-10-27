@@ -24,9 +24,8 @@ struct AssetsView: View {
     private var isOpen: Bool { selectedID != nil }
 
     enum AssetsSheet: Identifiable, Hashable {
-        case info, face, pending, manage
+        case info, face, pending, manage, customPeriod
         case record(RecordRow)
-        case openingBalance(CurrencyCode)
         var id: Self { self }
     }
 
@@ -68,7 +67,7 @@ struct AssetsView: View {
             addAccount: openAddAccount,
             openPending: { sheet = .pending },
             openRecord: { sheet = .record($0) },
-            editOpeningBalance: { sheet = .openingBalance($0) }
+            chooseCustomPeriod: { sheet = .customPeriod }
         )
     }
 
@@ -85,10 +84,8 @@ struct AssetsView: View {
             if let selectedID { CardInfoView(accountID: selectedID) }
         case .face:
             if let selectedID { CardFaceEditor(accountID: selectedID) }
-        case .openingBalance(let currency):
-            if let account = selectedID.flatMap({ store.account(id: $0) }) {
-                OpeningBalanceEditor(account: account, currency: currency)
-            }
+        case .customPeriod:
+            CustomPeriodSheet(initial: detail.period.customDates) { [bridge] period in bridge.setPeriod(period) }
         }
     }
 

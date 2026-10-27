@@ -5,7 +5,7 @@
 /// - 每个迁移在一个事务里执行，失败整体回滚，版本号不变；
 /// - 每次修改表结构都要在 `DatabaseTests` 里补迁移测试。
 public enum Migrations {
-    public static let latestVersion = 6
+    public static let latestVersion = 7
 
     static let steps: [(version: Int, sql: String)] = [
         (1, """
@@ -159,6 +159,24 @@ public enum Migrations {
             kind TEXT NOT NULL,
             direction TEXT NOT NULL,
             created_at REAL NOT NULL
+        );
+        """),
+        // 账户不持有的币种的交易按主币种扣款：用户填写的实际扣款（为空时按当天汇率估算）；
+        // 每天的完整汇率表（快捷指令导入），按交易当天的汇率估算扣款
+        (7, """
+        ALTER TABLE records ADD COLUMN settlement_minor INTEGER;
+        ALTER TABLE records ADD COLUMN settlement_currency TEXT;
+        CREATE TABLE exchange_rate_days (
+            day TEXT PRIMARY KEY NOT NULL,
+            base TEXT NOT NULL,
+            updated_at REAL NOT NULL,
+            fetched_at REAL NOT NULL
+        );
+        CREATE TABLE exchange_rates (
+            day TEXT NOT NULL REFERENCES exchange_rate_days(day),
+            currency TEXT NOT NULL,
+            rate REAL NOT NULL,
+            PRIMARY KEY (day, currency)
         );
         """),
     ]

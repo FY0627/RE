@@ -2,79 +2,63 @@ import SwiftUI
 import BKModel
 import BKBackend
 
-/// 添加银行卡：银行、后四位、卡类型、币种（可设为多币种账户），以及选填的初始余额。不收集完整卡号、密码或邮箱凭据。
+/// 添加银行卡：银行（直接输入，下面列出对得上的银行全称，什么语言都能搜）、后四位、卡类型、
+/// 币种（可设为多币种账户）和每个币种的初始余额（选填，紧跟在选好的币种下面）。不收集完整卡号、密码或邮箱凭据。
 struct AddAccountView: View {
-    struct BalanceInput {
-        var text = ""
-        var isDebt = false
-    }
-
     @Environment(LedgerStore.self) private var store
     @Environment(\.dismiss) private var dismiss
-    @State private var bankChoice = ""
-    @State private var customBank = ""
+    @State private var bankText = ""
+    /// 从列表里选中的银行；改了名称就不算选中
+    @State private var bank: BankEntry?
+    @FocusState private var bankFocused: Bool
     @State private var name = ""
     @State private var last4 = ""
     @State private var cardType: CardType = .debit
     @State private var currency: CurrencyCode?
-    @State private var paletteID = "ocean"
-    @State private var paletteTouched = false
-    @State private var balanceText = ""
-    @State private var balanceIsDebt = false
     @State private var multiCurrency = false
     @State private var extraCurrencies: [CurrencyCode] = []
-    @State private var extraBalances: [CurrencyCode: BalanceInput] = [:]
+    @State private var balances: [CurrencyCode: BalanceInput] = [:]
+    @State private var paletteID = "ocean"
+    @State private var paletteTouched = false
     @State private var saving = false
     @State private var errorText: String?
     @State private var created: Account?
 
-    private static let customTag = "__custom"
+    private var bankName: String { bankText.trimmingCharacters(in: .whitespacesAndNewlines) }
 
-    private var bankName: String {
-        bankChoice == Self.customTag ? customBank.trimmingCharacters(in: .whitespaces) : (BankDirectory.profile(id: bankChoice)?.name ?? "")
+    /// 这张卡的币种，主币种在前
+    private var currencies: [CurrencyCode] {
+        guard let currency else { return [] }
+        return [currency] + (multiCurrency ? extraCurrencies.filter { $0 != currency } : [])
     }
 
     private var isValid: Bool {
-        !bankName.isEmpty && Account.isValidLast4(last4) && currency != nil && openingBalance != .invalid
-            && selectedExtras.allSatisfy { extraValue($0) != .invalid }
+        !bankName.isEmpty && Account.isValidLast4(last4) && currency != nil
+            && currencies.allSatisfy { balance($0).wrappedValue.value($0) != .invalid }
     }
 
-    /// 多币种账户的其他币种（关闭多币种时为空）
-    private var selectedExtras: [CurrencyCode] {
-        multiCurrency ? extraCurrencies.filter { $0 != currency } : []
+    private var suggestions: [BankEntry] {
+        bank == nil ? BankCatalog.search(bankText) : []
     }
 
-    private func extraValue(_ code: CurrencyCode) -> MoneyInput.Value {
-        let input = extraBalances[code] ?? BalanceInput()
-        return MoneyInput.parse(input.text, negative: input.isDebt, currency: code)
-    }
-
-    private func extraText(_ code: CurrencyCode) -> Binding<String> {
-        Binding { extraBalances[code]?.text ?? "" } set: { extraBalances[code, default: BalanceInput()].text = $0 }
-    }
-
-    private func extraDebt(_ code: CurrencyCode) -> Binding<Bool> {
-        Binding { extraBalances[code]?.isDebt ?? false } set: { extraBalances[code, default: BalanceInput()].isDebt = $0 }
-    }
-
-    private var openingBalance: MoneyInput.Value {
-        MoneyInput.parse(balanceText, negative: balanceIsDebt, currency: currency)
+    /// 没填过的币种：信用卡默认是欠款
+    private func balance(_ code: CurrencyCode) -> Binding<BalanceInput> {
+        Binding { balances[code] ?? BalanceInput(isDebt: cardType == .credit) } set: { balances[code] = $0 }
     }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("银行") {
-                    Picker("银行", selection: $bankChoice) {
-                        Text("请选择").tag("")
-                        ForEach(BankDirectory.all) { Text($0.name).tag($0.id) }
-                        Text("其他银行").tag(Self.customTag)
-                    }
-                    if bankChoice == Self.customTag {
-                        TextField("银行名称", text: $customBank)
+                    TextField("银行名称", text: $bankText)
+                        .focused($bankFocused)
+                        .autocorrectionDisabled()
+                        .submitLabel(.done)
+                    ForEach(suggestions) { entry in
+                        Button { choose(entry) } label: { BankSuggestionRow(entry: entry) }
                     }
                 }
-                Section {
+                Section("卡片") {
                     TextField("卡号后四位", text: $last4)
                         .keyboardType(.numberPad)
                         .onChange(of: last4) { _, value in
@@ -86,33 +70,22 @@ struct AddAccountView: View {
                         ForEach(CardType.allCases, id: \.self) { Text($0.displayName).tag($0) }
                     }
                     TextField("账户名称（可选）", text: $name)
-                } header: {
-                    Text("卡片")
                 }
-                Section {
-                    Picker(multiCurrency ? "主币种" : "币种", selection: $currency) {
-                        Text("请选择").tag(CurrencyCode?.none)
-                        ForEach(CurrencyCode.common, id: \.self) { code in
-                            Text("\(code.chineseName) \(code.rawValue)").tag(CurrencyCode?.some(code))
-                        }
+                Section("币种与初始余额") {
+                    CurrencyLink(title: multiCurrency ? "主币种" : "币种", currency: primaryCurrency)
+                    if let currency {
+                        OpeningBalanceRow(currency: currency, label: multiCurrency ? currency.chineseName : nil, input: balance(currency))
                     }
                     Toggle("多币种账户", isOn: $multiCurrency)
-                } header: {
-                    Text("记账币种")
-                }
-                if multiCurrency {
-                    Section("其他币种") {
-                        ExtraCurrencyList(primary: currency, selection: $extraCurrencies)
-                    }
-                }
-                Section {
-                    OpeningBalanceFields(text: $balanceText, isDebt: $balanceIsDebt, currency: currency)
-                } header: {
-                    Text(multiCurrency ? "\(currency?.chineseName ?? "主币种")初始余额（选填）" : "初始余额（选填）")
-                }
-                ForEach(selectedExtras, id: \.self) { code in
-                    Section("\(code.chineseName)初始余额（选填）") {
-                        OpeningBalanceFields(text: extraText(code), isDebt: extraDebt(code), currency: code)
+                    if multiCurrency {
+                        NavigationLink {
+                            CurrencyPicker(title: "其他币种", selection: $extraCurrencies, multiple: true, fixed: currency)
+                        } label: {
+                            LabeledContent("其他币种", value: extrasSummary)
+                        }
+                        ForEach(currencies.dropFirst(), id: \.self) { code in
+                            OpeningBalanceRow(currency: code, label: code.chineseName, input: balance(code))
+                        }
                     }
                 }
                 Section("卡面") {
@@ -131,32 +104,60 @@ struct AddAccountView: View {
                     Button("保存", systemImage: "checkmark") { Task { await save() } }.disabled(!isValid || saving)
                 }
             }
-            .onChange(of: cardType) { _, type in
-                if balanceText.isEmpty { balanceIsDebt = type == .credit }
+            .onChange(of: bankText) { _, text in
+                if let bank, text != bank.name { self.bank = nil }
             }
-            .onChange(of: bankChoice) { _, id in
-                if !paletteTouched, let profile = BankDirectory.profile(id: id) { paletteID = profile.defaultPaletteID }
+            .onChange(of: cardType) { _, type in
+                for (code, input) in balances where input.text.isEmpty { balances[code]?.isDebt = type == .credit }
             }
             .navigationDestination(item: $created) { account in
                 AutoSetupGuideView(account: account, onDone: { dismiss() })
             }
+            .task {
+                // 银行和币种的搜索列表第一次要查系统名称、算拼音，先在后台准备好
+                await CurrencyCatalog.prepare()
+                await Task.detached(priority: .utility) { _ = BankCatalog.search("银行") }.value
+            }
         }
+    }
+
+    /// 选主币种：选的是其他币种之一时，和原来的主币种互换
+    private var primaryCurrency: Binding<CurrencyCode?> {
+        Binding { currency } set: { newValue in
+            guard let newValue, newValue != currency else { return }
+            if let index = extraCurrencies.firstIndex(of: newValue) {
+                if let old = currency { extraCurrencies[index] = old } else { extraCurrencies.remove(at: index) }
+            }
+            currency = newValue
+        }
+    }
+
+    private var extrasSummary: String {
+        let extras = currencies.dropFirst()
+        return extras.isEmpty ? "请选择" : extras.map(\.chineseName).joined(separator: "、")
+    }
+
+    private func choose(_ entry: BankEntry) {
+        bank = entry
+        bankText = entry.name
+        bankFocused = false
+        if !paletteTouched, let palette = entry.paletteID { paletteID = palette }
     }
 
     private func save() async {
         guard let currency else { return }
         saving = true
         defer { saving = false }
-        var opening: Int64?
-        if case .valid(let minor) = openingBalance { opening = minor }
-        var extraOpenings: [CurrencyCode: Int64] = [:]
-        for code in selectedExtras {
-            if case .valid(let minor) = extraValue(code) { extraOpenings[code] = minor }
+        // 没点列表、但打的正好是某家银行的名称或叫法：也算选中它
+        let entry = bank ?? BankCatalog.exactMatch(bankText)
+        var openings: [CurrencyCode: Int64] = [:]
+        for code in currencies {
+            if case .valid(let minor) = balance(code).wrappedValue.value(code) { openings[code] = minor }
         }
         let draft = AccountDraft(
-            name: name, bankID: bankChoice == Self.customTag ? nil : bankChoice, bankName: bankName,
-            last4: last4, cardType: cardType, currency: currency, paletteID: paletteID, openingBalanceMinor: opening,
-            extraCurrencies: selectedExtras, extraOpeningBalances: extraOpenings
+            name: name, bankID: entry?.id, bankName: entry?.name ?? bankName,
+            last4: last4, cardType: cardType, currency: currency, paletteID: paletteID, openingBalanceMinor: openings[currency],
+            extraCurrencies: Array(currencies.dropFirst()), extraOpeningBalances: openings.filter { $0.key != currency }
         )
         do {
             let alreadyAutomated = store.automationVerified
@@ -168,12 +169,29 @@ struct AddAccountView: View {
             switch reason {
             case .duplicateAccount: errorText = "已经添加过这张卡（同一银行、同一尾号、同一卡类型）。"
             case .invalidLast4: errorText = "后四位必须是 4 位数字。"
-            case .emptyBank, .emptyName: errorText = "请选择或填写银行。"
+            case .emptyBank, .emptyName: errorText = "请填写银行。"
             case .invalidCardNumber: errorText = "卡号格式不正确。"
             case .invalidAccountNumber: errorText = "账号格式不正确。"
             }
         } catch {
             errorText = "保存失败：\(error)"
         }
+    }
+}
+
+/// 输入银行名称时列出的一家银行：中文全称，下面是英文或当地名称和地区
+private struct BankSuggestionRow: View {
+    let entry: BankEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(entry.name).foregroundStyle(.primary)
+            Text(entry.localName == entry.name ? entry.region : "\(entry.localName) · \(entry.region)")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
 }

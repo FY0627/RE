@@ -39,12 +39,14 @@ struct ProfileView: View {
                 }
 
                 Section {
-                    Picker(selection: $primaryCurrency) {
-                        ForEach(CurrencyCode.common, id: \.self) { code in
-                            Text("\(code.chineseName) \(code.rawValue)").tag(code.rawValue)
-                        }
+                    NavigationLink {
+                        CurrencyPicker(title: "主要币种", selection: primaryCurrencyList, multiple: false)
                     } label: {
-                        Label("主要币种", systemImage: "dollarsign.circle")
+                        LabeledContent {
+                            Text(CurrencyCode(primaryCurrency).chineseName)
+                        } label: {
+                            Label("主要币种", systemImage: "dollarsign.circle")
+                        }
                     }
                     LabeledContent("汇率", value: rateStatus)
                     NavigationLink {
@@ -140,6 +142,13 @@ struct ProfileView: View {
 extension ProfileView {
     private var rateStatus: String {
         rates.rates.map { "更新于 \(Fmt.dateTime($0.updatedAt))" } ?? "尚未导入"
+    }
+
+    /// 选币种页面用的单选列表
+    private var primaryCurrencyList: Binding<[CurrencyCode]> {
+        Binding { [CurrencyCode(primaryCurrency)] } set: { codes in
+            if let code = codes.first { primaryCurrency = code.rawValue }
+        }
     }
 }
 

@@ -160,7 +160,8 @@ public enum TransferParty: String, Sendable, Codable, CaseIterable {
     case other
 }
 
-/// 一条资金变动记录。只有备注 `note` 和转账去向 `transferParty` 允许用户修改。
+/// 一条资金变动记录。用户可以改金额、币种、方向、性质、账户、交易对方、时间、备注、转账去向和实际扣款，也可以删除；
+/// 来源、通知原文和结算状态不能改。
 public struct LedgerRecord: Identifiable, Hashable, Sendable, Codable {
     public var id: String
     public var accountID: String
@@ -187,13 +188,15 @@ public struct LedgerRecord: Identifiable, Hashable, Sendable, Codable {
     public var relatedRecordID: String?
     /// 没配对到自己另一张卡的转账，用户确认的对方；nil 表示还没确认（按转给别人统计）
     public var transferParty: TransferParty?
+    /// 账户不持有这个币种时，用户填写的实际扣款（账户主币种）；nil 时按交易当天的汇率估算（见 `RecordCharge`）
+    public var settlement: Money?
 
     public init(
         id: String, accountID: String, amountMinor: Int64, currency: CurrencyCode, direction: FlowDirection,
         kind: TransactionKind, status: SettlementStatus, counterparty: String?, transactionTime: WallClock?,
         receivedAt: Date?, processedAt: Date, source: SourceKind, ingestID: String, partIndex: Int,
         bankReference: String?, balanceAfterMinor: Int64?, includedFeeMinor: Int64?, note: String,
-        transferGroupID: String?, relatedRecordID: String?, transferParty: TransferParty? = nil
+        transferGroupID: String?, relatedRecordID: String?, transferParty: TransferParty? = nil, settlement: Money? = nil
     ) {
         self.id = id
         self.accountID = accountID
@@ -216,6 +219,7 @@ public struct LedgerRecord: Identifiable, Hashable, Sendable, Codable {
         self.transferGroupID = transferGroupID
         self.relatedRecordID = relatedRecordID
         self.transferParty = transferParty
+        self.settlement = settlement
     }
 
     /// 排序和按日分组使用的系统时间。
@@ -236,16 +240,101 @@ public struct RecordRow: Identifiable, Hashable, Sendable {
     public var bankName: String
     public var last4: String
     public var paletteID: String
+    /// 账户持有的币种，主币种在前
+    public var accountCurrencies: [CurrencyCode]
+    /// 账户不持有这笔流水的币种时，按主币种扣款的金额；持有时为 nil
+    public var charge: RecordCharge?
 
-    public init(record: LedgerRecord, accountName: String, bankName: String, last4: String, paletteID: String) {
+    public init(
+        record: LedgerRecord, accountName: String, bankName: String, last4: String, paletteID: String,
+        accountCurrencies: [CurrencyCode] = [], charge: RecordCharge? = nil
+    ) {
         self.record = record
         self.accountName = accountName
         self.bankName = bankName
         self.last4 = last4
         self.paletteID = paletteID
+        self.accountCurrencies = accountCurrencies
+        self.charge = charge
     }
 
     public var id: String { record.id }
+    /// 账户不持有这笔流水的币种（银行按主币种结汇扣款）
+    public var isForeignCurrency: Bool { !accountCurrencies.isEmpty && !accountCurrencies.contains(record.currency) }
+}
+
+/// 账户不持有的币种的交易：银行大概率按账户主币种结汇扣款。
+/// 用户填写了实际扣款就用它；否则按交易当天的汇率估算，那天没有汇率就用记录当天的，都没有就用日期最近的一天。
+public struct RecordCharge: Hashable, Sendable {
+    /// 账户主币种
+    public var currency: CurrencyCode
+    /// 扣款金额（最小单位，正数）；还没有任何汇率时为 nil
+    public var amountMinor: Int64?
+    /// 用户填写的实际扣款；false 表示按汇率估算
+    public var isActual: Bool
+    /// 估算用的汇率日期（`YYYY-MM-DD`）
+    public var rateDay: String?
+
+    public init(currency: CurrencyCode, amountMinor: Int64?, isActual: Bool, rateDay: String?) {
+        self.currency = currency
+        self.amountMinor = amountMinor
+        self.isActual = isActual
+        self.rateDay = rateDay
+    }
+}
+
+/// 用户修改一笔流水。
+public struct RecordEdit: Hashable, Sendable {
+    public var accountID: String
+    /// 最小货币单位，必须大于 0
+    public var amountMinor: Int64
+    public var currency: CurrencyCode
+    public var direction: FlowDirection
+    public var kind: TransactionKind
+    /// 空白视为没有
+    public var counterparty: String?
+    /// 交易时间；nil 表示不修改
+    public var time: Date?
+    public var note: String
+    /// 实际扣款（账户主币种的最小单位）；nil 表示按汇率估算。只在账户不持有 `currency` 时保存
+    public var settlementMinor: Int64?
+
+    public init(
+        accountID: String, amountMinor: Int64, currency: CurrencyCode, direction: FlowDirection, kind: TransactionKind,
+        counterparty: String?, time: Date?, note: String, settlementMinor: Int64? = nil
+    ) {
+        self.accountID = accountID
+        self.amountMinor = amountMinor
+        self.currency = currency
+        self.direction = direction
+        self.kind = kind
+        self.counterparty = counterparty
+        self.time = time
+        self.note = note
+        self.settlementMinor = settlementMinor
+    }
+}
+
+/// 查流水的条件。都不填时是全部流水。
+public struct RecordFilter: Hashable, Sendable {
+    public var accountID: String?
+    /// 只看影响这个币种余额的流水（同时指定 `accountID`）：主币种还包括这张卡不持有的币种的交易（按主币种扣款）
+    public var currency: CurrencyCode?
+    public var direction: FlowDirection?
+    /// 时间范围（按 `effectiveAt`）：含 `from`，不含 `to`
+    public var from: Date?
+    public var to: Date?
+    /// 关键字，空格分开的每个词都要对上：交易对方、备注、账户名称、银行、尾号、交易性质或金额
+    public var text: String
+
+    public init(accountID: String? = nil, currency: CurrencyCode? = nil, direction: FlowDirection? = nil, from: Date? = nil, to: Date? = nil, text: String = "") {
+        self.accountID = accountID
+        self.currency = currency
+        self.direction = direction
+        self.from = from
+        self.to = to
+        self.text = text
+    }
 }
 
 /// 分页游标：按 (effectiveAt, id) 倒序。

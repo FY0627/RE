@@ -823,7 +823,7 @@ final class IngestTests: XCTestCase {
 
     // MARK: 备注与保留期限
 
-    func testOnlyNoteIsEditable() async throws {
+    func testUpdateNoteChangesOnlyTheNote() async throws {
         let backend = try makeBackend()
         try await addAccount(backend, last4: "0427")
         _ = try await backend.ingest(IngestRequest(text: purchase, source: .sms))

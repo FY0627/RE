@@ -9,16 +9,21 @@ struct WalletActions {
     var addAccount: () -> Void = {}
     var openPending: () -> Void = {}
     var openRecord: (RecordRow) -> Void = { _ in }
-    var editOpeningBalance: (CurrencyCode) -> Void = { _ in }
+    /// 流水的时间段选了「自定义…」
+    var chooseCustomPeriod: () -> Void = {}
 }
 
-/// 资产页顶部的返回按钮通过它让卡包返回。
+/// 资产页通过它让卡包返回（顶部的返回按钮），或换详情里流水的时间段（自定义时间的面板）。
 @MainActor
 final class WalletBridge {
     weak var controller: WalletController?
 
     func close() {
         controller?.close()
+    }
+
+    func setPeriod(_ period: RecordPeriod) {
+        controller?.setPeriod(period)
     }
 }
 
@@ -122,7 +127,7 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
         detailList.onScroll = { [weak self] in self?.detailScrolled() }
         detailList.onSelectRecord = { [weak self] row in self?.actions.openRecord(row) }
         detailList.onOpenPending = { [weak self] in self?.actions.openPending() }
-        detailList.onEditOpeningBalance = { [weak self] currency in self?.actions.editOpeningBalance(currency) }
+        detailList.onChooseCustomPeriod = { [weak self] in self?.actions.chooseCustomPeriod() }
         detailList.onActivateCard = { [weak self] in self?.close() }
 
         stackScroll.delegate = self
@@ -442,6 +447,11 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
             guard let self, token == self.motionToken else { return }
             self.behindFollowsScroll = false
         }
+    }
+
+    /// 详情里流水换一个时间段（自定义时间）
+    func setPeriod(_ period: RecordPeriod) {
+        detailList.setPeriod(period)
     }
 
     func close() {

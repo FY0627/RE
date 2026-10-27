@@ -2,10 +2,10 @@ import Foundation
 import Observation
 import BKModel
 
-/// 主要币种与汇率。汇率只用于资产页净资产的换算显示，卡片和流水始终是原币种。
+/// 主要币种与最新汇率。汇率用于资产页净资产的换算显示，卡片和流水始终是原币种。
 ///
-/// App 自己不联网：汇率由快捷指令自动化下载（「获取 URL 内容」），再交给 App 动作「导入汇率」，
-/// 保存在本机缓存里。
+/// App 自己不联网：汇率由快捷指令自动化下载（「获取 URL 内容」），再交给 App 动作「导入汇率」。
+/// 最新一份放在这里（启动时同步读出）；每天的完整汇率表另外保存在账本里，外币交易按当天的汇率估算扣款。
 @MainActor
 @Observable
 final class ExchangeRateStore {
@@ -23,7 +23,12 @@ final class ExchangeRateStore {
     }
 
     private func reload() {
-        rates = UserDefaults.standard.data(forKey: Self.cacheKey).flatMap { try? JSONDecoder().decode(ExchangeRates.self, from: $0) }
+        rates = Self.cached()
+    }
+
+    /// 本机缓存的最新汇率。可以在任何线程调用。
+    nonisolated static func cached() -> ExchangeRates? {
+        UserDefaults.standard.data(forKey: cacheKey).flatMap { try? JSONDecoder().decode(ExchangeRates.self, from: $0) }
     }
 
     /// 写入本机缓存。由 App 动作调用，可以在任何线程调用。

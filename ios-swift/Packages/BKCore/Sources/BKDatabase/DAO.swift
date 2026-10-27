@@ -85,7 +85,22 @@ public enum AccountDAO {
     /// 修改多币种账户的其他币种；不再持有的币种，其初始余额一起删除（已有流水保留）。
     public static func updateExtraCurrencies(_ db: SQLiteConnection, id: String, primary: CurrencyCode, extras: [CurrencyCode]) throws {
         try db.run("UPDATE accounts SET extra_currencies = ? WHERE id = ?", [encodeCurrencies(extras), id])
-        let kept = [primary] + extras
+        try deleteOpeningBalances(db, id: id, keeping: [primary] + extras)
+    }
+
+    /// 卡片信息里能改的全部内容；不再持有的币种，其初始余额一起删除（已有流水保留）。
+    public static func updateDetails(
+        _ db: SQLiteConnection, id: String, name: String, cardType: CardType, currency: CurrencyCode, extras: [CurrencyCode],
+        cardNumber: String?, accountNumber: String?
+    ) throws {
+        try db.run(
+            "UPDATE accounts SET name = ?, card_type = ?, currency = ?, extra_currencies = ?, card_number = ?, account_number = ? WHERE id = ?",
+            [name, cardType.rawValue, currency.rawValue, encodeCurrencies(extras), cardNumber, accountNumber, id]
+        )
+        try deleteOpeningBalances(db, id: id, keeping: [currency] + extras)
+    }
+
+    private static func deleteOpeningBalances(_ db: SQLiteConnection, id: String, keeping kept: [CurrencyCode]) throws {
         let placeholders = kept.map { _ in "?" }.joined(separator: ", ")
         try db.run(
             "DELETE FROM opening_balances WHERE account_id = ? AND currency NOT IN (\(placeholders))",
@@ -133,9 +148,9 @@ public enum RecordDAO {
     static let columns = """
     r.id, r.account_id, r.amount_minor, r.currency, r.direction, r.kind, r.status, r.counterparty, r.txn_time, r.txn_year_inferred, \
     r.received_at, r.processed_at, r.source, r.ingest_id, r.part_index, r.bank_reference, r.balance_after_minor, r.included_fee_minor, \
-    r.note, r.transfer_group, r.related_record_id, r.transfer_party
+    r.note, r.transfer_group, r.related_record_id, r.transfer_party, r.settlement_minor, r.settlement_currency
     """
-    static let rowColumns = columns + ", a.name, a.bank_name, a.last4, a.palette_id"
+    static let rowColumns = columns + ", a.name, a.bank_name, a.last4, a.palette_id, a.currency, a.extra_currencies"
 
     static func map(_ row: SQLiteConnection.Row) -> LedgerRecord {
         LedgerRecord(
@@ -147,12 +162,18 @@ public enum RecordDAO {
             ingestID: row.string(13), partIndex: Int(row.int(14)), bankReference: row.optionalString(15),
             balanceAfterMinor: row.optionalInt(16), includedFeeMinor: row.optionalInt(17), note: row.string(18),
             transferGroupID: row.optionalString(19), relatedRecordID: row.optionalString(20),
-            transferParty: row.optionalString(21).flatMap(TransferParty.init(rawValue:))
+            transferParty: row.optionalString(21).flatMap(TransferParty.init(rawValue:)),
+            settlement: row.optionalInt(22).flatMap { minor in row.optionalString(23).map { Money(minorUnits: minor, currency: CurrencyCode($0)) } }
         )
     }
 
     static func mapRow(_ row: SQLiteConnection.Row) -> RecordRow {
-        RecordRow(record: map(row), accountName: row.string(22), bankName: row.string(23), last4: row.string(24), paletteID: row.string(25))
+        let primary = CurrencyCode(row.string(28))
+        let currencies = [primary] + Account.normalizedExtras(AccountDAO.decodeCurrencies(row.string(29)), primary: primary)
+        return RecordRow(
+            record: map(row), accountName: row.string(24), bankName: row.string(25), last4: row.string(26), paletteID: row.string(27),
+            accountCurrencies: currencies
+        )
     }
 
     /// 插入一条记录。`dedupe_key` 冲突时返回 false（说明是重复），不抛错。
@@ -161,17 +182,55 @@ public enum RecordDAO {
             """
             INSERT OR IGNORE INTO records (id, account_id, amount_minor, currency, direction, kind, status, counterparty, txn_time, \
             txn_year_inferred, received_at, processed_at, effective_at, source, ingest_id, part_index, bank_reference, balance_after_minor, \
-            included_fee_minor, note, transfer_group, related_record_id, transfer_party, dedupe_key, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            included_fee_minor, note, transfer_group, related_record_id, transfer_party, settlement_minor, settlement_currency, dedupe_key, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 r.id, r.accountID, r.amountMinor, r.currency.rawValue, r.direction.rawValue, r.kind.rawValue, r.status.rawValue,
                 r.counterparty, r.transactionTime.map(WallClockCodec.encode), r.transactionTime?.yearInferred ?? false,
                 r.receivedAt, r.processedAt, r.effectiveAt, r.source.rawValue, r.ingestID, r.partIndex, r.bankReference,
-                r.balanceAfterMinor, r.includedFeeMinor, r.note, r.transferGroupID, r.relatedRecordID, r.transferParty?.rawValue, dedupeKey, now,
+                r.balanceAfterMinor, r.includedFeeMinor, r.note, r.transferGroupID, r.relatedRecordID, r.transferParty?.rawValue,
+                r.settlement?.minorUnits, r.settlement?.currency.rawValue, dedupeKey, now,
             ]
         )
         return changed > 0
+    }
+
+    /// 用户修改后的记录：写回能改的列（来源、原文、结算状态不变）
+    @discardableResult
+    public static func update(_ db: SQLiteConnection, _ r: LedgerRecord) throws -> Bool {
+        try db.run(
+            """
+            UPDATE records SET account_id = ?, amount_minor = ?, currency = ?, direction = ?, kind = ?, counterparty = ?, txn_time = ?, \
+            txn_year_inferred = ?, received_at = ?, effective_at = ?, note = ?, transfer_group = ?, transfer_party = ?, \
+            settlement_minor = ?, settlement_currency = ? WHERE id = ?
+            """,
+            [
+                r.accountID, r.amountMinor, r.currency.rawValue, r.direction.rawValue, r.kind.rawValue, r.counterparty,
+                r.transactionTime.map(WallClockCodec.encode), r.transactionTime?.yearInferred ?? false, r.receivedAt, r.effectiveAt,
+                r.note, r.transferGroupID, r.transferParty?.rawValue, r.settlement?.minorUnits, r.settlement?.currency.rawValue, r.id,
+            ]
+        ) > 0
+    }
+
+    /// 删除一条记录和指向它的引用。通知本身（指纹）保留，同一条通知再来不会重新记上
+    @discardableResult
+    public static func delete(_ db: SQLiteConnection, id: String) throws -> Bool {
+        guard let record = try find(db, id: id) else { return false }
+        try db.run("DELETE FROM record_evidence WHERE record_id = ?", [id])
+        try db.run("UPDATE records SET related_record_id = NULL WHERE related_record_id = ?", [id])
+        try db.run("UPDATE balance_observations SET record_id = NULL WHERE record_id = ?", [id])
+        try db.run("UPDATE pending_items SET duplicate_of_record_id = NULL WHERE duplicate_of_record_id = ?", [id])
+        try db.run("DELETE FROM records WHERE id = ?", [id])
+        // 配对的内部转账只剩另一边：不再算内部转账
+        if let group = record.transferGroupID, try db.scalarInt("SELECT COUNT(*) FROM records WHERE transfer_group = ?", [group]) < 2 {
+            try clearTransferGroup(db, group: group)
+        }
+        return true
+    }
+
+    public static func clearTransferGroup(_ db: SQLiteConnection, group: String) throws {
+        try db.run("UPDATE records SET transfer_group = NULL WHERE transfer_group = ?", [group])
     }
 
     public static func idForDedupeKey(_ db: SQLiteConnection, _ key: String) throws -> String? {
@@ -207,12 +266,12 @@ public enum RecordDAO {
     }
 
     public static func page(_ db: SQLiteConnection, accountID: String?, before cursor: RecordCursor?, limit: Int) throws -> [RecordRow] {
-        var conditions: [String] = []
-        var values: [SQLBindable] = []
-        if let accountID {
-            conditions.append("r.account_id = ?")
-            values.append(accountID)
-        }
+        try page(db, filter: RecordFilter(accountID: accountID), before: cursor, limit: limit)
+    }
+
+    /// 按条件查流水，按系统时间倒序，键集分页。
+    public static func page(_ db: SQLiteConnection, filter: RecordFilter, before cursor: RecordCursor?, limit: Int) throws -> [RecordRow] {
+        var (conditions, values) = filterClauses(filter)
         if let cursor {
             conditions.append("(r.effective_at < ? OR (r.effective_at = ? AND r.id < ?))")
             values.append(cursor.effectiveAt)
@@ -228,10 +287,106 @@ public enum RecordDAO {
     }
 
     public static func count(_ db: SQLiteConnection, accountID: String? = nil) throws -> Int {
-        if let accountID {
-            return Int(try db.scalarInt("SELECT COUNT(*) FROM records WHERE account_id = ?", [accountID]))
+        try count(db, filter: RecordFilter(accountID: accountID))
+    }
+
+    public static func count(_ db: SQLiteConnection, filter: RecordFilter) throws -> Int {
+        let (conditions, values) = filterClauses(filter)
+        let whereClause = conditions.isEmpty ? "" : "WHERE " + conditions.joined(separator: " AND ")
+        return Int(try db.scalarInt("SELECT COUNT(*) FROM records r JOIN accounts a ON a.id = r.account_id \(whereClause)", values))
+    }
+
+    /// 账户持有这笔流水的币种（主币种或其他币种之一）
+    static let heldByAccount = "(r.currency = a.currency OR instr(',' || a.extra_currencies || ',', ',' || r.currency || ',') > 0)"
+
+    /// 没有小数、三位小数的币种：按关键字找金额时区分小数位数
+    static let zeroDecimalCodes = CurrencyCode.supported.filter { $0.minorUnitExponent == 0 }.map(\.rawValue)
+    static let threeDecimalCodes = CurrencyCode.supported.filter { $0.minorUnitExponent == 3 }.map(\.rawValue)
+
+    static func filterClauses(_ filter: RecordFilter) -> ([String], [SQLBindable]) {
+        var conditions: [String] = []
+        var values: [SQLBindable] = []
+        if let accountID = filter.accountID {
+            conditions.append("r.account_id = ?")
+            values.append(accountID)
         }
-        return Int(try db.scalarInt("SELECT COUNT(*) FROM records"))
+        if let currency = filter.currency {
+            // 主币种还包括账户不持有的币种的交易（按主币种扣款）
+            conditions.append("(r.currency = ? OR (a.currency = ? AND NOT \(heldByAccount)))")
+            values.append(currency.rawValue)
+            values.append(currency.rawValue)
+        }
+        if let direction = filter.direction {
+            conditions.append("r.direction = ?")
+            values.append(direction.rawValue)
+        }
+        if let from = filter.from {
+            conditions.append("r.effective_at >= ?")
+            values.append(from)
+        }
+        if let to = filter.to {
+            conditions.append("r.effective_at < ?")
+            values.append(to)
+        }
+        for word in filter.text.split(whereSeparator: \.isWhitespace).map(String.init) {
+            let pattern = "%" + escapeLike(word) + "%"
+            var any = ["r.counterparty", "r.note", "a.name", "a.bank_name", "a.last4"].map { "\($0) LIKE ? ESCAPE '\\'" }
+            values += Array(repeating: pattern as SQLBindable, count: any.count)
+            let kinds = TransactionKind.allCases.filter { $0.displayName.contains(word) }
+            if !kinds.isEmpty {
+                any.append("r.kind IN (\(kinds.map { _ in "?" }.joined(separator: ", ")))")
+                values += kinds.map(\.rawValue) as [SQLBindable]
+            }
+            for (exponent, minor) in amountMinors(word) {
+                let codes: [String]
+                let test: String
+                switch exponent {
+                case 0: (codes, test) = (zeroDecimalCodes, "IN")
+                case 3: (codes, test) = (threeDecimalCodes, "IN")
+                default: (codes, test) = (zeroDecimalCodes + threeDecimalCodes, "NOT IN")
+                }
+                any.append("(r.amount_minor = ? AND r.currency \(test) (\(codes.map { _ in "?" }.joined(separator: ", "))))")
+                values.append(minor)
+                values += codes.map { $0 as SQLBindable }
+            }
+            conditions.append("(" + any.joined(separator: " OR ") + ")")
+        }
+        return (conditions, values)
+    }
+
+    static func escapeLike(_ text: String) -> String {
+        var result = ""
+        for char in text {
+            if char == "\\" || char == "%" || char == "_" { result.append("\\") }
+            result.append(char)
+        }
+        return result
+    }
+
+    /// 关键字像金额（38、38.5、1,234.56）时，按 0、2、3 位小数换算成最小单位；不像金额时为空
+    static func amountMinors(_ word: String) -> [(exponent: Int, minor: Int64)] {
+        var text = word
+        if text.contains(","), !text.contains("."), let last = text.split(separator: ",").last, last.count <= 2, text.split(separator: ",").count == 2 {
+            text = text.replacingOccurrences(of: ",", with: ".")
+        }
+        text = text.replacingOccurrences(of: ",", with: "")
+        let parts = text.split(separator: ".", omittingEmptySubsequences: false)
+        guard (1...2).contains(parts.count), let integer = parts.first, !integer.isEmpty, integer.count <= 12,
+              integer.allSatisfy({ $0.isASCII && $0.isNumber }) else { return [] }
+        let fraction = parts.count == 2 ? String(parts[1]) : ""
+        guard fraction.allSatisfy({ $0.isASCII && $0.isNumber }), fraction.count <= 3, parts.count == 1 || !fraction.isEmpty,
+              let whole = Int64(integer) else { return [] }
+        var result: [(exponent: Int, minor: Int64)] = []
+        for exponent in [0, 2, 3] {
+            // 小数位比币种多：多出来的必须都是 0
+            let kept = String(fraction.prefix(exponent))
+            guard fraction.dropFirst(exponent).allSatisfy({ $0 == "0" }) else { continue }
+            var scale: Int64 = 1
+            for _ in 0..<exponent { scale *= 10 }
+            let padded = kept + String(repeating: "0", count: exponent - kept.count)
+            result.append((exponent: exponent, minor: whole * scale + (Int64(padded) ?? 0)))
+        }
+        return result
     }
 
     public static func updateNote(_ db: SQLiteConnection, id: String, note: String) throws -> Bool {
@@ -281,6 +436,17 @@ public enum RecordDAO {
         try db.query(
             "SELECT \(columns) FROM records r WHERE r.account_id = ? AND r.currency = ? AND r.status = 'posted' ORDER BY r.effective_at",
             [accountID, currency.rawValue], map
+        )
+    }
+
+    /// 这张卡不持有的币种的已入账流水（按主币种扣款）
+    public static func postedForeign(_ db: SQLiteConnection, accountID: String) throws -> [LedgerRecord] {
+        try db.query(
+            """
+            SELECT \(columns) FROM records r JOIN accounts a ON a.id = r.account_id
+            WHERE r.account_id = ? AND r.status = 'posted' AND NOT \(heldByAccount) ORDER BY r.effective_at
+            """,
+            [accountID], map
         )
     }
 
@@ -489,6 +655,45 @@ public enum TemplateDAO {
     @discardableResult
     public static func delete(_ db: SQLiteConnection, id: String) throws -> Bool {
         try db.run("DELETE FROM message_templates WHERE id = ?", [id]) > 0
+    }
+}
+
+/// 每天的完整汇率表（快捷指令导入的数据源原样保存，不删减币种）。
+public enum RateDAO {
+    /// 保存一天的汇率。这一天已经有同样新或更新的下载时不覆盖，返回 false
+    @discardableResult
+    public static func save(_ db: SQLiteConnection, day: String, rates: ExchangeRates) throws -> Bool {
+        if let fetched = try db.queryOne("SELECT fetched_at FROM exchange_rate_days WHERE day = ?", [day], { $0.date(0) }), fetched >= rates.fetchedAt {
+            return false
+        }
+        try db.run(
+            """
+            INSERT INTO exchange_rate_days (day, base, updated_at, fetched_at) VALUES (?, ?, ?, ?)
+            ON CONFLICT(day) DO UPDATE SET base = excluded.base, updated_at = excluded.updated_at, fetched_at = excluded.fetched_at
+            """,
+            [day, rates.base.rawValue, rates.updatedAt, rates.fetchedAt]
+        )
+        try db.run("DELETE FROM exchange_rates WHERE day = ?", [day])
+        var table = rates.rates.filter { $0.value > 0 && $0.value.isFinite }
+        table[rates.base.rawValue] = 1
+        for (code, rate) in table {
+            try db.run("INSERT OR REPLACE INTO exchange_rates (day, currency, rate) VALUES (?, ?, ?)", [day, code.uppercased(), rate])
+        }
+        return true
+    }
+
+    /// 有汇率的日期，从早到晚
+    public static func days(_ db: SQLiteConnection) throws -> [String] {
+        try db.query("SELECT day FROM exchange_rate_days ORDER BY day", []) { $0.string(0) }
+    }
+
+    /// 某天全部币种的汇率（1 个基准可兑换的数量）
+    public static func rates(_ db: SQLiteConnection, day: String) throws -> [String: Double] {
+        var table: [String: Double] = [:]
+        for (code, rate) in try db.query("SELECT currency, rate FROM exchange_rates WHERE day = ?", [day], { ($0.string(0), $0.double(1)) }) {
+            table[code] = rate
+        }
+        return table
     }
 }
 

@@ -2,13 +2,19 @@ import SwiftUI
 import UIKit
 import BKModel
 
-/// 卡片详情里随数据变化的数字。详情内容和资产页右上角的「更多」菜单都读它。
+/// 卡片详情里随数据变化的内容。详情内容和资产页右上角的「更多」菜单都读它。
 @MainActor
 @Observable
 final class WalletDetailModel {
     var pendingCount = 0
     var recordTotal = 0
     var hasRecords = true
+    /// 卡里的币种，主币种在前；多币种的卡按币种分开看流水
+    var currencies: [CurrencyCode] = []
+    /// 正在看的币种；单币种的卡为 nil（看全部）
+    var currency: CurrencyCode?
+    /// 看哪段时间的流水
+    var period: RecordPeriod = .all
 }
 
 /// 卡片详情的滚动列表（UIKit）：顶部给选中的卡留出位置，下面是余额等内容（`AccountDetailSummary`）和流水。
@@ -39,7 +45,8 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
     var onScroll: () -> Void = {}
     var onSelectRecord: (RecordRow) -> Void = { _ in }
     var onOpenPending: () -> Void = {}
-    var onEditOpeningBalance: (CurrencyCode) -> Void = { _ in }
+    /// 时间段选了「自定义…」：资产页弹出选日期的面板
+    var onChooseCustomPeriod: () -> Void = {}
     /// 读屏激活顶部的卡片：返回卡包
     var onActivateCard: () -> Void = {}
 
@@ -64,7 +71,7 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
     /// 余额和流水是否已经显示（升起之后，到关闭后清空之前）
     private var contentShown = false
 
-    /// 每页流水条数（`LedgerStore.records(accountID:after:)`）
+    /// 每页流水条数
     private static let pageSize = 40
 
     init(store: LedgerStore, model: WalletDetailModel, parent: UIViewController) {
@@ -101,8 +108,8 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
             cell.activate = { [weak self] in self?.onActivateCard() }
         }
         let summary = UICollectionView.CellRegistration<HostingCell, Item> { [weak self] cell, _, _ in
-            guard let self, let account = self.account else { return }
-            cell.show(self.summaryView(account), parent: self.parent)
+            guard let self, self.account != nil else { return }
+            cell.show(self.summaryView(), parent: self.parent)
         }
         let record = UICollectionView.CellRegistration<HostingCell, Item> { [weak self] cell, _, item in
             guard let self, case .record(let id) = item, let row = self.rowsByID[id] else { return }
@@ -121,14 +128,14 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
         applySnapshot(reconfigure: false)
     }
 
-    private func summaryView(_ account: Account) -> some View {
+    private func summaryView() -> some View {
         AccountDetailSummary(
-            accountID: account.id,
             model: model,
             openPending: { [weak self] in self?.onOpenPending() },
-            editOpeningBalance: { [weak self] currency in self?.onEditOpeningBalance(currency) }
+            selectCurrency: { [weak self] currency in self?.setCurrency(currency) },
+            selectPeriod: { [weak self] period in self?.setPeriod(period) },
+            chooseCustomPeriod: { [weak self] in self?.onChooseCustomPeriod() }
         )
-        .environment(store)
     }
 
     // MARK: 格子尺寸
@@ -188,11 +195,11 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
     }
 
     private func updateSummaryHeight() {
-        guard contentShown, let account else {
+        guard contentShown, account != nil else {
             summaryHeight = 0
             return
         }
-        summaryHeight = measure(summaryView(account), width: AppLayout.cardWidth(collectionView.bounds.width))
+        summaryHeight = measure(summaryView(), width: AppLayout.cardWidth(collectionView.bounds.width))
     }
 
     // MARK: 滚动
@@ -234,6 +241,11 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
             return
         }
         self.account = account
+        // 换了一张卡：从主币种、全部时间看起（只在变化时写入，写入会让读它的视图重新计算）
+        let currency = account.isMultiCurrency ? account.currency : nil
+        if model.currencies != account.currencies { model.currencies = account.currencies }
+        if model.currency != currency { model.currency = currency }
+        if model.period != .all { model.period = .all }
         contentShown = false
         rows = []
         rowsByID = [:]
@@ -281,10 +293,20 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
         applySnapshot(reconfigure: false)
     }
 
-    /// 详情打开时卡片信息变了（改名、停用）
+    /// 详情打开时卡片信息变了（改名、停用、改了币种）
     func update(account: Account) {
         guard self.account?.id == account.id, self.account != account else { return }
+        let currenciesChanged = self.account?.currencies != account.currencies
         self.account = account
+        if currenciesChanged {
+            model.currencies = account.currencies
+            if !account.isMultiCurrency {
+                model.currency = nil
+            } else if model.currency.map({ !account.currencies.contains($0) }) ?? true {
+                model.currency = account.currency
+            }
+            reload()
+        }
         applySnapshot(reconfigure: true)
     }
 
@@ -294,11 +316,32 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
         load()
     }
 
+    /// 多币种的卡换一个币种看流水
+    func setCurrency(_ currency: CurrencyCode) {
+        guard model.currency != currency else { return }
+        model.currency = currency
+        reload()
+    }
+
+    /// 换一个时间段看流水，笔数跟着变
+    func setPeriod(_ period: RecordPeriod) {
+        guard model.period != period else { return }
+        model.period = period
+        reload()
+    }
+
+    /// 当前看的流水：这张卡、选中的币种（主币种包括卡里没有的币种的交易）、时间段
+    private var filter: RecordFilter? {
+        guard let account else { return nil }
+        let range = model.period.range()
+        return RecordFilter(accountID: account.id, currency: model.currency, from: range.from, to: range.to)
+    }
+
     // MARK: 数据
 
     /// 读第一页流水、笔数和待处理数量，读到后一起显示；第一次显示时内容从屏幕底下升上来
     private func load() {
-        guard let account else { return }
+        guard let account, let filter else { return }
         let id = account.id
         session += 1
         let session = session
@@ -306,8 +349,8 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
         loadTask?.cancel()
         loadTask = Task { [weak self] in
             guard let self else { return }
-            let first = await self.store.records(accountID: id, after: nil)
-            let total = await self.store.recordCount(accountID: id)
+            let first = await self.store.records(filter, after: nil, limit: WalletDetailList.pageSize)
+            let total = await self.store.recordCount(filter)
             let pending = await self.pendingCount(accountID: id)
             guard !Task.isCancelled, session == self.session else { return }
             self.loadTask = nil
@@ -338,12 +381,12 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
     }
 
     private func loadMore() {
-        guard hasMore, !loadingMore, let account, let last = rows.last else { return }
+        guard hasMore, !loadingMore, let filter, let last = rows.last else { return }
         loadingMore = true
         let session = session
         Task { [weak self] in
             guard let self else { return }
-            let page = await self.store.records(accountID: account.id, after: last)
+            let page = await self.store.records(filter, after: last, limit: WalletDetailList.pageSize)
             guard session == self.session else { return }
             self.loadingMore = false
             self.hasMore = page.count == WalletDetailList.pageSize
