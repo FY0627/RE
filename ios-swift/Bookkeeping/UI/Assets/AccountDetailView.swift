@@ -77,8 +77,12 @@ struct AccountDetailView: View {
                 content
                     .padding(.top, 8)
                     .padding(.bottom, 48)
-                    // 隐藏时移到屏幕下方：打开时整块从屏幕底下升上来，返回时退下去
-                    .offset(y: contentShown && loaded ? 0 : box.pageSize.height)
+                    // 隐藏时移到屏幕下方：打开时整块从屏幕底下升上来，返回时退下去。
+                    // 用只影响绘制的位移：offset 会让流水列表以为自己在屏幕外、不生成流水，
+                    // 动画途中才临时生成的流水不跟着动，直接出现在终点
+                    .visualEffect { [rise = contentShown && loaded ? 0 : box.pageSize.height] content, _ in
+                        content.offset(y: rise)
+                    }
                     .opacity(contentShown ? 1 : 0)
                     .accessibilityHidden(!contentShown)
             }
@@ -146,7 +150,9 @@ struct AccountDetailView: View {
         hasMore = first.count == 40
         total = count
         guard !loaded else { return }
-        // 资产页的入场动画开始后才读到：内容和流水一起从底下升上来（和资产页的入场动画相同）
+        // 等流水先画出来一帧，再和其他内容一起从底下升上来（和资产页的入场动画相同）
+        try? await Task.sleep(for: .milliseconds(10))
+        guard !Task.isCancelled else { return }
         withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.5, dampingFraction: 1)) { loaded = true }
     }
 
