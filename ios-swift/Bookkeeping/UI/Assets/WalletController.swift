@@ -30,8 +30,6 @@ struct WalletPage: UIViewControllerRepresentable {
     /// 卡面上显示的余额
     let balanceTexts: [String: String]
     let revision: Int
-    /// 状态栏高度：卡包和详情铺满屏幕，内容从状态栏下面开始
-    let safeTop: CGFloat
     let store: LedgerStore
     let rates: ExchangeRateStore
     let detail: WalletDetailModel
@@ -46,14 +44,14 @@ struct WalletPage: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: WalletController, context: Context) {
         controller.actions = actions
-        controller.update(accounts: accounts, activeCount: activeCount, balanceTexts: balanceTexts, revision: revision, safeTop: safeTop)
+        controller.update(accounts: accounts, activeCount: activeCount, balanceTexts: balanceTexts, revision: revision)
     }
 }
 
 /// 资产页的卡包 → 点按卡片展开详情 → 返回。
 ///
-/// 转场参考 Apple 钱包：选中的卡片移到顶部；它上面的卡一边上移一边缩小、向里倾斜，收到选中卡片后面；
-/// 它下面的卡同时向下落出屏幕；详情内容从屏幕底下整块升上来。返回时内容先淡出，卡片回到原位，
+/// 转场参考 Apple 钱包：选中的卡片移到顶部；它上面的卡一边上移一边缩小，收到选中卡片后面；
+/// 它下面的卡同时向下落出屏幕；详情内容从屏幕底下整块升上来。返回时内容整块退到屏幕底下，卡片回到原位，
 /// 下面的卡同时升回来，像原来一样压住它的下半部分。
 ///
 /// 做法和钱包一样用 UIKit + Core Animation（ADR 0012）：
@@ -84,13 +82,18 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
     private var activeCount = 0
     private var balanceTexts: [String: String] = [:]
     private var revision: Int?
+    /// 状态栏（灵动岛）高度：卡包和详情铺满屏幕，内容从它下面开始。从窗口读，SwiftUI 传进来的安全区在这里是 0
     private var safeTop: CGFloat = 0
+    /// 上次布局时的宽度；变了要重新量详情格子的高度
+    private var laidOutWidth: CGFloat = 0
     /// 按卡包顺序
     private var cards: [StackCardView] = []
     private var headerHeight: CGFloat = 0
 
     /// 打开的卡在卡包里的位置
     private var selectedIndex: Int?
+    /// 打开动画进行中，收在后面的卡还看得见，跟着详情滚动；之后它们已透明，滚动时不再移动（返回时再摆到选中卡的位置）
+    private var behindFollowsScroll = false
     /// 下面的卡落下的距离：页面高度；卡包顶端已滚出屏幕时再加上滚出的部分，保证落到屏幕外
     private var dropDistance: CGFloat = 0
     /// 每次打开 / 关闭 +1；延迟执行的收尾据此判断自己是否已经过时
@@ -111,12 +114,12 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
         super.viewDidLoad()
         view.backgroundColor = .systemGroupedBackground
 
-        detailList = WalletDetailList(store: store, model: detailModel)
+        detailList = WalletDetailList(store: store, model: detailModel, parent: self)
         let list = detailList.collectionView
         list.isHidden = true
         list.accessibilityElementsHidden = true
         view.addSubview(list)
-        detailList.onScroll = { [weak self] in self?.placeCards(only: [.selected, .behind]) }
+        detailList.onScroll = { [weak self] in self?.detailScrolled() }
         detailList.onSelectRecord = { [weak self] row in self?.actions.openRecord(row) }
         detailList.onOpenPending = { [weak self] in self?.actions.openPending() }
         detailList.onEditOpeningBalance = { [weak self] currency in self?.actions.editOpeningBalance(currency) }
@@ -151,8 +154,20 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
         list.addGestureRecognizer(detailSwipe)
 
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (controller: WalletController, _: UITraitCollection) in
+            controller.detailList.invalidateSizes()
             controller.view.setNeedsLayout()
         }
+    }
+
+    override func viewIsAppearing(_ animated: Bool) {
+        super.viewIsAppearing(animated)
+        // 第一次放进窗口后才读得到状态栏高度
+        view.setNeedsLayout()
+    }
+
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        view.setNeedsLayout()
     }
 
     /// SwiftUI 画的内容放进 UIKit：不使用安全区（位置由这里决定，滚到状态栏下面时内容也不移动），背景透明
@@ -172,13 +187,9 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
 
     // MARK: 数据
 
-    func update(accounts: [Account], activeCount: Int, balanceTexts: [String: String], revision: Int, safeTop: CGFloat) {
+    func update(accounts: [Account], activeCount: Int, balanceTexts: [String: String], revision: Int) {
         loadViewIfNeeded()
         var needsLayout = false
-        if safeTop != self.safeTop {
-            self.safeTop = safeTop
-            needsLayout = true
-        }
         let textsChanged = balanceTexts != self.balanceTexts
         self.balanceTexts = balanceTexts
         if accounts != self.accounts || activeCount != self.activeCount {
@@ -248,7 +259,7 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
         let reduceMotion = UIAccessibility.isReduceMotionEnabled
         for (i, card) in cards.enumerated() {
             let behind = role(i) == .behind
-            let transform = behind && !reduceMotion ? CardMotion.behindTransform(size: card.bounds.size) : CATransform3DIdentity
+            let transform = behind && !reduceMotion ? CardMotion.behindTransform : CATransform3DIdentity
             CardMotion.setTransform(card.layer, transform, timing: nil)
             CardMotion.setOpacity(card.layer, behind ? 0 : 1, timing: nil)
         }
@@ -258,10 +269,17 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        if let window = view.window { safeTop = window.safeAreaInsets.top }
         let bounds = view.bounds
-        stackScroll.frame = bounds
-        cardsView.frame = bounds
-        detailList.collectionView.frame = bounds
+        // 只改尺寸和中心：详情列表返回时带着下移的变换，这时不能设 frame；滚动区的 bounds 原点是滚动位置，不能动
+        for subview in [detailList.collectionView, stackScroll, cardsView] as [UIView] {
+            if subview.bounds.size != bounds.size { subview.bounds.size = bounds.size }
+            subview.center = CGPoint(x: bounds.midX, y: bounds.midY)
+        }
+        if bounds.width != laidOutWidth {
+            laidOutWidth = bounds.width
+            detailList.invalidateSizes()
+        }
         layoutStack()
     }
 
@@ -367,11 +385,16 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
         placeCards(only: [.resting, .below])
     }
 
+    private func detailScrolled() {
+        placeCards(only: behindFollowsScroll ? [.selected, .behind] : [.selected])
+    }
+
     // MARK: 转场
 
     private func openCard(_ index: Int) {
         guard selectedIndex == nil, cards.indices.contains(index) else { return }
         motionToken += 1
+        let token = motionToken
         let signpost = AppServices.signposter.beginInterval("DetailOpen")
         let reduceMotion = UIAccessibility.isReduceMotionEnabled
         let account = accounts[index]
@@ -384,6 +407,7 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
 
         let before = cards.map(\.center.y)
         selectedIndex = index
+        behindFollowsScroll = true
         dropDistance = view.bounds.height + max(0, -pileTop)
         detailList.open(account)
         placeCards()
@@ -398,7 +422,7 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
             case .behind:
                 CardMotion.addMove(layer, deltaY: delta, timing: transition)
                 if !reduceMotion {
-                    CardMotion.setTransform(layer, CardMotion.behindTransform(size: card.bounds.size), timing: transition)
+                    CardMotion.setTransform(layer, CardMotion.behindTransform, timing: transition)
                 }
                 // 先收到后面，末段再淡出（这时已被选中的卡挡住，淡出后不再参与绘制）
                 CardMotion.setOpacity(layer, 0, timing: .easeIn(0.15), delay: 0.25)
@@ -411,9 +435,12 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
         setHeaderShown(false, reduceMotion: reduceMotion)
         announceScreenChange()
         actions.selectionChanged(account.id)
-        Task { @MainActor in
+        Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(500))
             AppServices.signposter.endInterval("DetailOpen", signpost)
+            // 收在后面的卡这时已经透明，滚动详情时不再移动它们
+            guard let self, token == self.motionToken else { return }
+            self.behindFollowsScroll = false
         }
     }
 
@@ -424,12 +451,14 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
         let signpost = AppServices.signposter.beginInterval("DetailClose")
         let reduceMotion = UIAccessibility.isReduceMotionEnabled
 
-        // 详情停在当前位置：卡片从它现在的位置（详情滚动过就更靠上）回卡包
+        // 详情停在当前位置：卡片从它现在的位置（详情滚动过就更靠上）回卡包。
+        // 收在后面的卡已透明，先不带动画摆到选中卡的位置，再和它一起回去
         detailList.stopScrolling()
         placeCards(only: [.selected, .behind])
         let roles = cards.indices.map { role($0) }
         let before = cards.map(\.center.y)
         selectedIndex = nil
+        behindFollowsScroll = false
         placeCards()
 
         let transition = CardMotion.transition(reduceMotion: reduceMotion)
@@ -444,13 +473,13 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
                 CardMotion.setTransform(layer, CATransform3DIdentity, timing: transition)
                 CardMotion.setOpacity(layer, 1, timing: .easeOut(0.1))
             case .below:
-                // 和选中的卡同样的弹簧，稍晚一点，让详情内容先开始淡出
+                // 和选中的卡同样的弹簧，稍晚一点，让详情内容先开始退下
                 CardMotion.addMove(layer, deltaY: delta, timing: transition, delay: reduceMotion ? 0 : CardMotion.riseDelay)
             case .resting:
                 break
             }
         }
-        // 内容淡出；卡包马上能滑动、能点，返回途中再点卡片会从当前位置转向重新打开
+        // 内容退到屏幕底下；卡包马上能滑动、能点，返回途中再点卡片会从当前位置转向重新打开
         detailList.close()
         stackScroll.isUserInteractionEnabled = true
         stackScroll.scrollsToTop = true
@@ -459,7 +488,7 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
         announceScreenChange()
         actions.selectionChanged(nil)
         Task { @MainActor [weak self] in
-            // 卡片已在卡包里，详情只剩淡出的内容；看起来停稳后隐藏并清空
+            // 卡片已在卡包里，详情内容已退到屏幕外；看起来停稳后隐藏并清空
             try? await Task.sleep(for: .milliseconds(500))
             AppServices.signposter.endInterval("DetailClose", signpost)
             guard let self, token == self.motionToken else { return }
@@ -471,6 +500,7 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
     private func closeImmediately() {
         motionToken += 1
         selectedIndex = nil
+        behindFollowsScroll = false
         for view in cards.map({ $0 as UIView }) + [headerHost.view, archivedTitleHost.view].compactMap({ $0 }) {
             view.layer.removeAllAnimations()
             view.layer.transform = CATransform3DIdentity

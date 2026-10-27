@@ -29,21 +29,13 @@ enum CardMotion {
 
     /// 下面的卡落出屏幕：加速下落
     static let drop = Timing.easeIn(0.25)
-    /// 返回时下面的卡升回来比选中的卡晚一点，让详情内容先开始淡出
+    /// 返回时下面的卡升回来比选中的卡晚一点，让详情内容先开始退下
     static let riseDelay = 0.06
 
-    /// 收到选中卡后面的卡：缩小并向里倾斜
+    /// 收到选中卡后面的卡只缩小，不做 3D 倾斜：卡片一旦带透视的 3D 变换，Core Animation 会按深度给同一层的卡排序，
+    /// 倾斜的卡会穿过选中的卡，返回途中卡片的上下层也会颠倒，直到动画结束才恢复
     static let behindScale: CGFloat = 0.86
-    static let behindTilt: CGFloat = 30
-    /// 倾斜的透视强度：相当于 SwiftUI `rotation3DEffect(perspective: 0.6)`
-    static let behindPerspective: CGFloat = 0.6
-
-    static func behindTransform(size: CGSize) -> CATransform3D {
-        var transform = CATransform3DIdentity
-        transform.m34 = -behindPerspective / max(size.width, size.height, 1)
-        transform = CATransform3DRotate(transform, behindTilt * .pi / 180, 1, 0, 0)
-        return CATransform3DScale(transform, behindScale, behindScale, 1)
-    }
+    static let behindTransform = CATransform3DMakeScale(behindScale, behindScale, 1)
 
     /// 叠加动画各用一个新的键，后加的不替换还在进行的
     private static var counter = 0

@@ -52,14 +52,15 @@ docker run --rm -v "<仓库>/ios-swift/Packages/BKCore:/pkg" -w /pkg bk-swift sw
 ## 卡包与详情转场
 
 和 Apple 钱包一样用 UIKit + Core Animation（[ADR 0012](../docs/decisions/0012-ios-swift-wallet-core-animation.md)）：
-动画交给系统渲染进程播放，主线程读流水、生成列表行都不影响。选中卡上面的卡收到它后面，下面的卡向下落出屏幕，
-详情内容从屏幕底下整块升起。
+动画交给系统渲染进程播放，主线程读流水、生成列表行都不影响。选中卡上面的卡缩小收到它后面，下面的卡向下落出屏幕，
+详情内容从屏幕底下整块升起；返回时内容整块退到屏幕底下。
 
 - `UI/Assets/WalletController.swift`：卡包、卡片位置和转场、手势。每张卡一个视图，在两个滚动区上层按滚动距离摆放；
-  打开 / 关闭时改模型位置并加叠加动画，动画途中滚动、再点都从当前位置平滑转向。
-- `UI/Assets/WalletDetailList.swift`：详情列表（`UICollectionView`），余额区 `AccountDetailSummary` 和每行流水仍由 SwiftUI 画。
+  打开 / 关闭时改模型位置并加叠加动画，动画途中滚动、再点都从当前位置平滑转向。状态栏高度从窗口读取。
+- `UI/Assets/WalletDetailList.swift`：详情列表（`UICollectionView` + 固定高度的流式布局）。余额区 `AccountDetailSummary`
+  和每行流水仍由 SwiftUI 画，放在关掉安全区的 `UIHostingController` 里；格子高度事先量好，不做自适应高度。
 - `UI/Assets/CardMotion.swift`：弹簧和曲线参数（与 SwiftUI 的 `spring(response:dampingFraction:)` 换算一致），
-  收到后面的缩放和倾斜角度 `behindScale` / `behindTilt`。
+  收到后面的卡的缩放比例 `behindScale`。卡片不做 3D 倾斜（会让卡片之间的上下层错乱）。
 - `UI/Assets/AssetsView.swift`：SwiftUI 外壳，顶部按钮、标签栏显隐、弹出页面、标题区和净资产卡。
 - 卡面仍是 SwiftUI 的 `WalletCardView`，阴影只画在一个圆角矩形上；转场时卡面不重新计算，只是整张移动。
 

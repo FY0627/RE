@@ -32,21 +32,18 @@ struct AssetsView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            GeometryReader { proxy in
-                WalletPage(
-                    accounts: store.accounts + store.archivedAccounts,
-                    activeCount: store.accounts.count,
-                    balanceTexts: store.balances.mapValues(\.cardText),
-                    revision: store.revision,
-                    safeTop: proxy.safeAreaInsets.top,
-                    store: store,
-                    rates: rates,
-                    detail: detail,
-                    bridge: bridge,
-                    actions: actions
-                )
-            }
-            // 铺满屏幕：标签栏显隐不改变页面尺寸；内容从状态栏下面开始由 WalletController 按 safeTop 处理
+            WalletPage(
+                accounts: store.accounts + store.archivedAccounts,
+                activeCount: store.accounts.count,
+                balanceTexts: store.balances.mapValues(\.cardText),
+                revision: store.revision,
+                store: store,
+                rates: rates,
+                detail: detail,
+                bridge: bridge,
+                actions: actions
+            )
+            // 铺满屏幕：标签栏显隐不改变页面尺寸；内容从状态栏下面开始由 WalletController 按窗口的安全区处理
             .ignoresSafeArea()
 
             topBar
