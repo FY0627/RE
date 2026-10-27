@@ -14,7 +14,7 @@ final class AssetsScrollBox {
 /// 资产页：卡包 → 点按卡片展开详情 → 返回。最下方是灰色的「已停用」卡包，也可以点开查看详情。
 ///
 /// 转场参考 Apple 钱包：选中的卡片移到顶部；它上面的卡一边上移一边缩小、向里倾斜，收到选中卡片后面；
-/// 它下面的卡同时向下落出屏幕；详情内容跟在卡片下面升起、淡入。返回时内容先淡出，卡片回到原位，
+/// 它下面的卡同时向下落出屏幕；详情内容从屏幕底下整块升上来。返回时内容先淡出，卡片回到原位，
 /// 下面的卡同时升回来，像原来一样压住它的下半部分。
 ///
 /// 选中的卡和它下面的卡在卡包和详情里各有一份，两份从同一帧开始走同样的动画，位置始终相同，只切换显示哪一份（`cardInDetail`）：
@@ -325,9 +325,15 @@ struct AssetsView: View {
 
     private var transition: Animation { DetailMotionState.transition(reduceMotion: reduceMotion) }
 
-    /// 详情内容在卡片上移的同时跟在它下面升起、淡入，整体一起出现
+    /// 详情内容在卡片上移的同时从屏幕底下整块升上来，和卡片差不多同时到位；不回弹，不会顶到卡片下面
     private var contentEntrance: Animation {
-        reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.5, dampingFraction: 1).delay(0.08)
+        reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.5, dampingFraction: 1)
+    }
+
+    /// 在卡包里转向打开时用固定时长的曲线：动画停住的那一刻正好交给详情、可以滑动，没有看不出来的弹簧尾巴。
+    /// 卡片和内容用同一条曲线，一起到位
+    private var reopenTransition: Animation {
+        reduceMotion ? transition : .timingCurve(0.25, 1, 0.5, 1, duration: 0.45)
     }
 
     /// 返回时内容先快速淡出，卡片同时开始回卡包
@@ -428,12 +434,12 @@ struct AssetsView: View {
         withAnimation(contentEntrance) { contentShown = true }
     }
 
-    /// 卡包里的卡从当前位置转向打开；停稳后交给详情，之后才能滚动
+    /// 卡包里的卡从当前位置转向打开；动画结束时交给详情，之后才能滚动
     private func animateOpenInStack(_ id: String) {
         motionToken += 1
         let token = motionToken
         let signpost = AppServices.signposter.beginInterval("DetailOpen")
-        withAnimation(transition, completionCriteria: .removed) {
+        withAnimation(reopenTransition, completionCriteria: .removed) {
             motion.selectedAccountID = id
         } completion: {
             AppServices.signposter.endInterval("DetailOpen", signpost)
@@ -443,7 +449,7 @@ struct AssetsView: View {
                 scrollLocked = false
             }
         }
-        withAnimation(contentEntrance) { contentShown = true }
+        withAnimation(reopenTransition) { contentShown = true }
     }
 
     private func close() {

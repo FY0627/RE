@@ -36,9 +36,6 @@ struct AccountDetailView: View {
     let openPending: () -> Void
     let close: () -> Void
 
-    /// 内容隐藏时向下移开的距离：短距离升起，整块内容一起出现
-    private static let contentRise: CGFloat = 80
-
     @Environment(LedgerStore.self) private var store
     @State private var rows: [RecordRow] = []
     @State private var hasMore = true
@@ -77,7 +74,8 @@ struct AccountDetailView: View {
                 content
                     .padding(.top, 8)
                     .padding(.bottom, 48)
-                    .offset(y: contentShown ? 0 : Self.contentRise)
+                    // 隐藏时移到屏幕下方：打开时整块从屏幕底下升上来，返回时退下去
+                    .offset(y: contentShown ? 0 : box.pageSize.height)
                     .opacity(contentShown ? 1 : 0)
                     .accessibilityHidden(!contentShown)
             }
@@ -177,8 +175,8 @@ struct AccountDetailView: View {
             } else {
                 LazyVStack(spacing: 8) {
                     ForEach(rows) { row in
-                        Button { selectedRecord = row } label: { RecordRowView(row: row, showAccount: false, boxed: true) }
-                            .buttonStyle(.plain)
+                        RecordRowView(row: row, showAccount: false, boxed: true)
+                            .tapAction { selectedRecord = row }
                             .onAppear { if row.id == rows.last?.id { Task { await loadMore() } } }
                     }
                 }
@@ -188,19 +186,16 @@ struct AccountDetailView: View {
 
     /// 只有这张卡有待处理的账单时出现。
     private var pendingStrip: some View {
-        Button(action: openPending) {
-            HStack(spacing: 12) {
-                Image(systemName: "tray.full").font(.title3).foregroundStyle(AppTheme.debt)
-                Text("\(pendingCount) 条账单待处理").font(.headline).foregroundStyle(.primary)
-                Spacer()
-                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .contentShape(Rectangle())
+        HStack(spacing: 12) {
+            Image(systemName: "tray.full").font(.title3).foregroundStyle(AppTheme.debt)
+            Text("\(pendingCount) 条账单待处理").font(.headline).foregroundStyle(.primary)
+            Spacer()
+            Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .tapAction(openPending)
     }
 
     /// 单币种：大字余额 + 银行通知余额 + 初始余额。多币种：每个币种一组，各自的余额、银行通知余额和初始余额，不做换算。
@@ -245,23 +240,29 @@ struct AccountDetailView: View {
 
             if large { Divider().padding(.vertical, 12) }
 
-            Button { openingTarget = OpeningTarget(currency: currency) } label: {
-                LabeledContent("初始余额") {
-                    HStack(spacing: 6) {
-                        if let opening = account.openingBalance(currency) {
-                            Text(Fmt.money(opening.amountMinor, currency)).monospacedDigit()
-                        } else {
-                            Text("未填写")
-                        }
-                        Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+            LabeledContent("初始余额") {
+                HStack(spacing: 6) {
+                    if let opening = account.openingBalance(currency) {
+                        Text(Fmt.money(opening.amountMinor, currency)).monospacedDigit()
+                    } else {
+                        Text("未填写")
                     }
+                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
                 }
-                .padding(.vertical, 4)
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .padding(.vertical, 4)
+            .tapAction { openingTarget = OpeningTarget(currency: currency) }
             .accessibilityHint("填写或修改这个币种的初始余额")
         }
+    }
+}
+
+private extension View {
+    /// 点按执行。不用 Button：按钮在手指横向划过后松手仍会触发，右滑返回时会同时点开流水；点按手势一移动就不算
+    func tapAction(_ action: @escaping () -> Void) -> some View {
+        contentShape(Rectangle())
+            .onTapGesture(perform: action)
+            .accessibilityAddTraits(.isButton)
     }
 }
 
