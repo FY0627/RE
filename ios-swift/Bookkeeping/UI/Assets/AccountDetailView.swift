@@ -5,11 +5,20 @@ import BKModel
 /// 右上角菜单（卡片信息、编辑卡面、待处理账单）在资产页的顶部按钮里；自动记账的设置在「我的」里。
 ///
 /// 滚动区从页面顶端开始，最上面是卡片，和下面的内容在同一个滚动区里，一起由系统滚动。
-/// 选中的卡从点开起就只画在这里（卡包里那张隐藏），转场中也能顺畅滚动，卡片和内容始终一起动：
+/// 打开时选中的卡画在这里（卡包里那张隐藏），转场中也能顺畅滚动，卡片和内容始终一起动：
 /// 打开 / 关闭时只有区内的卡片（`cardLift`）和内容（`contentShown`）做位移动画，滚动区本身不动。
-/// 卡包里压在它上面的卡（下面的卡）还在屏幕上时，它被压住的部分由遮罩（`coverTop`）裁掉，叠放顺序看起来和卡包一样。
+/// 卡包里在它下面的卡（`belowCards`）也画在这里、叠在它上层，和卡包一样压住它的下半部分，也压在内容上面；
+/// 它们不随详情滚动，落出屏幕后就看不见了。返回时卡片交回卡包（`showsCards` 为 false），这里只剩内容淡出。
 /// 和钱包一样，在顶部往下拉时卡片不动，只有下面的内容被拉开。点按卡片返回卡包。
 struct AccountDetailView: View {
+    /// 卡包里在选中卡下面的一张卡
+    struct BelowCard: Identifiable {
+        let account: Account
+        /// 相对选中卡片顶部位置的位移（不算详情的滚动）
+        let lift: CGFloat
+        var id: String { account.id }
+    }
+
     let account: Account
     let pendingCount: Int
     /// 滚动区顶端到卡片上边缘的距离
@@ -17,20 +26,18 @@ struct AccountDetailView: View {
     let cardHeight: CGFloat
     /// 卡片相对顶部位置的位移：打开后为 0，打开前 / 关闭后是它在卡包里的位置
     let cardLift: CGFloat
-    /// 卡包里下面那几张卡的上边缘（相对卡片顶部位置、不随详情滚动）；卡片在它下面的部分不画。没有下面的卡时为 nil
-    let coverTop: CGFloat?
+    let belowCards: [BelowCard]
+    /// 卡片是否画在这里；返回途中由卡包里的卡接着动
+    let showsCards: Bool
     let contentShown: Bool
     let scrollLocked: Bool
     /// 记录滚动距离，关闭时资产页据此算出卡片当前的位置
     let box: AssetsScrollBox
     let openPending: () -> Void
-    let tapCard: () -> Void
     let close: () -> Void
 
     /// 内容隐藏时向下移开的距离：短距离升起，整块内容一起出现
     private static let contentRise: CGFloat = 80
-    /// 遮罩的高度，远大于卡片可能移动的范围
-    private static let maskSpan: CGFloat = 20000
 
     @Environment(LedgerStore.self) private var store
     @State private var rows: [RecordRow] = []
@@ -46,23 +53,27 @@ struct AccountDetailView: View {
         ScrollView(.vertical) {
             VStack(spacing: 0) {
                 // 和卡包里的卡同样的画法、同样的位置，交接时看不出变化
-                WalletCardView(account: account, balanceText: store.balances[account.id]?.cardText ?? "余额未知")
-                    .grayscale(account.archived ? 1 : 0)
-                    .frame(height: cardHeight)
-                    // 点按区域放在位移之前，跟着卡片移动
-                    .contentShape(Rectangle())
-                    .onTapGesture(perform: tapCard)
-                    .offset(y: cardLift)
-                    // 往下拉时抵消下移的距离，卡片停在原处；放在转场位移之后，量到的只是滚动造成的移动
-                    .visualEffect { [restY = restY] content, proxy in
-                        content.offset(y: min(0, Self.scrolled(proxy, restY: restY)))
-                    }
-                    .mask(alignment: .top) { coverMask }
-                    .padding(.top, cardTop)
-                    // 移回卡包时盖在正在退下的内容上面；往下拉时内容在卡片下面被拉开
-                    .zIndex(1)
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityHint("返回卡包")
+                ZStack(alignment: .top) {
+                    WalletCardView(account: account, balanceText: store.balances[account.id]?.cardText ?? "余额未知")
+                        .grayscale(account.archived ? 1 : 0)
+                        .frame(height: cardHeight)
+                        // 点按区域放在位移之前，跟着卡片移动
+                        .contentShape(Rectangle())
+                        .onTapGesture(perform: close)
+                        .offset(y: cardLift)
+                        // 往下拉时抵消下移的距离，卡片停在原处；放在转场位移之后，量到的只是滚动造成的移动
+                        .visualEffect { [restY = restY] content, proxy in
+                            content.offset(y: min(0, Self.scrolled(proxy, restY: restY)))
+                        }
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityHint("返回卡包")
+                    belowStack
+                }
+                .opacity(showsCards ? 1 : 0)
+                .accessibilityHidden(!showsCards)
+                .padding(.top, cardTop)
+                // 下面的卡压在内容上面；往下拉时内容在卡片下面被拉开
+                .zIndex(1)
                 content
                     .padding(.top, 8)
                     .padding(.bottom, 48)
@@ -110,14 +121,21 @@ struct AccountDetailView: View {
         return restY - proxy.frame(in: .scrollView(axis: .vertical)).minY
     }
 
-    /// 只保留下面的卡上边缘以上的部分。遮罩按滚动反向移动，边缘始终和卡包里的卡对齐（卡包不随详情滚动）
-    private var coverMask: some View {
-        Rectangle()
-            .frame(height: Self.maskSpan)
-            .offset(y: (coverTop ?? Self.maskSpan / 2) - Self.maskSpan)
-            .visualEffect { [restY = restY] content, proxy in
-                content.offset(y: Self.scrolled(proxy, restY: restY))
+    /// 下面的卡，按卡包里的顺序叠在选中的卡上层。按滚动反向移动，始终和卡包里的位置对齐（卡包不随详情滚动）
+    private var belowStack: some View {
+        ZStack(alignment: .top) {
+            ForEach(belowCards) { card in
+                WalletCardView(account: card.account, balanceText: store.balances[card.account.id]?.cardText ?? "余额未知")
+                    .grayscale(card.account.archived ? 1 : 0)
+                    .frame(height: cardHeight)
+                    .offset(y: card.lift)
             }
+        }
+        .visualEffect { [restY = restY] content, proxy in
+            content.offset(y: Self.scrolled(proxy, restY: restY))
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     private func reload() async {
