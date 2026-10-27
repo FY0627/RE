@@ -103,9 +103,10 @@ struct AssetsView: View {
                         close: close
                     )
                     .id(detailSession)
-                    // 卡片交回卡包后（返回途中）详情移到卡包下层、不接收触摸，卡包马上能滑动、能点
+                    // 卡片交回卡包后（返回途中）详情移到卡包下层、不接收触摸，卡包马上能滑动、能点。
+                    // 在卡包里转向打开、还没交接时详情虽在下层，也由它接收触摸（卡包这时不接收），内容一出现就能点
                     .zIndex(cardInDetail ? 0 : -1)
-                    .allowsHitTesting(cardInDetail)
+                    .allowsHitTesting(cardInDetail || isOpen)
                 }
 
                 topBar
@@ -181,6 +182,9 @@ struct AssetsView: View {
         }
         .scrollDisabled(isOpen)
         .scrollIndicators(.hidden)
+        // 详情打开时卡包完全不接收触摸：卡包里隐藏的选中卡停在顶部，详情滚动后流水正好在它的位置，
+        // 点流水时会同时点到它，既打开流水详情又返回卡包
+        .allowsHitTesting(!isOpen && !cardInDetail)
     }
 
     /// 「资产」标题、净资产卡、「银行卡」一行（没有使用中的卡时是添加卡片的占位）。打开详情时向上淡出，返回时在卡片回位后淡入。
@@ -473,7 +477,9 @@ struct AssetsView: View {
         withAnimation(contentExit) { contentShown = false }
         // 详情里隐藏的那份也走同样的动画，返回途中再点同一张卡时可以直接交回详情
         withAnimation(belowRise) { belowDropped = false }
-        withAnimation(transition, completionCriteria: .removed) {
+        // 卡片已在卡包里，详情只剩淡出的内容，看起来停稳（不必等弹簧完全静止）就移除；
+        // 之后再点卡片走普通的打开，马上能点、能滑
+        withAnimation(transition, completionCriteria: .logicallyComplete) {
             motion.selectedAccountID = nil
             detailLift = restLift(index)
         } completion: {
