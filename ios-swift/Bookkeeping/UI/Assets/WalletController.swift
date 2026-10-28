@@ -647,7 +647,7 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
                 width: width,
                 height: last ? layout.cardHeight : layout.peek
             )
-            element.accessibilityLabel = "\(account.bankName) \(account.cardType.displayName) 尾号\(account.last4)，\(balanceTexts[account.id] ?? "余额未知")"
+            element.accessibilityLabel = "\(account.spokenTitle)，\(balanceTexts[account.id] ?? "余额未知")"
             element.accessibilityHint = account.archived ? "已停用，打开账户详情" : "打开账户详情"
             element.accessibilityTraits = .button
             element.activate = { [weak self] in self?.openCard(index) }

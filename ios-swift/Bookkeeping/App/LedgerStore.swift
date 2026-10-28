@@ -24,8 +24,11 @@ final class LedgerStore {
     private(set) var balances: [String: AccountBalances] = [:]
     private(set) var automation: [String: AccountAutomationStatus] = [:]
     private(set) var pendingCount = 0
-    /// 没配对到自己另一张卡、待确认对方的转账
-    private(set) var transferConfirmCount = 0
+    /// 待分类：已入账的支出、收入还没有分类（没确认对方的转账也在里面）
+    private(set) var uncategorizedCount = 0
+    /// 全部分类（含隐藏的）
+    private(set) var categories: [LedgerCategory] = []
+    private(set) var categoryTree = CategoryTree([])
     private(set) var homeRows: [RecordRow] = []
     private(set) var homeHasMore = false
     private(set) var monthStats: MonthStats?
@@ -80,17 +83,22 @@ final class LedgerStore {
             async let balances = backend.balanceSummaries()
             async let automation = backend.automationStatus()
             async let pending = backend.pendingCount()
-            async let transfers = backend.unconfirmedTransferCount()
-            async let rows = backend.records(limit: Self.pageSize)
+            async let waiting = backend.uncategorizedCount()
+            async let rows = backend.records(filter: Self.feedFilter, limit: Self.pageSize)
             async let stats = backend.monthStats(year: year, month: month)
-            let (a, b, au, p, r, s, t) = try await (accounts, balances, automation, pending, rows, stats, transfers)
+            async let categories = backend.categories()
+            let (a, b, au, p, r, s, w, c) = try await (accounts, balances, automation, pending, rows, stats, waiting, categories)
             self.allAccounts = a
             self.accounts = a.filter { !$0.archived }
             self.archivedAccounts = a.filter(\.archived)
             self.balances = b
             self.automation = au
             self.pendingCount = p
-            self.transferConfirmCount = t
+            self.uncategorizedCount = w
+            if self.categories != c {
+                self.categories = c
+                self.categoryTree = CategoryTree(c)
+            }
             self.homeRows = r
             self.homeHasMore = r.count == Self.pageSize
             self.monthStats = s
@@ -101,12 +109,15 @@ final class LedgerStore {
         }
     }
 
+    /// 首页的看法：只列已入账的；转帐两边、合成的一单都只占一行；手续费合到那一笔下面
+    nonisolated static let feedFilter = RecordFilter(feed: true, mergeFees: true)
+
     func loadMoreHome() async {
         guard let backend, homeHasMore, !loadingMore, let last = homeRows.last else { return }
         loadingMore = true
         defer { loadingMore = false }
         let cursor = RecordCursor(effectiveAt: last.record.effectiveAt, id: last.id)
-        if let page = try? await backend.records(before: cursor, limit: Self.pageSize) {
+        if let page = try? await backend.records(filter: Self.feedFilter, before: cursor, limit: Self.pageSize) {
             homeRows += page
             homeHasMore = page.count == Self.pageSize
         }
@@ -196,12 +207,97 @@ final class LedgerStore {
         try await backend?.deleteTemplate(id: id)
     }
 
-    func unconfirmedTransfers() async -> [RecordRow] {
-        (try? await backend?.unconfirmedTransfers()) ?? []
+    /// 确认转账的对方；对方是自己时记住这个交易对方
+    func setTransferParty(recordID: String, party: TransferParty?) async throws {
+        try await backend?.setTransferParty(recordID: recordID, party: party, remember: true)
+        await refresh()
     }
 
-    func setTransferParty(recordID: String, party: TransferParty?) async throws {
-        try await backend?.setTransferParty(recordID: recordID, party: party)
+    func updateNote(recordID: String, note: String) async throws {
+        try await backend?.updateNote(recordID: recordID, note: note)
+        await refresh()
+    }
+
+    // MARK: 分类
+
+    func uncategorized() async -> [RecordRow] {
+        (try? await backend?.uncategorized()) ?? []
+    }
+
+    /// 给一笔选分类，可以顺手写备注
+    func setCategory(recordID: String, categoryID: String, note: String? = nil) async throws {
+        guard let backend else { throw BackendError.notFound }
+        try await backend.setCategory(recordID: recordID, categoryID: categoryID, note: note)
+        await refresh()
+    }
+
+    @discardableResult
+    func addCategory(_ draft: CategoryDraft) async throws -> LedgerCategory {
+        guard let backend else { throw BackendError.notFound }
+        let category = try await backend.addCategory(draft)
+        await refresh()
+        return category
+    }
+
+    func updateCategory(id: String, name: String, symbol: String) async throws {
+        try await backend?.updateCategory(id: id, name: name, symbol: symbol)
+        await refresh()
+    }
+
+    func setCategoryHidden(id: String, hidden: Bool) async throws {
+        try await backend?.setCategoryHidden(id: id, hidden: hidden)
+        await refresh()
+    }
+
+    func reorderCategories(_ ids: [String]) async throws {
+        try await backend?.reorderCategories(ids)
+        await refresh()
+    }
+
+    func moveCategory(id: String, toParent parentID: String?) async throws {
+        try await backend?.moveCategory(id: id, toParent: parentID)
+        await refresh()
+    }
+
+    func mergeCategory(id: String, into targetID: String) async throws {
+        try await backend?.mergeCategory(id: id, into: targetID)
+        await refresh()
+    }
+
+    func deleteCategory(id: String, moveRecordsTo targetID: String?) async throws {
+        try await backend?.deleteCategory(id: id, moveRecordsTo: targetID)
+        await refresh()
+    }
+
+    // MARK: 手动记一笔
+
+    func lastManualAccountID() async -> String? {
+        try? await backend?.lastManualAccountID()
+    }
+
+    func similarRecords(to entry: ManualEntry) async -> [RecordRow] {
+        (try? await backend?.similarRecords(to: entry)) ?? []
+    }
+
+    func addRecord(_ entry: ManualEntry) async throws {
+        guard let backend else { throw BackendError.notFound }
+        try await backend.addRecord(entry)
+        await refresh()
+    }
+
+    // MARK: 合成一单
+
+    func orderCandidates(recordID: String) async -> [RecordRow] {
+        (try? await backend?.orderCandidates(recordID: recordID)) ?? []
+    }
+
+    func mergeOrder(recordIDs: [String]) async throws {
+        try await backend?.mergeOrder(recordIDs: recordIDs)
+        await refresh()
+    }
+
+    func splitOrder(recordID: String) async throws {
+        try await backend?.splitOrder(recordID: recordID)
         await refresh()
     }
 

@@ -1,47 +1,45 @@
 import SwiftUI
 import BKModel
+import BKBackend
 
-/// 流水行：金额、方向、交易对方、尾号、时间、备注。卡里没有这笔流水的币种时，金额下面写按主币种扣了多少。
+/// 流水行：分类图标、标题（备注 → 交易对方 → 分类名）、时间和分类、金额。
+/// 首页一笔钱只占一行：转帐两边合成「招行 → 工行」，合成的一单写整单金额和几张卡，手续费、退款写在金额下面。
+/// 卡片详情里（`showAccount: false`）每一笔是这张卡自己的那一边，金额按这张卡的进出带正负号。
 /// 字号用系统文字样式，跟随「更大字体」设置。在系统列表里直接使用；在自定义滚动页面里用 `boxed: true` 自带卡片背景。
+/// 每一部分都只有一行，行高固定（卡片详情的列表事先量好高度）。
 struct RecordRowView: View {
     let row: RecordRow
     var showAccount = true
     var boxed = false
 
+    private var inAccount: Bool { !showAccount }
+
     var body: some View {
         let r = row.record
-        let counted = r.status == .posted
         HStack(spacing: 12) {
-            Image(systemName: r.kind.symbolName)
-                .font(.body)
-                .foregroundStyle(.primary)
-                .frame(width: 40, height: 40)
-                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            CategoryIcon(symbol: row.symbol)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(r.counterparty ?? r.kind.displayName)
+                    Text(row.title)
                         .font(.body.weight(.medium)).foregroundStyle(.primary).lineLimit(1)
                     if r.status != .posted { badge(r.status.displayName) }
-                    if r.isInternalTransfer { badge("内部转账") }
+                    if r.isRefund { badge("退款") }
                 }
-                Text(subtitle(r))
+                Text(subtitle)
                     .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                if !r.note.isEmpty {
-                    Text(r.note).font(.subheadline).foregroundStyle(Color.primary.opacity(0.8)).lineLimit(1)
-                }
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 2) {
-                Text(Fmt.signed(r))
+                Text(row.amountText(inAccount: inAccount))
                     .font(.body.weight(.semibold))
                     .monospacedDigit()
-                    .foregroundStyle(r.direction == .inflow ? AppTheme.income : Color.primary)
+                    .foregroundStyle(row.amountColor(inAccount: inAccount))
                     .strikethrough(r.status == .failed)
-                if let charge = row.charge {
-                    Text(Fmt.charge(charge)).font(.caption).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+                if let detail = trailingDetail {
+                    Text(detail).font(.caption).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
                 }
             }
-            .opacity(counted ? 1 : 0.55)
+            .opacity(r.status == .posted ? 1 : 0.55)
         }
         .padding(.vertical, boxed ? 12 : 2)
         .padding(.horizontal, boxed ? 14 : 0)
@@ -54,10 +52,31 @@ struct RecordRowView: View {
         .accessibilityElement(children: .combine)
     }
 
-    private func subtitle(_ r: LedgerRecord) -> String {
-        var parts = [Fmt.recordTime(r), r.kind.displayName]
-        if showAccount { parts.append("\(row.bankName) ·\(row.last4)") }
+    /// 时间 · 分类 · 账户（转帐写从哪到哪，合成的一单写几张卡各付多少）
+    private var subtitle: String {
+        let r = row.record
+        var parts = [Fmt.recordTime(r)]
+        if row.title != row.category?.name || row.category == nil { parts.append(row.categoryText) }
+        if inAccount {
+            if let peer = row.peer, row.entryType == .transfer {
+                parts.append(r.direction == .outflow ? "转到 \(peer.text)" : "来自 \(peer.text)")
+            }
+        } else if let order = row.orderText {
+            parts.append(order)
+        } else if let route = row.transferRoute {
+            parts.append(route)
+        } else {
+            parts.append(row.account.text)
+        }
         return parts.joined(separator: " · ")
+    }
+
+    /// 金额下面的小字：外币按主币种扣了多少、同一条通知的手续费、已退款
+    private var trailingDetail: String? {
+        if let charge = row.charge { return Fmt.charge(charge) }
+        if let fee = row.feeMinor { return "手续费 " + Fmt.money(fee, row.record.currency) }
+        if let refunded = row.refundedMinor, refunded > 0 { return "已退 " + Fmt.money(refunded, row.record.currency) }
+        return nil
     }
 
     private func badge(_ text: String) -> some View {
@@ -86,17 +105,22 @@ struct RecordDetailSheet: View {
     }
 }
 
-/// 单笔流水详情。右上角「编辑」可以改金额、币种、收支、类型、账户、交易对方、时间、备注和实际扣款；最下面可以删除。
-/// 来源和通知原文只能看。
+/// 单笔流水详情：类型、分类（点一下就能改）、账户、时间、备注（直接写）；
+/// 退款、手续费、同一单的其他几笔；方向、交易性质、状态、来源、原始通知收在「更多信息」里。
+/// 右上角「编辑」可以改类型、金额、币种、分类、账户、交易对方、时间、备注和实际扣款；最下面可以删除。
 struct RecordDetailView: View {
     let recordID: String
     @Environment(LedgerStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var detail: RecordDetail?
     @State private var saveError: String?
-    @State private var showRaw = false
+    @State private var showMore = false
     @State private var editing = false
     @State private var confirmDelete = false
+    @State private var choosingCategory = false
+    @State private var merging = false
+    @State private var note = ""
+    @FocusState private var noteFocused: Bool
 
     var body: some View {
         Group {
@@ -119,46 +143,59 @@ struct RecordDetailView: View {
                 RecordEditor(detail: detail) { Task { await reload() } }
             }
         }
+        .sheet(isPresented: $choosingCategory) {
+            if let detail {
+                CategoryPickerSheet(type: CategoryType(detail.row.entryType), selected: detail.row.category?.id) { id in
+                    Task { await setCategory(id) }
+                }
+            }
+        }
+        .sheet(isPresented: $merging, onDismiss: { Task { await reload() } }) {
+            if let detail { OrderMergeView(row: detail.row) }
+        }
         .confirmationDialog("删除这笔流水？", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("删除", role: .destructive) { Task { await delete() } }
         } message: {
             Text("删除后不能恢复。收到它的那条通知再来，也不会重新记上。")
         }
+        .onChange(of: noteFocused) { _, focused in
+            if !focused { Task { await saveNote() } }
+        }
+        .onDisappear { Task { await saveNote() } }
         .task { await reload() }
     }
 
     private func form(_ detail: RecordDetail) -> some View {
-        let r = detail.row.record
+        let row = detail.row
+        let r = row.record
         return Form {
             Section {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(r.counterparty ?? r.kind.displayName).font(.headline)
-                    Text(Fmt.signed(r))
-                        .font(.largeTitle.weight(.bold))
-                        .monospacedDigit()
-                        .foregroundStyle(r.direction == .inflow ? AppTheme.income : Color.primary)
+                HStack(spacing: 12) {
+                    CategoryIcon(symbol: row.symbol)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(row.title).font(.headline).lineLimit(2)
+                        Text(row.categoryText).font(.subheadline).foregroundStyle(.secondary)
+                    }
                 }
                 .padding(.vertical, 4)
-                if let charge = detail.row.charge {
+                Text(row.amountText(inAccount: true))
+                    .font(.largeTitle.weight(.bold))
+                    .monospacedDigit()
+                    .foregroundStyle(row.amountColor(inAccount: true))
+                    .strikethrough(r.status == .failed)
+                if let charge = row.charge {
                     chargeRow(charge, record: r)
                 }
-                LabeledContent("方向", value: r.direction.displayName)
-                LabeledContent("交易性质", value: r.kind.displayName)
-                LabeledContent("状态", value: r.status.displayName)
-                if let fee = r.includedFeeMinor { LabeledContent("通知金额含手续费", value: Fmt.money(fee, r.currency) + "（已单列）") }
-            }
-            Section {
-                LabeledContent("账户", value: "\(detail.row.bankName) ·\(detail.row.last4)")
-                LabeledContent("交易对方", value: r.counterparty ?? "通知未写明")
-                LabeledContent("交易时间（通知内）", value: r.transactionTime?.displayText ?? "通知未写明")
-                LabeledContent("接收时间（系统）", value: r.receivedAt.map { Fmt.dateTime($0) } ?? "系统未提供")
-                LabeledContent("处理时间", value: Fmt.dateTime(r.processedAt))
-                LabeledContent("来源", value: Set(detail.evidence.map(\.source)).map(\.displayName).sorted().joined(separator: " + "))
-                if let ref = r.bankReference { LabeledContent("交易标识", value: ref) }
-                if let balance = r.balanceAfterMinor { LabeledContent("通知中的余额", value: Fmt.money(balance, r.currency)) }
-            }
-            if (r.kind == .transferIn || r.kind == .transferOut), r.transferGroupID == nil {
-                Section("转账对方") {
+                LabeledContent("类型", value: r.isRefund ? "支出（退款，从支出里减掉）" : row.entryType.displayName)
+                if row.entryType != .transfer {
+                    Button { choosingCategory = true } label: {
+                        LabeledContent("分类") {
+                            Text(row.categoryText).foregroundStyle(row.isUncategorized ? AppTheme.debt : Color.secondary)
+                        }
+                        .foregroundStyle(Color.primary)
+                    }
+                }
+                if (r.kind == .transferIn || r.kind == .transferOut), r.transferGroupID == nil, r.status == .posted {
                     Picker(r.direction == .outflow ? "转给" : "来自", selection: Binding(
                         get: { r.transferParty },
                         set: { party in Task { await setTransferParty(party) } }
@@ -168,35 +205,71 @@ struct RecordDetailView: View {
                         Text("别人").tag(TransferParty?.some(.other))
                     }
                 }
-            }
-            if let peer = detail.transferPeer {
-                Section("内部转账") {
-                    LabeledContent("对方账户", value: "\(peer.bankName) ·\(peer.last4)")
+                if let route = row.transferRoute {
+                    LabeledContent("转帐", value: route)
+                } else {
+                    LabeledContent("账户", value: row.account.text)
                 }
-            } else if r.isInternalTransfer {
-                Section("内部转账") {
-                    LabeledContent("对方账户", value: "你自己的另一张卡")
+                LabeledContent("时间", value: Fmt.dateTime(r.effectiveAt))
+                if let counterparty = r.counterparty {
+                    LabeledContent("交易对方", value: counterparty)
+                }
+                if let fee = detail.fee {
+                    LabeledContent("手续费", value: Fmt.money(fee.record.amountMinor, fee.record.currency))
+                }
+            }
+
+            Section("备注") {
+                TextField("写点什么，比如买了什么", text: $note, axis: .vertical)
+                    .lineLimit(1...5)
+                    .focused($noteFocused)
+                    .submitLabel(.done)
+            }
+
+            if !detail.refunds.isEmpty {
+                Section("退款") {
+                    ForEach(detail.refunds) { refund in link(refund) }
                 }
             }
             if let related = detail.related {
-                Section("关联的原交易") {
-                    RecordRowView(row: related)
+                Section(r.isRefund ? "原交易" : "关联的交易") { link(related) }
+            }
+            if !detail.orderMembers.isEmpty {
+                Section {
+                    LabeledContent("整单", value: Fmt.money(row.record.amountMinor + detail.orderMembers.map(\.record.amountMinor).reduce(0, +), r.currency))
+                    ForEach(detail.orderMembers) { member in link(member) }
+                    Button("拆开这一单", systemImage: "square.split.2x1") { Task { await splitOrder() } }
+                } header: {
+                    Text("同一单")
+                }
+            } else if row.entryType != .transfer, r.status == .posted {
+                Section {
+                    Button("和其他记录合成一单", systemImage: "square.stack") { merging = true }
                 }
             }
-            if !r.note.isEmpty {
-                Section("备注") {
-                    Text(r.note).textSelection(.enabled)
-                }
-            }
+
             if let saveError {
                 Section { Text(saveError).font(.footnote).foregroundStyle(.red) }
             }
+
             Section {
-                DisclosureGroup("原始通知（仅本机保存）", isExpanded: $showRaw) {
+                DisclosureGroup("更多信息", isExpanded: $showMore) {
+                    LabeledContent("方向", value: r.direction.displayName)
+                    LabeledContent("交易性质", value: r.kind.displayName)
+                    LabeledContent("状态", value: r.status.displayName)
+                    LabeledContent("来源", value: Set(detail.evidence.map(\.source)).map(\.displayName).sorted().joined(separator: " + "))
+                    LabeledContent("交易时间（通知内）", value: r.transactionTime?.displayText ?? "通知未写明")
+                    LabeledContent("接收时间（系统）", value: r.receivedAt.map { Fmt.dateTime($0) } ?? "系统未提供")
+                    LabeledContent("处理时间", value: Fmt.dateTime(r.processedAt))
+                    if let ref = r.bankReference { LabeledContent("交易标识", value: ref) }
+                    if let balance = r.balanceAfterMinor { LabeledContent("通知中的余额", value: Fmt.money(balance, r.currency)) }
+                    if let fee = r.includedFeeMinor { LabeledContent("通知金额含手续费", value: Fmt.money(fee, r.currency)) }
                     ForEach(detail.evidence, id: \.ingestID) { e in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("\(e.source.displayName) · \(Fmt.dateTime(e.processedAt))").font(.caption).foregroundStyle(.secondary)
-                            Text(e.rawText ?? "原文已按保留期限清理").font(.footnote).textSelection(.enabled)
+                        if e.source != .manual {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("\(e.source.displayName) · \(Fmt.dateTime(e.processedAt))").font(.caption).foregroundStyle(.secondary)
+                                Text(e.rawText ?? "原文已按保留期限清理").font(.footnote).textSelection(.enabled)
+                            }
                         }
                     }
                 }
@@ -204,6 +277,14 @@ struct RecordDetailView: View {
             Section {
                 Button("删除这笔流水", systemImage: "trash", role: .destructive) { confirmDelete = true }
             }
+        }
+    }
+
+    private func link(_ row: RecordRow) -> some View {
+        NavigationLink {
+            RecordDetailView(recordID: row.id)
+        } label: {
+            RecordRowView(row: row)
         }
     }
 
@@ -225,6 +306,30 @@ struct RecordDetailView: View {
 
     private func reload() async {
         detail = await store.detail(recordID: recordID)
+        if !noteFocused, let detail { note = detail.row.record.note }
+    }
+
+    /// 备注写完（离开输入框或离开页面）就保存
+    private func saveNote() async {
+        guard let detail, note != detail.row.record.note else { return }
+        do {
+            try await store.updateNote(recordID: recordID, note: note)
+            self.detail?.row.record.note = note
+            saveError = nil
+        } catch {
+            saveError = "备注保存失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func setCategory(_ id: String) async {
+        await saveNote()
+        do {
+            try await store.setCategory(recordID: recordID, categoryID: id)
+            await reload()
+            saveError = nil
+        } catch {
+            saveError = "保存失败：\(error.localizedDescription)"
+        }
     }
 
     private func setTransferParty(_ party: TransferParty?) async {
@@ -237,12 +342,90 @@ struct RecordDetailView: View {
         }
     }
 
+    private func splitOrder() async {
+        do {
+            try await store.splitOrder(recordID: recordID)
+            await reload()
+        } catch {
+            saveError = "拆开失败：\(error.localizedDescription)"
+        }
+    }
+
     private func delete() async {
         do {
             try await store.deleteRecord(id: recordID)
             dismiss()
         } catch {
             saveError = "删除失败：\(error.localizedDescription)"
+        }
+    }
+}
+
+/// 一单用了几张卡：选同一单的其他几笔，合成一单。离得近、别的卡付的标上「可能是同一单」，只是提示，不自动合并
+struct OrderMergeView: View {
+    let row: RecordRow
+    @Environment(LedgerStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    @State private var candidates: [RecordRow] = []
+    @State private var chosen: Set<String> = []
+    @State private var loaded = false
+    @State private var errorText: String?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("这一笔") { RecordRowView(row: row) }
+                Section("同一单的其他几笔") {
+                    if loaded, candidates.isEmpty {
+                        Text("前后一天里没有可以合并的记录").foregroundStyle(.secondary)
+                    }
+                    ForEach(candidates) { candidate in
+                        Button { toggle(candidate.id) } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: chosen.contains(candidate.id) ? "checkmark.circle.fill" : "circle")
+                                    .font(.title3)
+                                    .foregroundStyle(chosen.contains(candidate.id) ? Color.accentColor : Color.secondary)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    RecordRowView(row: candidate)
+                                    if LedgerBackend.likelySameOrder(row.record, candidate.record) {
+                                        Text("可能是同一单").font(.caption.weight(.semibold)).foregroundStyle(Color.accentColor)
+                                    }
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                if let errorText {
+                    Section { Text(errorText).foregroundStyle(.red) }
+                }
+            }
+            .navigationTitle("合成一单")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消", systemImage: "xmark") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("合并", systemImage: "checkmark") { Task { await merge() } }
+                        .disabled(chosen.isEmpty)
+                }
+            }
+            .task {
+                candidates = await store.orderCandidates(recordID: row.id)
+                loaded = true
+            }
+        }
+    }
+
+    private func toggle(_ id: String) {
+        if chosen.contains(id) { chosen.remove(id) } else { chosen.insert(id) }
+    }
+
+    private func merge() async {
+        do {
+            try await store.mergeOrder(recordIDs: [row.id] + candidates.map(\.id).filter(chosen.contains))
+            dismiss()
+        } catch {
+            errorText = "合并失败：\(error.localizedDescription)"
         }
     }
 }

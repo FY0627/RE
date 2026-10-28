@@ -2,7 +2,8 @@ import SwiftUI
 import BKModel
 import BKBackend
 
-/// 修改一笔流水：支出 / 收入、金额、币种、类型、账户、交易对方、时间、备注。
+/// 修改一笔流水：支出 / 收入 / 转帐、金额、币种、分类、账户、交易对方、时间、备注。
+/// 支出可以标成退款（从支出里减掉）；转帐选这张卡是转出还是转入。交易性质和方向按选的类型换，尽量保留原来的。
 /// 卡里没有这笔流水的币种时（银行按主币种结汇扣款），还可以填实际扣了多少主币种；不填就按交易当天的汇率估算。
 struct RecordEditor: View {
     let detail: RecordDetail
@@ -10,10 +11,12 @@ struct RecordEditor: View {
 
     @Environment(LedgerStore.self) private var store
     @Environment(\.dismiss) private var dismiss
-    @State private var direction: FlowDirection
+    @State private var type: EntryType
+    @State private var refund: Bool
+    @State private var transferDirection: FlowDirection
     @State private var amountText: String
     @State private var currency: CurrencyCode?
-    @State private var kind: TransactionKind
+    @State private var categoryID: String?
     @State private var accountID: String
     @State private var counterparty: String
     @State private var time: Date
@@ -27,10 +30,12 @@ struct RecordEditor: View {
         self.detail = detail
         self.onSaved = onSaved
         let r = detail.row.record
-        _direction = State(initialValue: r.direction)
+        _type = State(initialValue: r.entryType)
+        _refund = State(initialValue: r.isRefund)
+        _transferDirection = State(initialValue: r.direction)
         _amountText = State(initialValue: MoneyInput.editingText(r.amountMinor, currency: r.currency))
         _currency = State(initialValue: r.currency)
-        _kind = State(initialValue: r.kind)
+        _categoryID = State(initialValue: r.categoryID)
         _accountID = State(initialValue: r.accountID)
         _counterparty = State(initialValue: r.counterparty ?? "")
         _time = State(initialValue: Self.initialTime(r))
@@ -49,7 +54,7 @@ struct RecordEditor: View {
 
     private var account: Account? { store.account(id: accountID) }
 
-    /// 可以记到的卡：使用中的卡，加上这笔流水原来的卡（可能已停用）
+    /// 可以记到的账户：使用中的账户，加上这笔流水原来的账户（可能已停用）
     private var accounts: [Account] {
         var list = store.accounts
         if let current = store.account(id: detail.row.record.accountID), !list.contains(where: { $0.id == current.id }) {
@@ -64,29 +69,23 @@ struct RecordEditor: View {
         return account.currency
     }
 
-    /// 支出、收入各自常见的类型
-    private static func commonKinds(for direction: FlowDirection) -> [TransactionKind] {
-        direction == .outflow
-            ? [.purchase, .transferOut, .repayment, .withdrawal, .fee, .interestCharge, .other]
-            : [.income, .salary, .transferIn, .refund, .repayment, .deposit, .interestIncome, .reversal, .other]
-    }
-
-    /// 选项里保留这笔流水现在的类型（识别出的类型可能不在常见类型里）
-    private var kinds: [TransactionKind] {
-        var list = Self.commonKinds(for: direction)
-        if !list.contains(kind) { list.append(kind) }
-        return list
-    }
-
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    Picker("收支", selection: $direction) {
-                        Text("支出").tag(FlowDirection.outflow)
-                        Text("收入").tag(FlowDirection.inflow)
+                    Picker("类型", selection: $type) {
+                        ForEach(EntryType.allCases, id: \.self) { Text($0.displayName).tag($0) }
                     }
                     .pickerStyle(.segmented)
+                    if type == .expense {
+                        Toggle("退款（从支出里减掉）", isOn: $refund)
+                    }
+                    if type == .transfer {
+                        Picker("这张卡", selection: $transferDirection) {
+                            Text("转出").tag(FlowDirection.outflow)
+                            Text("转入").tag(FlowDirection.inflow)
+                        }
+                    }
                     HStack {
                         Text("金额")
                         TextField("0.00", text: $amountText)
@@ -105,20 +104,23 @@ struct RecordEditor: View {
                         }
                     }
                 }
-                Section {
-                    Picker("类型", selection: $kind) {
-                        ForEach(kinds, id: \.self) { Text($0.displayName).tag($0) }
+                if type != .transfer {
+                    Section("分类") {
+                        CategoryGrid(type: CategoryType(type), selected: categoryID) { categoryID = $0 }
+                            .padding(.vertical, 6)
                     }
+                }
+                Section("备注") {
+                    TextField("写点什么，比如买了什么", text: $note, axis: .vertical)
+                        .lineLimit(1...5)
+                }
+                Section {
                     Picker("账户", selection: $accountID) {
-                        ForEach(accounts) { Text("\($0.bankName) ·\($0.last4)").tag($0.id) }
+                        ForEach(accounts) { Text($0.displayTitle).tag($0.id) }
                     }
                     TextField("交易对方（选填）", text: $counterparty)
                     DatePicker("时间", selection: $time)
                         .onChange(of: time) { timeChanged = true }
-                }
-                Section("备注") {
-                    TextField("添加备注", text: $note, axis: .vertical)
-                        .lineLimit(1...5)
                 }
                 if let errorText {
                     Section { Text(errorText).foregroundStyle(.red) }
@@ -133,9 +135,9 @@ struct RecordEditor: View {
                         .disabled(saving || currency == nil)
                 }
             }
-            .onChange(of: direction) {
-                // 收支换了、类型不属于这一边：换成这一边最常见的类型
-                if !Self.commonKinds(for: direction).contains(kind) { kind = direction == .outflow ? .purchase : .income }
+            .onChange(of: type) {
+                // 支出换成收入（或反过来）：原来的分类对不上了
+                if let category = store.categoryTree.category(categoryID), category.type != CategoryType(type) { categoryID = nil }
             }
         }
     }
@@ -166,11 +168,15 @@ struct RecordEditor: View {
                 return
             }
         }
+        let fields = RecordEdit.fields(
+            for: type, refund: refund, transferDirection: transferDirection, original: detail.row.record,
+            accountIsCredit: account?.cardType == .credit
+        )
         let trimmed = counterparty.trimmingCharacters(in: .whitespacesAndNewlines)
         let edit = RecordEdit(
-            accountID: accountID, amountMinor: amount, currency: currency, direction: direction, kind: kind,
+            accountID: accountID, amountMinor: amount, currency: currency, direction: fields.direction, kind: fields.kind,
             counterparty: trimmed.isEmpty ? nil : trimmed, time: timeChanged ? time : nil, note: note,
-            settlementMinor: settlement
+            settlementMinor: settlement, categoryID: type == .transfer ? nil : categoryID, keepsCategory: false, transferParty: fields.party
         )
         saving = true
         defer { saving = false }

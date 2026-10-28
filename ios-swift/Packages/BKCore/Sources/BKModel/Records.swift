@@ -84,6 +84,8 @@ public enum SourceKind: String, Sendable, Codable, CaseIterable {
     case other
     /// 一个自动化同时接收短信、邮件、App 通知，分不出是哪一种
     case auto
+    /// 用户在 App 里手动记的一笔（没有通知）
+    case manual
 
     public var displayName: String {
         switch self {
@@ -92,6 +94,24 @@ public enum SourceKind: String, Sendable, Codable, CaseIterable {
         case .notification: "App 通知"
         case .other: "其他文本"
         case .auto: "自动化"
+        case .manual: "手动记账"
+        }
+    }
+}
+
+/// 用户看到的记账类型（参考 MOZE 的基础记账）：支出、收入、转帐。
+/// 由交易性质、方向和转账关联推出来，不单独保存；14 种交易性质只留在后台给识别和对账用。
+public enum EntryType: String, Sendable, Codable, CaseIterable {
+    case expense
+    case income
+    /// 钱在自己的账户之间挪动：自己的卡互转、还信用卡、存取现金。不算收支
+    case transfer
+
+    public var displayName: String {
+        switch self {
+        case .expense: "支出"
+        case .income: "收入"
+        case .transfer: "转帐"
         }
     }
 }
@@ -190,13 +210,18 @@ public struct LedgerRecord: Identifiable, Hashable, Sendable, Codable {
     public var transferParty: TransferParty?
     /// 账户不持有这个币种时，用户填写的实际扣款（账户主币种）；nil 时按交易当天的汇率估算（见 `RecordCharge`）
     public var settlement: Money?
+    /// 用户的分类（支出、收入才有）；nil 是「待分类」。转帐的分类按交易性质推出，不保存
+    public var categoryID: String?
+    /// 一单用了几张卡：同一单的几笔共用这个标识
+    public var orderGroupID: String?
 
     public init(
         id: String, accountID: String, amountMinor: Int64, currency: CurrencyCode, direction: FlowDirection,
         kind: TransactionKind, status: SettlementStatus, counterparty: String?, transactionTime: WallClock?,
         receivedAt: Date?, processedAt: Date, source: SourceKind, ingestID: String, partIndex: Int,
         bankReference: String?, balanceAfterMinor: Int64?, includedFeeMinor: Int64?, note: String,
-        transferGroupID: String?, relatedRecordID: String?, transferParty: TransferParty? = nil, settlement: Money? = nil
+        transferGroupID: String?, relatedRecordID: String?, transferParty: TransferParty? = nil, settlement: Money? = nil,
+        categoryID: String? = nil, orderGroupID: String? = nil
     ) {
         self.id = id
         self.accountID = accountID
@@ -220,6 +245,8 @@ public struct LedgerRecord: Identifiable, Hashable, Sendable, Codable {
         self.relatedRecordID = relatedRecordID
         self.transferParty = transferParty
         self.settlement = settlement
+        self.categoryID = categoryID
+        self.orderGroupID = orderGroupID
     }
 
     /// 排序和按日分组使用的系统时间。
@@ -231,6 +258,71 @@ public struct LedgerRecord: Identifiable, Hashable, Sendable, Codable {
         status == .posted && (kind == .transferIn || kind == .transferOut) && transferGroupID == nil && transferParty == nil
     }
     public var money: Money { Money(minorUnits: amountMinor, currency: currency) }
+
+    /// 支出、收入还是转帐。和 `RecordDAO.entryTypeSQL` 的规则一致：
+    /// 自己账户之间的转账、还款、存取现金是转帐；流出和退款（冲减支出）是支出；其余流入是收入。
+    /// 没确认对方的转账先按转给别人算（转出是支出、转入是收入）
+    public var entryType: EntryType {
+        if isInternalTransfer || Self.transferKinds.contains(kind) { return .transfer }
+        if direction == .outflow || kind == .refund || kind == .reversal { return .expense }
+        return .income
+    }
+
+    /// 退款、流入的冲正：从支出里减掉，不算收入
+    public var isRefund: Bool { entryType == .expense && direction == .inflow }
+
+    /// 不论方向都算转帐的交易性质
+    public static let transferKinds: Set<TransactionKind> = [.repayment, .deposit, .withdrawal]
+}
+
+/// 显示用的分类：名称、图标，小类还带上大类的名称。
+public struct CategoryLabel: Hashable, Sendable {
+    public var id: String
+    public var name: String
+    public var symbol: String
+    public var parentName: String?
+
+    public init(id: String, name: String, symbol: String, parentName: String? = nil) {
+        self.id = id
+        self.name = name
+        self.symbol = symbol
+        self.parentName = parentName
+    }
+
+    /// 「饮食 · 午餐」；大类只写自己的名称
+    public var fullName: String { parentName.map { "\($0) · \(name)" } ?? name }
+}
+
+/// 显示用的账户：银行卡写「银行 ·尾号」，现金和电子钱包写名称。
+public struct AccountLabel: Hashable, Sendable {
+    public var name: String
+    public var bankName: String
+    public var last4: String
+    public var cardType: CardType
+
+    public init(name: String, bankName: String, last4: String, cardType: CardType) {
+        self.name = name
+        self.bankName = bankName
+        self.last4 = last4
+        self.cardType = cardType
+    }
+
+    public var text: String { cardType.isCard ? "\(bankName) ·\(last4)" : name }
+}
+
+/// 合成一单的其中一笔（首页那一行下面写「招行 700 + 信用卡 300」）
+public struct OrderPart: Hashable, Sendable {
+    public var recordID: String
+    public var account: AccountLabel
+    public var amountMinor: Int64
+    public var currency: CurrencyCode
+
+    public init(recordID: String, account: AccountLabel, amountMinor: Int64, currency: CurrencyCode) {
+        self.recordID = recordID
+        self.account = account
+        self.amountMinor = amountMinor
+        self.currency = currency
+    }
 }
 
 /// 列表展示用：记录 + 账户摘要。
@@ -244,10 +336,23 @@ public struct RecordRow: Identifiable, Hashable, Sendable {
     public var accountCurrencies: [CurrencyCode]
     /// 账户不持有这笔流水的币种时，按主币种扣款的金额；持有时为 nil
     public var charge: RecordCharge?
+    public var cardType: CardType
+    /// 分类：支出、收入是用户的分类（nil 为待分类）；转帐按交易性质对应到转帐分类
+    public var category: CategoryLabel?
+    /// 配对的转帐另一边的账户（首页合成一行「招行 → 工行」）
+    public var peer: AccountLabel?
+    /// 同一条通知拆出的手续费，合在这一笔下面显示
+    public var feeMinor: Int64?
+    /// 关联到这一笔的退款合计
+    public var refundedMinor: Int64?
+    /// 合成一单的几笔（含这一笔），首页只显示一行；不是合单时为空
+    public var orderParts: [OrderPart]
 
     public init(
         record: LedgerRecord, accountName: String, bankName: String, last4: String, paletteID: String,
-        accountCurrencies: [CurrencyCode] = [], charge: RecordCharge? = nil
+        accountCurrencies: [CurrencyCode] = [], charge: RecordCharge? = nil, cardType: CardType = .debit,
+        category: CategoryLabel? = nil, peer: AccountLabel? = nil, feeMinor: Int64? = nil, refundedMinor: Int64? = nil,
+        orderParts: [OrderPart] = []
     ) {
         self.record = record
         self.accountName = accountName
@@ -256,11 +361,22 @@ public struct RecordRow: Identifiable, Hashable, Sendable {
         self.paletteID = paletteID
         self.accountCurrencies = accountCurrencies
         self.charge = charge
+        self.cardType = cardType
+        self.category = category
+        self.peer = peer
+        self.feeMinor = feeMinor
+        self.refundedMinor = refundedMinor
+        self.orderParts = orderParts
     }
 
     public var id: String { record.id }
     /// 账户不持有这笔流水的币种（银行按主币种结汇扣款）
     public var isForeignCurrency: Bool { !accountCurrencies.isEmpty && !accountCurrencies.contains(record.currency) }
+    public var account: AccountLabel { AccountLabel(name: accountName, bankName: bankName, last4: last4, cardType: cardType) }
+    /// 合成一单时整单的金额（同一币种）；不是合单时是这一笔的金额
+    public var orderTotalMinor: Int64 {
+        orderParts.isEmpty ? record.amountMinor : orderParts.filter { $0.currency == record.currency }.map(\.amountMinor).reduce(0, +)
+    }
 }
 
 /// 账户不持有的币种的交易：银行大概率按账户主币种结汇扣款。
@@ -298,10 +414,17 @@ public struct RecordEdit: Hashable, Sendable {
     public var note: String
     /// 实际扣款（账户主币种的最小单位）；nil 表示按汇率估算。只在账户不持有 `currency` 时保存
     public var settlementMinor: Int64?
+    /// 分类；nil 时保持原来的分类（`keepsCategory`）或改成待分类
+    public var categoryID: String?
+    /// true：不改分类（只改金额、时间等）
+    public var keepsCategory: Bool
+    /// 没配对的转账：对方是自己还是别人；nil 时保持原样
+    public var transferParty: TransferParty?
 
     public init(
         accountID: String, amountMinor: Int64, currency: CurrencyCode, direction: FlowDirection, kind: TransactionKind,
-        counterparty: String?, time: Date?, note: String, settlementMinor: Int64? = nil
+        counterparty: String?, time: Date?, note: String, settlementMinor: Int64? = nil,
+        categoryID: String? = nil, keepsCategory: Bool = true, transferParty: TransferParty? = nil
     ) {
         self.accountID = accountID
         self.amountMinor = amountMinor
@@ -312,6 +435,70 @@ public struct RecordEdit: Hashable, Sendable {
         self.time = time
         self.note = note
         self.settlementMinor = settlementMinor
+        self.categoryID = categoryID
+        self.keepsCategory = keepsCategory
+        self.transferParty = transferParty
+    }
+
+    /// 编辑页选了支出 / 收入 / 转帐：换成对应的方向和交易性质（尽量保留原来的性质）。
+    /// 转进信用卡算还款（`accountIsCredit`：这笔流水的账户是信用卡）
+    public static func fields(
+        for type: EntryType, refund: Bool, transferDirection: FlowDirection, original: LedgerRecord, accountIsCredit: Bool = false
+    ) -> (direction: FlowDirection, kind: TransactionKind, party: TransferParty?) {
+        let kind = original.kind
+        switch type {
+        case .expense where refund:
+            return (.inflow, kind == .refund || kind == .reversal ? kind : .refund, nil)
+        case .expense:
+            if kind == .transferOut { return (.outflow, kind, .other) }
+            return (.outflow, [.purchase, .fee, .interestCharge, .other].contains(kind) ? kind : .purchase, nil)
+        case .income:
+            if kind == .transferIn { return (.inflow, kind, .other) }
+            return (.inflow, [.income, .salary, .interestIncome, .other].contains(kind) ? kind : .income, nil)
+        case .transfer:
+            let direction = transferDirection
+            switch kind {
+            case .repayment: return (direction, kind, nil)
+            case .deposit where direction == .inflow, .withdrawal where direction == .outflow: return (direction, kind, nil)
+            default:
+                if accountIsCredit, direction == .inflow { return (direction, .repayment, nil) }
+                return (direction, direction == .outflow ? .transferOut : .transferIn, .own)
+            }
+        }
+    }
+}
+
+/// 手动记一笔：现金、电子钱包，或者通知还没接上的消费。
+public struct ManualEntry: Hashable, Sendable {
+    public var type: EntryType
+    /// 支出、收入记到的账户；转帐时是转出的账户
+    public var accountID: String
+    /// 转帐时转入的账户
+    public var toAccountID: String?
+    /// 最小货币单位，必须大于 0
+    public var amountMinor: Int64
+    public var currency: CurrencyCode
+    public var categoryID: String?
+    /// 支出里的退款（从支出里减掉）
+    public var isRefund: Bool
+    public var counterparty: String?
+    public var note: String
+    public var time: Date
+
+    public init(
+        type: EntryType, accountID: String, toAccountID: String? = nil, amountMinor: Int64, currency: CurrencyCode,
+        categoryID: String? = nil, isRefund: Bool = false, counterparty: String? = nil, note: String = "", time: Date
+    ) {
+        self.type = type
+        self.accountID = accountID
+        self.toAccountID = toAccountID
+        self.amountMinor = amountMinor
+        self.currency = currency
+        self.categoryID = categoryID
+        self.isRefund = isRefund
+        self.counterparty = counterparty
+        self.note = note
+        self.time = time
     }
 }
 
@@ -324,17 +511,35 @@ public struct RecordFilter: Hashable, Sendable {
     /// 时间范围（按 `effectiveAt`）：含 `from`，不含 `to`
     public var from: Date?
     public var to: Date?
-    /// 关键字，空格分开的每个词都要对上：交易对方、备注、账户名称、银行、尾号、交易性质或金额
+    /// 关键字，空格分开的每个词都要对上：交易对方、备注、账户名称、银行、尾号、交易性质、分类或金额
     public var text: String
+    /// 只看支出 / 收入 / 转帐
+    public var entryType: EntryType?
+    /// 只看这个分类（大类包括它的小类）；`RecordFilter.uncategorized` 只看待分类
+    public var categoryID: String?
+    /// 首页的看法：只列已入账的；配对的转帐两边合成一行（只留转出那边）；合成一单的几笔只留一行
+    public var feed: Bool
+    /// 同一条通知拆出的手续费合到那一笔下面，不单列
+    public var mergeFees: Bool
 
-    public init(accountID: String? = nil, currency: CurrencyCode? = nil, direction: FlowDirection? = nil, from: Date? = nil, to: Date? = nil, text: String = "") {
+    public init(
+        accountID: String? = nil, currency: CurrencyCode? = nil, direction: FlowDirection? = nil, from: Date? = nil, to: Date? = nil,
+        text: String = "", entryType: EntryType? = nil, categoryID: String? = nil, feed: Bool = false, mergeFees: Bool = false
+    ) {
         self.accountID = accountID
         self.currency = currency
         self.direction = direction
         self.from = from
         self.to = to
         self.text = text
+        self.entryType = entryType
+        self.categoryID = categoryID
+        self.feed = feed
+        self.mergeFees = mergeFees
     }
+
+    /// `categoryID` 取这个值时只看待分类（支出、收入还没有分类）
+    public static let uncategorized = "__uncategorized__"
 }
 
 /// 分页游标：按 (effectiveAt, id) 倒序。
@@ -372,11 +577,23 @@ public struct RecordDetail: Hashable, Sendable {
     public var evidence: [RecordEvidence]
     public var transferPeer: RecordRow?
     public var related: RecordRow?
+    /// 关联到这一笔的退款
+    public var refunds: [RecordRow]
+    /// 同一条通知拆出的手续费
+    public var fee: RecordRow?
+    /// 同一单的其他几笔
+    public var orderMembers: [RecordRow]
 
-    public init(row: RecordRow, evidence: [RecordEvidence], transferPeer: RecordRow?, related: RecordRow?) {
+    public init(
+        row: RecordRow, evidence: [RecordEvidence], transferPeer: RecordRow?, related: RecordRow?,
+        refunds: [RecordRow] = [], fee: RecordRow? = nil, orderMembers: [RecordRow] = []
+    ) {
         self.row = row
         self.evidence = evidence
         self.transferPeer = transferPeer
         self.related = related
+        self.refunds = refunds
+        self.fee = fee
+        self.orderMembers = orderMembers
     }
 }

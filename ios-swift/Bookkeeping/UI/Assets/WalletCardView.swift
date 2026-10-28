@@ -26,7 +26,7 @@ struct WalletCardView: View {
                 }
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(account.bankName) \(account.cardType.displayName) 尾号\(account.last4)，\(balanceText)")
+            .accessibilityLabel("\(account.spokenTitle)，\(balanceText)")
     }
 
     private func face(_ palette: CardPalette) -> some View {
@@ -43,7 +43,7 @@ struct WalletCardView: View {
                         .overlay(Text(Self.badge(account)).font(.system(size: 14 * s, weight: .bold)))
                     VStack(alignment: .leading, spacing: 0) {
                         Text(account.name).font(.system(size: 14 * s, weight: .bold)).lineLimit(1)
-                        Text("\(account.bankName) · \(account.cardType.displayName)")
+                        Text(account.isCard ? "\(account.bankName) · \(account.cardType.displayName)" : account.cardType.displayName)
                             .font(.system(size: 11 * s, weight: .medium))
                             .foregroundStyle(subtext)
                             .lineLimit(1)
@@ -57,7 +57,12 @@ struct WalletCardView: View {
             }
             Spacer(minLength: 0)
             HStack(alignment: .lastTextBaseline) {
-                Text("•••• \(account.last4)").font(.system(size: 15 * s, weight: .semibold)).tracking(1.2)
+                if account.isCard {
+                    Text("•••• \(account.last4)").font(.system(size: 15 * s, weight: .semibold)).tracking(1.2)
+                } else {
+                    // 现金、电子钱包没有卡号
+                    Image(systemName: account.cardType.symbolName).font(.system(size: 17 * s, weight: .semibold)).opacity(0.85)
+                }
                 Spacer()
                 Text(Self.currencyLabel(account)).font(.system(size: 12 * s, weight: .bold)).italic().opacity(0.8)
             }

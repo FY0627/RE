@@ -20,8 +20,9 @@ struct AutoSetupGuideView: View {
     @Environment(\.openURL) private var openURL
 
     private var cards: [Account] {
-        guard let account else { return store.accounts }
-        return [account] + store.accounts.filter { $0.id != account.id }
+        // 只列银行卡：现金、电子钱包不参与自动记账
+        guard let account else { return store.accounts.filter(\.isCard) }
+        return [account] + store.accounts.filter { $0.id != account.id && $0.isCard }
     }
 
     var body: some View {

@@ -30,7 +30,8 @@ struct AccountEntityQuery: EntityQuery {
         return accounts.filter { identifiers.contains($0.id) }.map(AccountEntity.init)
     }
 
+    /// 只列银行卡：现金、电子钱包没有通知，不参与自动记账
     func suggestedEntities() async throws -> [AccountEntity] {
-        try await AppServices.shared.backend().accounts().map(AccountEntity.init)
+        try await AppServices.shared.backend().accounts().filter(\.isCard).map(AccountEntity.init)
     }
 }

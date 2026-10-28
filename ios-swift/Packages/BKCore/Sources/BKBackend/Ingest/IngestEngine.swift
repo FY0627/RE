@@ -13,7 +13,8 @@ enum AccountMatcher {
     }
 
     static func match(tail: String?, bankHint: String?, boundAccountID: String?, accounts: [Account]) -> Result {
-        let active = accounts.filter { !$0.archived }
+        // 现金、电子钱包没有卡号，不参与匹配
+        let active = accounts.filter { !$0.archived && $0.isCard }
         let bound = boundAccountID.flatMap { id in active.first { $0.id == id } }
         func bankCompatible(_ account: Account) -> Bool {
             guard let bankHint, let bankID = account.bankID else { return true }
@@ -197,7 +198,7 @@ struct IngestEngine {
     /// 各家银行、各种语言写尾号的方式不同（「結尾號碼8482」「a/c XX8482」），这样不依赖固定写法。
     /// 排除明显不是尾号的位置：更长数字的一部分、日期（2026年、23/10/2026）、金额（CNY8482、8482元、8482.00）。
     static func knownTail(in text: String, accounts: [Account]) -> String? {
-        let tails = Set(accounts.filter { !$0.archived }.map(\.last4)).filter { $0.count == 4 && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) }
+        let tails = Set(accounts.filter { !$0.archived && $0.isCard }.map(\.last4)).filter { $0.count == 4 && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) }
         var found = tails.filter { tail in
             text.range(of: "(?<![0-9/.:$¥€£A-WYZa-wyz-])\(tail)(?![0-9年月日元圆号]|[.,][0-9])", options: .regularExpression) != nil
         }
@@ -213,7 +214,7 @@ struct IngestEngine {
         let tokens = numberTokens(in: text)
         guard !tokens.isEmpty else { return nil }
         let matched = accounts.filter { account in
-            guard !account.archived else { return false }
+            guard !account.archived, account.isCard else { return false }
             let ids = [account.accountNumber, account.cardNumber].compactMap { $0 }.map(Account.numberPattern)
             return ids.contains { id in tokens.contains { maskedMatch($0, id) } }
         }
@@ -373,6 +374,7 @@ struct IngestEngine {
         try AccountDAO.noteSuccess(db, id: account.id, at: now, source: meta.source)
         try linkTransfer(record, counterpartyTail: draft.counterpartyTail, accounts: accounts)
         try linkRefund(record)
+        try Categorizer(db: db, calendar: calendar, now: now).categorize(recordID: record.id)
         return .recorded(record.id)
     }
 
@@ -389,6 +391,7 @@ struct IngestEngine {
     }
 
     /// 跨来源的近似重复：同账户、同金额币种方向，来源不同（或分不出来源）、系统时间 20 分钟内，且正文时间不冲突。
+    /// 手动记过的一笔：时间是用户随手选的，前后 3 小时内同卡同金额就问是不是同一笔。
     func possibleDuplicate(of record: LedgerRecord) throws -> LedgerRecord? {
         let window: TimeInterval = 20 * 60
         let candidates = try RecordDAO.candidates(
@@ -396,19 +399,28 @@ struct IngestEngine {
             effectiveFrom: record.effectiveAt.addingTimeInterval(-window), effectiveTo: record.effectiveAt.addingTimeInterval(window),
             excludingIngest: record.ingestID
         )
-        return candidates.first { other in
+        let similar = candidates.first { other in
             guard other.accountID == record.accountID, other.status == record.status,
                   other.source != record.source || record.source == .auto else { return false }
+            if other.source == .manual { return true }
             if let a = other.transactionTime, let b = record.transactionTime, a.isMinutePrecise, b.isMinutePrecise, a.sortKey != b.sortKey { return false }
             if let a = other.balanceAfterMinor, let b = record.balanceAfterMinor, a != b { return false }
             return true
         }
+        if let similar { return similar }
+        guard record.source != .manual else { return nil }
+        let manualWindow: TimeInterval = 3 * 3600
+        return try RecordDAO.candidates(
+            db, amountMinor: record.amountMinor, currency: record.currency, direction: record.direction,
+            effectiveFrom: record.effectiveAt.addingTimeInterval(-manualWindow), effectiveTo: record.effectiveAt.addingTimeInterval(manualWindow),
+            excludingIngest: record.ingestID
+        ).first { $0.source == .manual && $0.accountID == record.accountID && $0.status == record.status }
     }
 
     /// 自己两张卡之间的转账：两边流水都保留，可靠关联时标记同一转账组。
     func linkTransfer(_ record: LedgerRecord, counterpartyTail: String?, accounts: [Account]) throws {
         guard record.status == .posted, record.kind.isTransferLike else { return }
-        let peerAccounts = counterpartyTail.map { tail in accounts.filter { $0.last4 == tail && $0.id != record.accountID && !$0.archived } } ?? []
+        let peerAccounts = counterpartyTail.map { tail in accounts.filter { $0.isCard && $0.last4 == tail && $0.id != record.accountID && !$0.archived } } ?? []
         let window: TimeInterval = 30 * 60
         var candidates = try RecordDAO.candidates(
             db, amountMinor: record.amountMinor, currency: record.currency, direction: record.direction.opposite,

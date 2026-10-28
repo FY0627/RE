@@ -23,7 +23,7 @@ final class WalletDetailModel {
 /// 卡片和内容一起滚动；在顶部往下拉时卡片不动，只有下面的内容被拉开。
 ///
 /// 每一格仍由 SwiftUI 画，放在关掉安全区的 `UIHostingController` 里：格子滚到状态栏下面时内容不移动、不重新布局。
-/// 格子高度事先量好（流水行只取决于有没有备注和系统字号），列表不做自适应高度：滚动时不再量高度、不改布局，
+/// 格子高度事先量好（流水行每一部分都只有一行，高度只取决于系统字号），列表不做自适应高度：滚动时不再量高度、不改布局，
 /// 也不会因为格子高度随位置变化而卡在布局循环里。
 ///
 /// 打开时第一页流水、笔数和待处理数量都读到后，内容整块从屏幕底下升上来；返回时整块退到屏幕底下。
@@ -58,8 +58,8 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
     /// 量格子高度用，不显示
     private let sizer: UIHostingController<AnyView>
     private var summaryHeight: CGFloat = 0
-    /// 流水行的高度，按有没有备注各量一次；宽度或系统字号变了清空
-    private var rowHeights: [Bool: CGFloat] = [:]
+    /// 流水行的高度，量一次；宽度或系统字号变了清空
+    private var recordRowHeight: CGFloat?
     /// 「暂无流水」的高度；宽度或系统字号变了清空
     private var emptyHeight: CGFloat?
     private var account: Account?
@@ -183,7 +183,7 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
 
     /// 宽度或系统字号变了：重新量高度
     func invalidateSizes() {
-        rowHeights = [:]
+        recordRowHeight = nil
         emptyHeight = nil
         updateSummaryHeight()
         collectionView.collectionViewLayout.invalidateLayout()
@@ -194,13 +194,12 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
         return sizer.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height.rounded(.up)
     }
 
-    /// 流水行每一部分都只有一行，高度只取决于有没有备注（和系统字号）
+    /// 流水行每一部分都只有一行，高度只取决于系统字号
     private func rowHeight(_ row: RecordRow?, width: CGFloat) -> CGFloat {
         guard let row else { return 1 }
-        let hasNote = !row.record.note.isEmpty
-        if let height = rowHeights[hasNote] { return height }
+        if let height = recordRowHeight { return height }
         let height = measure(RecordRowView(row: row, showAccount: false, boxed: true), width: width)
-        rowHeights[hasNote] = height
+        recordRowHeight = height
         return height
     }
 
@@ -344,7 +343,7 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
     private var filter: RecordFilter? {
         guard let account else { return nil }
         let range = model.period.range()
-        return RecordFilter(accountID: account.id, currency: model.currency, from: range.from, to: range.to)
+        return RecordFilter(accountID: account.id, currency: model.currency, from: range.from, to: range.to, mergeFees: true)
     }
 
     // MARK: 数据
@@ -432,7 +431,7 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
     private var cardLabel: String? {
         guard let account else { return nil }
         let balance = store.balances[account.id]?.cardText ?? "余额未知"
-        return "\(account.bankName) \(account.cardType.displayName) 尾号\(account.last4)，\(balance)"
+        return "\(account.spokenTitle)，\(balance)"
     }
 
     // MARK: 点按

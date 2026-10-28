@@ -109,7 +109,9 @@ struct WalletHeader: View {
                 .padding(.top, 8)
 
             if count > 0 {
-                WalletSectionTitle(title: "银行卡", count: count)
+                // 只有银行卡时叫「银行卡」；加了现金、电子钱包后叫「账户」
+                let allCards = store.accounts.allSatisfy(\.isCard)
+                WalletSectionTitle(title: allCards ? "银行卡" : "账户", count: count, unit: allCards ? "张" : "个")
             } else {
                 EmptyWalletCard(action: addAccount)
                     .padding(.top, 24)
@@ -122,16 +124,17 @@ struct WalletHeader: View {
     }
 }
 
-/// 卡包上方的分组标题：「银行卡 共 N 张」「已停用 共 N 张」
+/// 卡包上方的分组标题：「银行卡 共 N 张」「账户 共 N 个」「已停用 共 N 张」
 struct WalletSectionTitle: View {
     let title: String
     let count: Int
+    var unit = "张"
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
             Text(title).font(.title3.weight(.semibold))
             Spacer()
-            Text("共 \(count) 张").font(.subheadline).foregroundStyle(.secondary)
+            Text("共 \(count) \(unit)").font(.subheadline).foregroundStyle(.secondary)
         }
         .padding(.horizontal, 4)
         .padding(.top, 24)
@@ -335,7 +338,7 @@ private struct EmptyWalletCard: View {
         Button(action: action) {
             VStack(spacing: 10) {
                 Image(systemName: "creditcard.and.123").font(.largeTitle).foregroundStyle(.secondary)
-                Text("添加银行卡").font(.headline)
+                Text("添加账户").font(.headline)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 40)

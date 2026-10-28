@@ -181,6 +181,36 @@ final class DatabaseTests: XCTestCase {
         XCTAssertEqual(try db.readSync { try RateDAO.rates($0, day: "2026-10-24") }["CNY"], 7.3)
     }
 
+    func testMigrationFromVersion7AddsCategoriesAndBackfillsAutomaticOnes() throws {
+        let path = tempPath()
+        do {
+            let old = try SQLiteConnection(path: path)
+            for step in Migrations.steps where step.version <= 7 { try old.execute(step.sql) }
+            try old.setUserVersion(7)
+            try old.execute("""
+            INSERT INTO accounts (id, name, bank_name, last4, card_type, currency, palette_id, sort_order, created_at) VALUES ('a', '卡', '银行', '0427', 'debit', 'CNY', 'ocean', 0, 0);
+            INSERT INTO ingests (id, fingerprint, source, processed_at, classification, outcome, parser_version) VALUES ('i', 'f', 'sms', 0, 'transaction', 'recorded', 1);
+            INSERT INTO records (id, account_id, amount_minor, currency, direction, kind, status, processed_at, effective_at, source, ingest_id, part_index, dedupe_key, created_at)
+                VALUES ('fee', 'a', 200, 'CNY', 'outflow', 'fee', 'posted', 0, 0, 'sms', 'i', 1, 'k1', 0),
+                       ('pay', 'a', 3800, 'CNY', 'outflow', 'purchase', 'posted', 0, 0, 'sms', 'i', 0, 'k2', 0);
+            """)
+        }
+        let db = try Database(path: path)
+        XCTAssertEqual(try db.readSync { $0.userVersion }, Migrations.latestVersion)
+        let categories = try db.readSync { try CategoryDAO.all($0) }
+        let tree = CategoryTree(categories)
+        XCTAssertEqual(tree.nodes(.expense).first?.category.name, "饮食")
+        XCTAssertEqual(tree.nodes(.expense).first?.children.map(\.name), ["早餐", "午餐", "晚餐", "饮料零食"])
+        XCTAssertEqual(tree.nodes(.income).map(\.category.name), ["工资", "奖金", "利息理财", "红包和转来的钱", "其他"])
+        XCTAssertTrue(tree.nodes(.income).allSatisfy(\.children.isEmpty), "收入默认只有一层")
+        XCTAssertEqual(tree.nodes(.transfer).count, 3)
+        XCTAssertTrue(tree.nodes(.transfer).allSatisfy(\.category.locked))
+        let records = try db.readSync { try RecordDAO.page($0, filter: RecordFilter(), before: nil, limit: 10) }
+        XCTAssertEqual(records.first { $0.id == "fee" }?.record.categoryID, "sys.fee", "手续费补上系统分类")
+        XCTAssertNil(records.first { $0.id == "pay" }?.record.categoryID, "消费是待分类")
+        XCTAssertEqual(try db.readSync { try RecordDAO.uncategorizedCount($0) }, 1)
+    }
+
     func testAmountKeywordsMatchEachMinorUnit() {
         XCTAssertEqual(RecordDAO.amountMinors("38").map(\.minor), [38, 3800, 38000])
         XCTAssertEqual(RecordDAO.amountMinors("38.5").map(\.exponent), [2, 3])

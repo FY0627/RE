@@ -43,8 +43,8 @@ struct BalanceInput: Hashable {
     }
 
     /// 输入框里灰色的提示：原来的金额，没填过时提示选填
-    func placeholder(_ currency: CurrencyCode) -> String {
-        guard let existing else { return "初始余额（选填）" }
+    func placeholder(_ currency: CurrencyCode, title: String = "初始余额") -> String {
+        guard let existing else { return "\(title)（选填）" }
         return MoneyFormat.plain(existing == .min ? 0 : abs(existing), exponent: currency.minorUnitExponent)
     }
 
@@ -60,6 +60,8 @@ struct OpeningBalanceRow: View {
     /// 多币种的卡在最左边写币种
     var label: String?
     @Binding var input: BalanceInput
+    /// 卡片信息里叫「校准余额」
+    var placeholderTitle = "初始余额"
 
     var body: some View {
         HStack(spacing: 8) {
@@ -85,11 +87,11 @@ struct OpeningBalanceRow: View {
             .buttonStyle(.borderless)
             .fixedSize()
             .accessibilityLabel(input.isDebt ? "欠款" : "余额")
-            TextField(input.placeholder(currency), text: $input.text)
+            TextField(input.placeholder(currency, title: placeholderTitle), text: $input.text)
                 .keyboardType(.decimalPad)
                 .multilineTextAlignment(.trailing)
                 .font(.body.monospacedDigit())
-                .accessibilityLabel("\(currency.chineseName)初始余额")
+                .accessibilityLabel("\(currency.chineseName)\(placeholderTitle)")
         }
         if case .invalid = input.value(currency) {
             Text("金额格式不对，例如 1234.56").font(.footnote).foregroundStyle(.red)

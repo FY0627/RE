@@ -5,6 +5,10 @@ public enum CardType: String, Sendable, Codable, CaseIterable {
     case credit
     case prepaid
     case other
+    /// 现金：没有卡号，只能手动记账
+    case cash
+    /// 自己有余额的电子钱包（微信零钱、支付宝余额）：没有卡号，只能手动记账
+    case wallet
 
     public var displayName: String {
         switch self {
@@ -12,8 +16,16 @@ public enum CardType: String, Sendable, Codable, CaseIterable {
         case .credit: "信用卡"
         case .prepaid: "预付卡"
         case .other: "其他账户"
+        case .cash: "现金"
+        case .wallet: "电子钱包"
         }
     }
+
+    /// 银行卡（有尾号，参与自动记账匹配）；现金和电子钱包不是
+    public var isCard: Bool { self != .cash && self != .wallet }
+
+    /// 添加银行卡、改卡类型时可选的类型
+    public static let cardCases: [CardType] = [.debit, .credit, .prepaid, .other]
 }
 
 /// 卡面个性化：自定义背景图和文字样式。都为空时使用配色方案的默认样式。
@@ -138,7 +150,15 @@ public struct Account: Identifiable, Hashable, Sendable, Codable {
         value.count == 4 && value.unicodeScalars.allSatisfy { $0.value >= 48 && $0.value <= 57 }
     }
 
-    public var displayTitle: String { "\(bankName) ·\(last4)" }
+    /// 现金、电子钱包没有卡号：表里的尾号填这个占位，不参与匹配
+    public static let placeholderLast4 = "0000"
+
+    /// 银行卡（有尾号，参与自动记账匹配）
+    public var isCard: Bool { cardType.isCard }
+
+    /// 银行卡「招商银行 ·0427」，现金和电子钱包写名称
+    public var displayTitle: String { label.text }
+    public var label: AccountLabel { AccountLabel(name: name, bankName: bankName, last4: last4, cardType: cardType) }
 
     /// 没填账户名称时的默认名称，例如「招商银行借记卡」
     public static func defaultName(bankName: String, cardType: CardType) -> String { "\(bankName)\(cardType.displayName)" }
@@ -208,6 +228,16 @@ public struct AccountDraft: Sendable, Hashable {
         self.paletteID = paletteID
         self.openingBalanceMinor = openingBalanceMinor
         self.extraOpeningBalances = extraOpeningBalances
+    }
+
+    /// 现金或电子钱包：名称就是它在卡包里显示的名称，没有银行和卡号
+    public static func pocket(
+        name: String, type: CardType, currency: CurrencyCode, paletteID: String, openingBalanceMinor: Int64? = nil
+    ) -> AccountDraft {
+        AccountDraft(
+            name: name, bankID: nil, bankName: name, last4: Account.placeholderLast4, cardType: type, currency: currency,
+            paletteID: paletteID, openingBalanceMinor: openingBalanceMinor
+        )
     }
 }
 

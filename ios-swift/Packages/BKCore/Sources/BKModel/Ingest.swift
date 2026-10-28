@@ -382,9 +382,9 @@ public struct AccountAutomationStatus: Hashable, Sendable {
 public struct MonthStats: Hashable, Sendable {
     public struct CurrencyTotals: Hashable, Sendable {
         public var currency: CurrencyCode
-        /// 支出：流出，不含内部转账与还款
+        /// 支出：流出，不含转帐（内部转账、还款、存取现金）
         public var expenseMinor: Int64
-        /// 收入：流入，不含内部转账、还款、退款、冲正
+        /// 收入：流入，不含转帐、退款、冲正
         public var incomeMinor: Int64
         /// 退款与流入方向的冲正
         public var refundMinor: Int64
@@ -394,8 +394,17 @@ public struct MonthStats: Hashable, Sendable {
         public var repaymentMinor: Int64
         public var recordCount: Int
         public var byKind: [KindTotal]
+        /// 转帐合计（自己的账户之间互转、还信用卡、存取现金），不计入收支；配对的两边只算转出那边
+        public var transferMinor: Int64
+        /// 支出按分类：大类按金额从大到小，退款从它所在的分类里减掉；没分类的在「待分类」
+        public var expenseCategories: [CategoryTotal]
+        /// 收入按分类
+        public var incomeCategories: [CategoryTotal]
 
-        public init(currency: CurrencyCode, expenseMinor: Int64, incomeMinor: Int64, refundMinor: Int64, internalTransferMinor: Int64, repaymentMinor: Int64, recordCount: Int, byKind: [KindTotal]) {
+        public init(
+            currency: CurrencyCode, expenseMinor: Int64, incomeMinor: Int64, refundMinor: Int64, internalTransferMinor: Int64, repaymentMinor: Int64,
+            recordCount: Int, byKind: [KindTotal], transferMinor: Int64 = 0, expenseCategories: [CategoryTotal] = [], incomeCategories: [CategoryTotal] = []
+        ) {
             self.currency = currency
             self.expenseMinor = expenseMinor
             self.incomeMinor = incomeMinor
@@ -404,9 +413,37 @@ public struct MonthStats: Hashable, Sendable {
             self.repaymentMinor = repaymentMinor
             self.recordCount = recordCount
             self.byKind = byKind
+            self.transferMinor = transferMinor
+            self.expenseCategories = expenseCategories
+            self.incomeCategories = incomeCategories
         }
 
+        /// 支出减去退款
         public var netExpenseMinor: Int64 { expenseMinor - refundMinor }
+        /// 收入减去支出
+        public var balanceMinor: Int64 { incomeMinor - netExpenseMinor }
+    }
+
+    /// 一个分类的合计。大类的 `children` 是它的小类；直接记在大类上的那部分也作为一项，名称和大类相同
+    public struct CategoryTotal: Hashable, Sendable, Identifiable {
+        /// nil 是「待分类」
+        public var categoryID: String?
+        public var name: String
+        public var symbol: String
+        public var amountMinor: Int64
+        public var count: Int
+        public var children: [CategoryTotal]
+
+        public init(categoryID: String?, name: String, symbol: String, amountMinor: Int64, count: Int, children: [CategoryTotal] = []) {
+            self.categoryID = categoryID
+            self.name = name
+            self.symbol = symbol
+            self.amountMinor = amountMinor
+            self.count = count
+            self.children = children
+        }
+
+        public var id: String { categoryID ?? "uncategorized" }
     }
 
     public struct KindTotal: Hashable, Sendable {

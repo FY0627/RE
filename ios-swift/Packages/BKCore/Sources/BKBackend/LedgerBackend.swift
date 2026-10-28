@@ -14,6 +14,14 @@ public enum BackendError: Error, Equatable, Sendable {
     case invalidTemplate
     /// 流水金额必须大于 0
     case invalidAmount
+    /// 分类名称为空、层级超过两层、类型对不上
+    case invalidCategory
+    /// 转帐和系统分类不能删除、合并
+    case categoryLocked
+    /// 转帐的转出、转入账户相同或缺少一边
+    case invalidTransfer
+    /// 合成一单至少要两笔，而且都是已入账的同一币种的支出（或收入）
+    case invalidOrder
 }
 
 /// App 界面与 App Intent 共用的业务入口。
@@ -118,7 +126,7 @@ public final class LedgerBackend: Sendable {
         try await database.write { db in
             guard let account = try AccountDAO.find(db, id: accountID) else { throw BackendError.notFound }
             if let cardNumber, !cardNumber.hasSuffix(account.last4) { throw BackendError.invalidAccount(.invalidCardNumber) }
-            let name = trimmedName.isEmpty ? "\(account.bankName)\(account.cardType.displayName)" : trimmedName
+            let name = trimmedName.isEmpty ? (account.isCard ? "\(account.bankName)\(account.cardType.displayName)" : account.bankName) : trimmedName
             try AccountDAO.updateInfo(db, id: accountID, name: name, cardNumber: cardNumber)
             if let extraCurrencies {
                 let extras = Account.normalizedExtras(extraCurrencies, primary: account.currency)
@@ -154,7 +162,9 @@ public final class LedgerBackend: Sendable {
                 throw BackendError.invalidAccount(.duplicateAccount)
             }
             let extras = Account.normalizedExtras(edit.extraCurrencies, primary: edit.currency)
-            let name = trimmedName.isEmpty ? Account.defaultName(bankName: account.bankName, cardType: edit.cardType) : trimmedName
+            // 现金、电子钱包没填名称：用添加时的名称
+            let name = trimmedName.isEmpty
+                ? (account.isCard ? Account.defaultName(bankName: account.bankName, cardType: edit.cardType) : account.bankName) : trimmedName
             try AccountDAO.updateDetails(
                 db, id: id, name: name, cardType: edit.cardType, currency: edit.currency, extras: extras,
                 cardNumber: cardNumber, accountNumber: accountNumber
@@ -207,13 +217,36 @@ public final class LedgerBackend: Sendable {
         try await records(filter: RecordFilter(accountID: accountID), before: cursor, limit: limit)
     }
 
-    /// 按条件查流水（卡片详情按币种、时间段；首页搜索按关键字、支出 / 收入）。
-    /// 账户不持有的币种的流水带上按主币种扣款的金额
+    /// 按条件查流水（卡片详情按币种、时间段；首页搜索按关键字、支出 / 收入 / 转帐）。
+    /// 账户不持有的币种的流水带上按主币种扣款的金额；转帐带上转帐分类；合成一单的带上同一单的几笔
     public func records(filter: RecordFilter, before cursor: RecordCursor? = nil, limit: Int = 50) async throws -> [RecordRow] {
         let calendar = calendar
         return try await database.read { db in
-            try Self.withCharges(try RecordDAO.page(db, filter: filter, before: cursor, limit: limit), db: db, calendar: calendar)
+            try Self.decorate(try RecordDAO.page(db, filter: filter, before: cursor, limit: limit), db: db, calendar: calendar)
         }
+    }
+
+    /// 列表行补上：外币扣款、转帐分类（按交易性质对应）、同一单的几笔
+    static func decorate(_ rows: [RecordRow], db: SQLiteConnection, calendar: Calendar) throws -> [RecordRow] {
+        var rows = try withCharges(rows, db: db, calendar: calendar)
+        if rows.contains(where: { $0.record.entryType == .transfer }) {
+            let tree = CategoryTree(try CategoryDAO.all(db))
+            for index in rows.indices where rows[index].record.entryType == .transfer {
+                rows[index].category = tree.category(autoKey: CategoryKey.transfer(for: rows[index].record.kind))
+                    .map { CategoryLabel(id: $0.id, name: $0.name, symbol: $0.symbol) }
+            }
+        }
+        let groups = Set(rows.compactMap(\.record.orderGroupID))
+        if !groups.isEmpty {
+            let members = Dictionary(grouping: try RecordDAO.inOrderGroup(db, groups: Array(groups)), by: { $0.record.orderGroupID ?? "" })
+            for index in rows.indices {
+                guard let group = rows[index].record.orderGroupID, let parts = members[group], parts.count > 1 else { continue }
+                rows[index].orderParts = parts.map {
+                    OrderPart(recordID: $0.id, account: $0.account, amountMinor: $0.record.amountMinor, currency: $0.record.currency)
+                }
+            }
+        }
+        return rows
     }
 
     public func recordCount(accountID: String? = nil) async throws -> Int {
@@ -237,9 +270,11 @@ public final class LedgerBackend: Sendable {
 
     /// 修改一笔流水。改了时间：交易时间和接收时间都改成它（影响排序和余额推算）；没改时间则保持原样。
     /// 配对的内部转账改了账户、金额、币种、方向，或不再是转账类，就不再配对。
+    /// 改了分类：记住这个交易对方，同一单的几笔一起改。转帐不保存分类
     public func updateRecord(id: String, _ edit: RecordEdit) async throws {
         guard edit.amountMinor > 0 else { throw BackendError.invalidAmount }
         let calendar = calendar
+        let now = clock()
         try await database.write { db in
             guard var record = try RecordDAO.find(db, id: id) else { throw BackendError.notFound }
             guard let account = try AccountDAO.find(db, id: edit.accountID) else { throw BackendError.notFound }
@@ -263,14 +298,319 @@ public final class LedgerBackend: Sendable {
             } else {
                 record.settlement = nil
             }
+            if let party = edit.transferParty { record.transferParty = party }
             if record.kind != .transferIn, record.kind != .transferOut { record.transferParty = nil }
             if let group = original.transferGroupID,
                original.accountID != record.accountID || original.amountMinor != record.amountMinor || original.currency != record.currency
-                   || original.direction != record.direction || !record.kind.isTransferLike {
+                   || original.direction != record.direction || !record.kind.isTransferLike || record.transferParty == .other {
                 try RecordDAO.clearTransferGroup(db, group: group)
                 record.transferGroupID = nil
             }
+            if !edit.keepsCategory { record.categoryID = edit.categoryID }
+            let tree = CategoryTree(try CategoryDAO.all(db))
+            if record.entryType == .transfer {
+                record.categoryID = nil
+            } else if let category = tree.category(record.categoryID), category.type != CategoryType(record.entryType) {
+                // 支出改成了收入（或反过来）：原来的分类对不上了
+                record.categoryID = nil
+            }
             try RecordDAO.update(db, record)
+            let categorizer = Categorizer(db: db, calendar: calendar, now: now)
+            if record.transferParty == .own, original.transferParty != .own { try categorizer.rememberOwn(record) }
+            if let categoryID = record.categoryID, categoryID != original.categoryID {
+                if let group = record.orderGroupID {
+                    try RecordDAO.setCategory(db, ids: try RecordDAO.inOrderGroup(db, groups: [group]).map(\.id), categoryID: categoryID)
+                }
+                try categorizer.remember(record, categoryID: categoryID)
+            }
+        }
+    }
+
+    // MARK: 分类
+
+    /// 全部分类（含隐藏的），按类型、顺序排好
+    public func categories() async throws -> [LedgerCategory] {
+        try await database.read { try CategoryDAO.all($0) }
+    }
+
+    /// 给一笔选分类（待分类、详情里改分类），可以顺手写备注。
+    /// 没确认对方的转账选了分类就是转给别人。记住这个交易对方，同一个对方还没分类的也一起归类；同一单的几笔一起改
+    public func setCategory(recordID: String, categoryID: String, note: String? = nil) async throws {
+        let calendar = calendar
+        let now = clock()
+        try await database.write { db in
+            guard var record = try RecordDAO.find(db, id: recordID) else { throw BackendError.notFound }
+            guard let category = try CategoryDAO.find(db, id: categoryID), category.type != .transfer else { throw BackendError.invalidCategory }
+            if record.needsTransferConfirmation {
+                try RecordDAO.setTransferParty(db, id: record.id, party: .other)
+                record.transferParty = .other
+            }
+            guard category.type == CategoryType(record.entryType) else { throw BackendError.invalidCategory }
+            var ids = [record.id]
+            if let group = record.orderGroupID { ids = try RecordDAO.inOrderGroup(db, groups: [group]).map(\.id) }
+            try RecordDAO.setCategory(db, ids: ids, categoryID: categoryID)
+            if let note { _ = try RecordDAO.updateNote(db, id: record.id, note: String(note.prefix(500))) }
+            try Categorizer(db: db, calendar: calendar, now: now).remember(record, categoryID: categoryID)
+        }
+    }
+
+    /// 待分类：已入账的支出、收入还没有分类（没确认对方的转账也在里面）
+    public func uncategorized(limit: Int = 200) async throws -> [RecordRow] {
+        let calendar = calendar
+        return try await database.read { db in
+            try Self.decorate(try RecordDAO.uncategorized(db, limit: limit), db: db, calendar: calendar)
+        }
+    }
+
+    public func uncategorizedCount() async throws -> Int {
+        try await database.read { try RecordDAO.uncategorizedCount($0) }
+    }
+
+    /// 新增分类：大类，或加在某个大类下面的小类（最多两层）。转帐的分类不能新增
+    public func addCategory(_ draft: CategoryDraft) async throws -> LedgerCategory {
+        let name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, draft.type != .transfer else { throw BackendError.invalidCategory }
+        let id = newID()
+        let now = clock()
+        return try await database.write { db in
+            if let parentID = draft.parentID {
+                guard let parent = try CategoryDAO.find(db, id: parentID), parent.isTopLevel, parent.type == draft.type, !parent.locked else {
+                    throw BackendError.invalidCategory
+                }
+            }
+            let category = LedgerCategory(
+                id: id, type: draft.type, parentID: draft.parentID, name: String(name.prefix(20)),
+                symbol: draft.symbol.isEmpty ? "tag" : draft.symbol,
+                sortOrder: try CategoryDAO.nextSortOrder(db, type: draft.type, parentID: draft.parentID)
+            )
+            try CategoryDAO.insert(db, category, now: now)
+            return category
+        }
+    }
+
+    /// 改名、换图标（转帐和系统分类也可以）
+    public func updateCategory(id: String, name: String, symbol: String) async throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw BackendError.invalidCategory }
+        let updated = try await database.write { try CategoryDAO.update($0, id: id, name: String(trimmed.prefix(20)), symbol: symbol.isEmpty ? "tag" : symbol) }
+        if !updated { throw BackendError.notFound }
+    }
+
+    /// 隐藏：记账时不出现，已有记录不变。转帐分类不能隐藏
+    public func setCategoryHidden(id: String, hidden: Bool) async throws {
+        try await database.write { db in
+            guard let category = try CategoryDAO.find(db, id: id) else { throw BackendError.notFound }
+            guard category.type != .transfer else { throw BackendError.categoryLocked }
+            try CategoryDAO.setHidden(db, id: id, hidden: hidden)
+        }
+    }
+
+    /// 同一层里的新顺序
+    public func reorderCategories(_ ids: [String]) async throws {
+        try await database.write { db in
+            for (index, id) in ids.enumerated() { try CategoryDAO.setSortOrder(db, id: id, sortOrder: index) }
+        }
+    }
+
+    /// 把小类挪到别的大类下面；`parentID` 为 nil 时变成大类。下面还有小类的大类不能挪进别的大类
+    public func moveCategory(id: String, toParent parentID: String?) async throws {
+        try await database.write { db in
+            guard let category = try CategoryDAO.find(db, id: id), !category.locked else { throw BackendError.categoryLocked }
+            let all = try CategoryDAO.all(db)
+            if let parentID {
+                guard parentID != id, let parent = all.first(where: { $0.id == parentID }), parent.isTopLevel, parent.type == category.type, !parent.locked,
+                      !all.contains(where: { $0.parentID == id }) else { throw BackendError.invalidCategory }
+            }
+            try CategoryDAO.setParent(db, id: id, parentID: parentID, sortOrder: try CategoryDAO.nextSortOrder(db, type: category.type, parentID: parentID))
+        }
+    }
+
+    /// 合并：`id` 的流水改记到 `targetID`，然后删掉 `id`。
+    /// 合并的是大类：它的小类挪到目标大类下面（目标是小类时，小类的流水也并进目标）
+    public func mergeCategory(id: String, into targetID: String) async throws {
+        try await database.write { db in
+            guard id != targetID, let source = try CategoryDAO.find(db, id: id), let target = try CategoryDAO.find(db, id: targetID) else {
+                throw BackendError.notFound
+            }
+            guard !source.locked else { throw BackendError.categoryLocked }
+            guard source.type == target.type, target.type != .transfer, target.parentID != id else { throw BackendError.invalidCategory }
+            let children = try CategoryDAO.all(db).filter { $0.parentID == id }
+            for child in children {
+                if target.isTopLevel {
+                    try CategoryDAO.setParent(db, id: child.id, parentID: target.id, sortOrder: try CategoryDAO.nextSortOrder(db, type: target.type, parentID: target.id))
+                } else {
+                    try RecordDAO.reassignCategory(db, from: [child.id], to: target.id)
+                    try CounterpartyRuleDAO.reassign(db, from: [child.id], to: target.id)
+                    try CategoryDAO.delete(db, id: child.id)
+                }
+            }
+            try RecordDAO.reassignCategory(db, from: [id], to: target.id)
+            try CounterpartyRuleDAO.reassign(db, from: [id], to: target.id)
+            try CategoryDAO.delete(db, id: id)
+            // 自动归类用的标识（例如「工资」）交给目标分类
+            if let key = source.autoKey, target.autoKey == nil { try CategoryDAO.setAutoKey(db, id: target.id, autoKey: key) }
+        }
+    }
+
+    /// 删除分类（连同它的小类）。原来记在上面的流水改记到 `moveRecordsTo`；nil 时回到待分类。记录不删
+    public func deleteCategory(id: String, moveRecordsTo targetID: String?) async throws {
+        try await database.write { db in
+            guard let category = try CategoryDAO.find(db, id: id) else { throw BackendError.notFound }
+            guard !category.locked else { throw BackendError.categoryLocked }
+            let removed = [id] + (try CategoryDAO.all(db).filter { $0.parentID == id }.map(\.id))
+            if let targetID {
+                guard !removed.contains(targetID), let target = try CategoryDAO.find(db, id: targetID), target.type == category.type else {
+                    throw BackendError.invalidCategory
+                }
+            }
+            try RecordDAO.reassignCategory(db, from: removed, to: targetID)
+            try CounterpartyRuleDAO.reassign(db, from: removed, to: targetID)
+            for child in removed.dropFirst() { try CategoryDAO.delete(db, id: child) }
+            try CategoryDAO.delete(db, id: id)
+        }
+    }
+
+    // MARK: 手动记一笔
+
+    static let lastManualAccountKey = "manual.last_account"
+
+    /// 上次手动记账用的账户（还在使用中才返回）
+    public func lastManualAccountID() async throws -> String? {
+        try await database.read { db in
+            guard let id = try SettingsDAO.get(db, Self.lastManualAccountKey), let account = try AccountDAO.find(db, id: id), !account.archived else { return nil }
+            return id
+        }
+    }
+
+    /// 手动记一笔。支出、收入记一条；转帐记两条（转出、转入）并配成一对，转入信用卡算还款。返回新流水的标识
+    @discardableResult
+    public func addRecord(_ entry: ManualEntry) async throws -> [String] {
+        guard entry.amountMinor > 0 else { throw BackendError.invalidAmount }
+        let now = clock()
+        let calendar = calendar
+        let newID = newID
+        return try await database.write { db in
+            guard let account = try AccountDAO.find(db, id: entry.accountID) else { throw BackendError.notFound }
+            let ingestID = newID()
+            try IngestDAO.insertManual(db, id: ingestID, receivedAt: entry.time, processedAt: now)
+            let c = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: entry.time)
+            let time = WallClock(year: c.year, month: c.month, day: c.day, hour: c.hour, minute: c.minute)
+            let counterparty = entry.counterparty
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .flatMap { $0.isEmpty ? nil : String($0.prefix(200)) }
+            func record(_ account: Account, _ direction: FlowDirection, _ kind: TransactionKind, part: Int, category: String?) -> LedgerRecord {
+                LedgerRecord(
+                    id: newID(), accountID: account.id, amountMinor: entry.amountMinor, currency: entry.currency, direction: direction,
+                    kind: kind, status: .posted, counterparty: counterparty,
+                    transactionTime: time, receivedAt: entry.time, processedAt: now, source: .manual, ingestID: ingestID, partIndex: part,
+                    bankReference: nil, balanceAfterMinor: nil, includedFeeMinor: nil, note: String(entry.note.prefix(500)),
+                    transferGroupID: nil, relatedRecordID: nil, categoryID: category
+                )
+            }
+            let tree = CategoryTree(try CategoryDAO.all(db))
+            var category: String?
+            if entry.type != .transfer, let id = entry.categoryID {
+                guard let found = tree.category(id), found.type == CategoryType(entry.type) else { throw BackendError.invalidCategory }
+                category = found.id
+            }
+            var records: [LedgerRecord]
+            switch entry.type {
+            case .expense:
+                records = [record(account, entry.isRefund ? .inflow : .outflow, entry.isRefund ? .refund : .purchase, part: 0, category: category)]
+            case .income:
+                records = [record(account, .inflow, .income, part: 0, category: category)]
+            case .transfer:
+                guard let toID = entry.toAccountID, toID != account.id, let target = try AccountDAO.find(db, id: toID) else {
+                    throw BackendError.invalidTransfer
+                }
+                let repayment = target.cardType == .credit
+                records = [
+                    record(account, .outflow, repayment ? .repayment : .transferOut, part: 0, category: nil),
+                    record(target, .inflow, repayment ? .repayment : .transferIn, part: 2, category: nil),
+                ]
+                let group = newID()
+                for index in records.indices { records[index].transferGroupID = group }
+            }
+            for r in records {
+                _ = try RecordDAO.insertIfAbsent(db, r, dedupeKey: "m|" + r.id, now: now)
+                try RecordDAO.addEvidence(db, recordID: r.id, ingestID: ingestID, source: .manual, at: now)
+            }
+            if let category, let first = records.first {
+                try Categorizer(db: db, calendar: calendar, now: now).remember(first, categoryID: category)
+            }
+            try SettingsDAO.set(db, Self.lastManualAccountKey, account.id)
+            return records.map(\.id)
+        }
+    }
+
+    /// 手动记账前查一下：同一个账户、同样金额和方向，前后 3 小时内已经有记录（多半是自动记账已经记过了）
+    public func similarRecords(to entry: ManualEntry) async throws -> [RecordRow] {
+        guard entry.type != .transfer else { return [] }
+        let direction: FlowDirection = entry.type == .income || entry.isRefund ? .inflow : .outflow
+        let window: TimeInterval = 3 * 3600
+        let calendar = calendar
+        return try await database.read { db in
+            let rows = try RecordDAO.postedRows(db, from: entry.time.addingTimeInterval(-window), to: entry.time.addingTimeInterval(window))
+                .filter { $0.record.accountID == entry.accountID && $0.record.amountMinor == entry.amountMinor
+                    && $0.record.currency == entry.currency && $0.record.direction == direction }
+            return try Self.decorate(rows, db: db, calendar: calendar)
+        }
+    }
+
+    // MARK: 一单用了几张卡
+
+    /// 可以和这一笔合成一单的流水：前后一天内、已入账、同一币种的同类（支出或收入），离得近的在前
+    public func orderCandidates(recordID: String) async throws -> [RecordRow] {
+        let calendar = calendar
+        return try await database.read { db in
+            guard let row = try RecordDAO.findRow(db, id: recordID) else { throw BackendError.notFound }
+            let r = row.record
+            let day: TimeInterval = 86_400
+            let rows = try RecordDAO.postedRows(db, from: r.effectiveAt.addingTimeInterval(-day), to: r.effectiveAt.addingTimeInterval(day), limit: 300)
+                .filter { other in
+                    other.id != r.id && other.record.entryType == r.entryType && r.entryType != .transfer && other.record.currency == r.currency
+                        && (other.record.orderGroupID == nil || other.record.orderGroupID != r.orderGroupID)
+                }
+                .sorted { abs($0.record.effectiveAt.timeIntervalSince(r.effectiveAt)) < abs($1.record.effectiveAt.timeIntervalSince(r.effectiveAt)) }
+            return try Self.decorate(Array(rows.prefix(30)), db: db, calendar: calendar)
+        }
+    }
+
+    /// 很可能是同一单：别的卡、10 分钟以内（只是提示，用户确认了才合并）
+    public static func likelySameOrder(_ a: LedgerRecord, _ b: LedgerRecord) -> Bool {
+        a.accountID != b.accountID && abs(a.effectiveAt.timeIntervalSince(b.effectiveAt)) <= 10 * 60
+    }
+
+    /// 合成一单：这几笔（和它们原来所在的单）共用一个合单标识；分类统一成第一笔有的分类
+    public func mergeOrder(recordIDs: [String]) async throws {
+        let newID = newID
+        try await database.write { db in
+            var records: [LedgerRecord] = []
+            for id in recordIDs {
+                guard let record = try RecordDAO.find(db, id: id) else { throw BackendError.notFound }
+                records.append(record)
+            }
+            let groups = Array(Set(records.compactMap(\.orderGroupID)))
+            for member in try RecordDAO.inOrderGroup(db, groups: groups).map(\.record) where !records.contains(where: { $0.id == member.id }) {
+                records.append(member)
+            }
+            guard records.count >= 2, let first = records.first, first.entryType != .transfer,
+                  records.allSatisfy({ $0.status == .posted && $0.currency == first.currency && $0.entryType == first.entryType }) else {
+                throw BackendError.invalidOrder
+            }
+            let group = groups.first ?? newID()
+            try RecordDAO.setOrderGroup(db, ids: records.map(\.id), group: group)
+            if let category = records.compactMap(\.categoryID).first {
+                try RecordDAO.setCategory(db, ids: records.map(\.id), categoryID: category)
+            }
+        }
+    }
+
+    /// 拆开这一单：几笔各自单独显示（分类保留）
+    public func splitOrder(recordID: String) async throws {
+        try await database.write { db in
+            guard let record = try RecordDAO.find(db, id: recordID) else { throw BackendError.notFound }
+            if let group = record.orderGroupID { try RecordDAO.clearOrderGroup(db, group: group) }
         }
     }
 
@@ -284,14 +624,19 @@ public final class LedgerBackend: Sendable {
         let calendar = calendar
         return try await database.read { db in
             guard let found = try RecordDAO.findRow(db, id: id) else { throw BackendError.notFound }
-            let row = try Self.withCharges([found], db: db, calendar: calendar)[0]
+            let row = try Self.decorate([found], db: db, calendar: calendar)[0]
             let evidence = try RecordDAO.evidence(db, recordID: id)
             var peer: RecordRow?
             if let group = row.record.transferGroupID {
                 peer = try RecordDAO.inGroup(db, group: group).first { $0.id != id }.flatMap { try RecordDAO.findRow(db, id: $0.id) }
             }
             let related = try row.record.relatedRecordID.flatMap { try RecordDAO.findRow(db, id: $0) }
-            return RecordDetail(row: row, evidence: evidence, transferPeer: peer, related: related)
+            let members = try row.record.orderGroupID.map { try RecordDAO.inOrderGroup(db, groups: [$0]).filter { $0.id != id } } ?? []
+            return RecordDetail(
+                row: row, evidence: evidence, transferPeer: peer, related: related,
+                refunds: try RecordDAO.refunds(db, of: id), fee: try RecordDAO.splitFee(db, of: row.record),
+                orderMembers: try Self.decorate(members, db: db, calendar: calendar)
+            )
         }
     }
 
@@ -322,9 +667,19 @@ public final class LedgerBackend: Sendable {
     }
 
     /// 确认转账的对方：自己的账户（内部转账，不计入收支）或别人。传 nil 恢复为未确认。
-    public func setTransferParty(recordID: String, party: TransferParty?) async throws {
-        let updated = try await database.write { try RecordDAO.setTransferParty($0, id: recordID, party: party) }
-        if !updated { throw BackendError.notFound }
+    /// `remember`：对方是自己时记住这个交易对方，同一个对方没确认的转账也一起算转帐
+    public func setTransferParty(recordID: String, party: TransferParty?, remember: Bool = false) async throws {
+        let calendar = calendar
+        let now = clock()
+        try await database.write { db in
+            guard try RecordDAO.setTransferParty(db, id: recordID, party: party), let record = try RecordDAO.find(db, id: recordID) else {
+                throw BackendError.notFound
+            }
+            guard party == .own else { return }
+            // 自己的账户之间是转帐，不用分类
+            try RecordDAO.setCategory(db, ids: [recordID], categoryID: nil)
+            if remember { try Categorizer(db: db, calendar: calendar, now: now).rememberOwn(record) }
+        }
     }
 
     /// 确认系统给出的候选。不能借此修改金额、方向、时间等字段。
@@ -487,7 +842,7 @@ public final class LedgerBackend: Sendable {
         guard let start = calendar.date(from: DateComponents(year: year, month: month, day: 1)),
               let end = calendar.date(byAdding: .month, value: 1, to: start) else { throw BackendError.notFound }
         return try await database.read { db in
-            StatsCalculator.month(year: year, month: month, records: try RecordDAO.inRange(db, from: start, to: end))
+            StatsCalculator.month(year: year, month: month, records: try RecordDAO.inRange(db, from: start, to: end), categories: try CategoryDAO.all(db))
         }
     }
 
@@ -511,10 +866,15 @@ public final class LedgerBackend: Sendable {
 }
 
 enum StatsCalculator {
-    static func month(year: Int, month: Int, records: [LedgerRecord]) -> MonthStats {
+    /// 一个币种里，每个分类（nil 为待分类）的金额和笔数；退款是负数
+    typealias CategorySums = [String?: (amount: Int64, count: Int)]
+
+    static func month(year: Int, month: Int, records: [LedgerRecord], categories: [LedgerCategory] = []) -> MonthStats {
         var byCurrency: [CurrencyCode: MonthStats.CurrencyTotals] = [:]
         var byKind: [CurrencyCode: [String: MonthStats.KindTotal]] = [:]
         var byAccount: [String: MonthStats.AccountTotal] = [:]
+        var expenseSums: [CurrencyCode: CategorySums] = [:]
+        var incomeSums: [CurrencyCode: CategorySums] = [:]
         var holds = 0, failed = 0
         for r in records {
             switch r.status {
@@ -524,16 +884,24 @@ enum StatsCalculator {
             }
             var totals = byCurrency[r.currency] ?? .init(currency: r.currency, expenseMinor: 0, incomeMinor: 0, refundMinor: 0, internalTransferMinor: 0, repaymentMinor: 0, recordCount: 0, byKind: [])
             totals.recordCount += 1
-            if r.isInternalTransfer {
-                if r.direction == .outflow { totals.internalTransferMinor += r.amountMinor }
-            } else if r.kind == .repayment {
-                totals.repaymentMinor += r.amountMinor
-            } else if r.direction == .outflow {
-                totals.expenseMinor += r.amountMinor
-            } else if r.kind == .refund || r.kind == .reversal {
-                totals.refundMinor += r.amountMinor
-            } else {
+            switch r.entryType {
+            case .transfer:
+                if r.isInternalTransfer {
+                    if r.direction == .outflow { totals.internalTransferMinor += r.amountMinor }
+                } else if r.kind == .repayment {
+                    totals.repaymentMinor += r.amountMinor
+                }
+                // 配对的两边只算转出那边
+                if r.direction == .outflow || r.transferGroupID == nil { totals.transferMinor += r.amountMinor }
+            case .expense:
+                let signed = r.isRefund ? -r.amountMinor : r.amountMinor
+                if r.isRefund { totals.refundMinor += r.amountMinor } else { totals.expenseMinor += r.amountMinor }
+                let sum = expenseSums[r.currency, default: [:]][r.categoryID] ?? (0, 0)
+                expenseSums[r.currency, default: [:]][r.categoryID] = (sum.amount + signed, sum.count + 1)
+            case .income:
                 totals.incomeMinor += r.amountMinor
+                let sum = incomeSums[r.currency, default: [:]][r.categoryID] ?? (0, 0)
+                incomeSums[r.currency, default: [:]][r.categoryID] = (sum.amount + r.amountMinor, sum.count + 1)
             }
             byCurrency[r.currency] = totals
 
@@ -549,11 +917,39 @@ enum StatsCalculator {
             accountTotal.count += 1
             byAccount[accountKey] = accountTotal
         }
+        let tree = CategoryTree(categories)
         let currencies = byCurrency.values.map { totals -> MonthStats.CurrencyTotals in
             var t = totals
             t.byKind = (byKind[t.currency] ?? [:]).values.sorted { $0.amountMinor > $1.amountMinor }
+            t.expenseCategories = categoryTotals(expenseSums[t.currency] ?? [:], tree: tree)
+            t.incomeCategories = categoryTotals(incomeSums[t.currency] ?? [:], tree: tree)
             return t
         }.sorted { $0.recordCount > $1.recordCount }
         return MonthStats(year: year, month: month, currencies: currencies, accounts: byAccount.values.sorted { $0.outflowMinor + $0.inflowMinor > $1.outflowMinor + $1.inflowMinor }, holdCount: holds, failedCount: failed)
+    }
+
+    /// 按大类汇总，大类下面是小类（直接记在大类上的那部分也作为一项）；找不到的分类算待分类。都按金额从大到小
+    static func categoryTotals(_ sums: CategorySums, tree: CategoryTree) -> [MonthStats.CategoryTotal] {
+        var tops: [String?: MonthStats.CategoryTotal] = [:]
+        for (id, sum) in sums {
+            guard let category = tree.category(id), let top = tree.topLevel(id) else {
+                var entry = tops[nil] ?? .init(categoryID: nil, name: "待分类", symbol: "questionmark.circle", amountMinor: 0, count: 0)
+                entry.amountMinor += sum.amount
+                entry.count += sum.count
+                tops[nil] = entry
+                continue
+            }
+            var entry = tops[top.id] ?? .init(categoryID: top.id, name: top.name, symbol: top.symbol, amountMinor: 0, count: 0)
+            entry.amountMinor += sum.amount
+            entry.count += sum.count
+            entry.children.append(.init(categoryID: category.id, name: category.name, symbol: category.symbol, amountMinor: sum.amount, count: sum.count))
+            tops[top.id] = entry
+        }
+        return tops.values.map { top in
+            var top = top
+            top.children.sort { $0.amountMinor != $1.amountMinor ? $0.amountMinor > $1.amountMinor : $0.name < $1.name }
+            return top
+        }
+        .sorted { $0.amountMinor != $1.amountMinor ? $0.amountMinor > $1.amountMinor : $0.name < $1.name }
     }
 }

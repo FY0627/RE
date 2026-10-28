@@ -148,9 +148,27 @@ public enum RecordDAO {
     static let columns = """
     r.id, r.account_id, r.amount_minor, r.currency, r.direction, r.kind, r.status, r.counterparty, r.txn_time, r.txn_year_inferred, \
     r.received_at, r.processed_at, r.source, r.ingest_id, r.part_index, r.bank_reference, r.balance_after_minor, r.included_fee_minor, \
-    r.note, r.transfer_group, r.related_record_id, r.transfer_party, r.settlement_minor, r.settlement_currency
+    r.note, r.transfer_group, r.related_record_id, r.transfer_party, r.settlement_minor, r.settlement_currency, r.category_id, r.order_group
     """
-    static let rowColumns = columns + ", a.name, a.bank_name, a.last4, a.palette_id, a.currency, a.extra_currencies"
+    /// 列表行：记录 + 账户 + 分类 + 配对转帐另一边的账户 + 合并显示的手续费和退款
+    static let rowColumns = columns + """
+    , a.name, a.bank_name, a.last4, a.palette_id, a.currency, a.extra_currencies, a.card_type, \
+    c.id, c.name, c.symbol, cp.name, pa.name, pa.bank_name, pa.last4, pa.card_type, \
+    (SELECT f.amount_minor FROM records f WHERE r.part_index % 2 = 0 AND f.ingest_id = r.ingest_id AND f.part_index = r.part_index + 1 AND f.kind = 'fee' LIMIT 1), \
+    (SELECT SUM(x.amount_minor) FROM records x WHERE x.related_record_id = r.id AND x.status = 'posted')
+    """
+    static let rowFrom = """
+    FROM records r JOIN accounts a ON a.id = r.account_id
+    LEFT JOIN categories c ON c.id = r.category_id
+    LEFT JOIN categories cp ON cp.id = c.parent_id
+    LEFT JOIN accounts pa ON pa.id = (SELECT p.account_id FROM records p WHERE p.transfer_group = r.transfer_group AND p.id <> r.id LIMIT 1)
+    """
+
+    /// 支出、收入还是转帐，和 `LedgerRecord.entryType` 的规则一致
+    public static let entryTypeSQL = """
+    (CASE WHEN r.transfer_group IS NOT NULL OR r.transfer_party = 'own' OR r.kind IN ('repayment', 'deposit', 'withdrawal') THEN 'transfer' \
+    WHEN r.direction = 'outflow' OR r.kind IN ('refund', 'reversal') THEN 'expense' ELSE 'income' END)
+    """
 
     static func map(_ row: SQLiteConnection.Row) -> LedgerRecord {
         LedgerRecord(
@@ -163,16 +181,24 @@ public enum RecordDAO {
             balanceAfterMinor: row.optionalInt(16), includedFeeMinor: row.optionalInt(17), note: row.string(18),
             transferGroupID: row.optionalString(19), relatedRecordID: row.optionalString(20),
             transferParty: row.optionalString(21).flatMap(TransferParty.init(rawValue:)),
-            settlement: row.optionalInt(22).flatMap { minor in row.optionalString(23).map { Money(minorUnits: minor, currency: CurrencyCode($0)) } }
+            settlement: row.optionalInt(22).flatMap { minor in row.optionalString(23).map { Money(minorUnits: minor, currency: CurrencyCode($0)) } },
+            categoryID: row.optionalString(24), orderGroupID: row.optionalString(25)
         )
     }
 
     static func mapRow(_ row: SQLiteConnection.Row) -> RecordRow {
-        let primary = CurrencyCode(row.string(28))
-        let currencies = [primary] + Account.normalizedExtras(AccountDAO.decodeCurrencies(row.string(29)), primary: primary)
+        let primary = CurrencyCode(row.string(30))
+        let currencies = [primary] + Account.normalizedExtras(AccountDAO.decodeCurrencies(row.string(31)), primary: primary)
+        let category = row.optionalString(33).map { id in
+            CategoryLabel(id: id, name: row.string(34), symbol: row.string(35), parentName: row.optionalString(36))
+        }
+        let peer = row.optionalString(37).map { name in
+            AccountLabel(name: name, bankName: row.string(38), last4: row.string(39), cardType: CardType(rawValue: row.string(40)) ?? .other)
+        }
         return RecordRow(
-            record: map(row), accountName: row.string(24), bankName: row.string(25), last4: row.string(26), paletteID: row.string(27),
-            accountCurrencies: currencies
+            record: map(row), accountName: row.string(26), bankName: row.string(27), last4: row.string(28), paletteID: row.string(29),
+            accountCurrencies: currencies, cardType: CardType(rawValue: row.string(32)) ?? .other, category: category, peer: peer,
+            feeMinor: row.optionalInt(41), refundedMinor: row.optionalInt(42)
         )
     }
 
@@ -182,33 +208,35 @@ public enum RecordDAO {
             """
             INSERT OR IGNORE INTO records (id, account_id, amount_minor, currency, direction, kind, status, counterparty, txn_time, \
             txn_year_inferred, received_at, processed_at, effective_at, source, ingest_id, part_index, bank_reference, balance_after_minor, \
-            included_fee_minor, note, transfer_group, related_record_id, transfer_party, settlement_minor, settlement_currency, dedupe_key, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            included_fee_minor, note, transfer_group, related_record_id, transfer_party, settlement_minor, settlement_currency, category_id, \
+            order_group, dedupe_key, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 r.id, r.accountID, r.amountMinor, r.currency.rawValue, r.direction.rawValue, r.kind.rawValue, r.status.rawValue,
                 r.counterparty, r.transactionTime.map(WallClockCodec.encode), r.transactionTime?.yearInferred ?? false,
                 r.receivedAt, r.processedAt, r.effectiveAt, r.source.rawValue, r.ingestID, r.partIndex, r.bankReference,
                 r.balanceAfterMinor, r.includedFeeMinor, r.note, r.transferGroupID, r.relatedRecordID, r.transferParty?.rawValue,
-                r.settlement?.minorUnits, r.settlement?.currency.rawValue, dedupeKey, now,
+                r.settlement?.minorUnits, r.settlement?.currency.rawValue, r.categoryID, r.orderGroupID, dedupeKey, now,
             ]
         )
         return changed > 0
     }
 
-    /// 用户修改后的记录：写回能改的列（来源、原文、结算状态不变）
+    /// 用户修改后的记录：写回能改的列（来源、原文、结算状态、合单不变）
     @discardableResult
     public static func update(_ db: SQLiteConnection, _ r: LedgerRecord) throws -> Bool {
         try db.run(
             """
             UPDATE records SET account_id = ?, amount_minor = ?, currency = ?, direction = ?, kind = ?, counterparty = ?, txn_time = ?, \
             txn_year_inferred = ?, received_at = ?, effective_at = ?, note = ?, transfer_group = ?, transfer_party = ?, \
-            settlement_minor = ?, settlement_currency = ? WHERE id = ?
+            settlement_minor = ?, settlement_currency = ?, category_id = ? WHERE id = ?
             """,
             [
                 r.accountID, r.amountMinor, r.currency.rawValue, r.direction.rawValue, r.kind.rawValue, r.counterparty,
                 r.transactionTime.map(WallClockCodec.encode), r.transactionTime?.yearInferred ?? false, r.receivedAt, r.effectiveAt,
-                r.note, r.transferGroupID, r.transferParty?.rawValue, r.settlement?.minorUnits, r.settlement?.currency.rawValue, r.id,
+                r.note, r.transferGroupID, r.transferParty?.rawValue, r.settlement?.minorUnits, r.settlement?.currency.rawValue,
+                r.categoryID, r.id,
             ]
         ) > 0
     }
@@ -226,7 +254,94 @@ public enum RecordDAO {
         if let group = record.transferGroupID, try db.scalarInt("SELECT COUNT(*) FROM records WHERE transfer_group = ?", [group]) < 2 {
             try clearTransferGroup(db, group: group)
         }
+        // 合成的一单只剩一笔：不再是合单
+        if let group = record.orderGroupID, try db.scalarInt("SELECT COUNT(*) FROM records WHERE order_group = ?", [group]) < 2 {
+            try clearOrderGroup(db, group: group)
+        }
         return true
+    }
+
+    // MARK: 分类与合单
+
+    /// 设置分类（nil 为待分类）
+    public static func setCategory(_ db: SQLiteConnection, ids: [String], categoryID: String?) throws {
+        for id in ids { try db.run("UPDATE records SET category_id = ? WHERE id = ?", [categoryID, id]) }
+    }
+
+    /// 分类删除或合并：原来记在这些分类上的流水改记到 `to`（nil 为待分类）
+    public static func reassignCategory(_ db: SQLiteConnection, from ids: [String], to: String?) throws {
+        guard !ids.isEmpty else { return }
+        let placeholders = ids.map { _ in "?" }.joined(separator: ", ")
+        try db.run("UPDATE records SET category_id = ? WHERE category_id IN (\(placeholders))", ([to] as [SQLBindable]) + ids.map { $0 as SQLBindable })
+    }
+
+    /// 待分类：已入账的支出、收入还没有分类（合成一单的只留一行）
+    static let uncategorizedFilter = """
+    r.status = 'posted' AND r.category_id IS NULL AND \(entryTypeSQL) IN ('expense', 'income') AND NOT \(orderMemberHidden)
+    """
+
+    public static func uncategorized(_ db: SQLiteConnection, limit: Int = 200) throws -> [RecordRow] {
+        try db.query(
+            "SELECT \(rowColumns) \(rowFrom) WHERE \(uncategorizedFilter) ORDER BY r.effective_at DESC, r.id DESC LIMIT ?",
+            [limit], mapRow
+        )
+    }
+
+    public static func uncategorizedCount(_ db: SQLiteConnection) throws -> Int {
+        Int(try db.scalarInt("SELECT COUNT(*) FROM records r WHERE \(uncategorizedFilter)"))
+    }
+
+    /// 还没分类、写了交易对方的流水：给一个对方选了分类后，同一个对方的这些也一起归类
+    public static func uncategorizedWithCounterparty(_ db: SQLiteConnection) throws -> [LedgerRecord] {
+        try db.query(
+            "SELECT \(columns) FROM records r WHERE r.status = 'posted' AND r.category_id IS NULL AND r.counterparty IS NOT NULL",
+            [], map
+        )
+    }
+
+    /// 没确认对方、写了交易对方的转账：确认一个对方是自己后，同一个对方的这些也一起确认
+    public static func unconfirmedTransferRecords(_ db: SQLiteConnection) throws -> [LedgerRecord] {
+        try db.query("SELECT \(columns) FROM records r WHERE \(unconfirmedTransferFilter) AND r.counterparty IS NOT NULL", [], map)
+    }
+
+    public static func setOrderGroup(_ db: SQLiteConnection, ids: [String], group: String) throws {
+        for id in ids { try db.run("UPDATE records SET order_group = ? WHERE id = ?", [group, id]) }
+    }
+
+    public static func clearOrderGroup(_ db: SQLiteConnection, group: String) throws {
+        try db.run("UPDATE records SET order_group = NULL WHERE order_group = ?", [group])
+    }
+
+    /// 同一单的几笔，按时间先后
+    public static func inOrderGroup(_ db: SQLiteConnection, groups: [String]) throws -> [RecordRow] {
+        guard !groups.isEmpty else { return [] }
+        let placeholders = groups.map { _ in "?" }.joined(separator: ", ")
+        return try db.query(
+            "SELECT \(rowColumns) \(rowFrom) WHERE r.order_group IN (\(placeholders)) ORDER BY r.effective_at, r.id",
+            groups.map { $0 as SQLBindable }, mapRow
+        )
+    }
+
+    /// 关联到这一笔的退款
+    public static func refunds(_ db: SQLiteConnection, of recordID: String) throws -> [RecordRow] {
+        try db.query("SELECT \(rowColumns) \(rowFrom) WHERE r.related_record_id = ? ORDER BY r.effective_at", [recordID], mapRow)
+    }
+
+    /// 同一条通知拆出的手续费
+    public static func splitFee(_ db: SQLiteConnection, of record: LedgerRecord) throws -> RecordRow? {
+        guard record.partIndex % 2 == 0 else { return nil }
+        return try db.queryOne(
+            "SELECT \(rowColumns) \(rowFrom) WHERE r.ingest_id = ? AND r.part_index = ? AND r.kind = 'fee'",
+            [record.ingestID, record.partIndex + 1], mapRow
+        )
+    }
+
+    /// 时间范围内已入账的流水（手动记账查重、合成一单的候选）
+    public static func postedRows(_ db: SQLiteConnection, from: Date, to: Date, limit: Int = 200) throws -> [RecordRow] {
+        try db.query(
+            "SELECT \(rowColumns) \(rowFrom) WHERE r.status = 'posted' AND r.effective_at >= ? AND r.effective_at <= ? ORDER BY r.effective_at DESC LIMIT ?",
+            [from, to, limit], mapRow
+        )
     }
 
     public static func clearTransferGroup(_ db: SQLiteConnection, group: String) throws {
@@ -242,7 +357,7 @@ public enum RecordDAO {
     }
 
     public static func findRow(_ db: SQLiteConnection, id: String) throws -> RecordRow? {
-        try db.queryOne("SELECT \(rowColumns) FROM records r JOIN accounts a ON a.id = r.account_id WHERE r.id = ?", [id], mapRow)
+        try db.queryOne("SELECT \(rowColumns) \(rowFrom) WHERE r.id = ?", [id], mapRow)
     }
 
     /// 首页：全部账户流水，按系统时间倒序，键集分页。
@@ -251,10 +366,24 @@ public enum RecordDAO {
 
     public static func unconfirmedTransfers(_ db: SQLiteConnection, limit: Int = 100) throws -> [RecordRow] {
         try db.query(
-            "SELECT \(rowColumns) FROM records r JOIN accounts a ON a.id = r.account_id WHERE \(unconfirmedTransferFilter) ORDER BY r.effective_at DESC, r.id DESC LIMIT ?",
+            "SELECT \(rowColumns) \(rowFrom) WHERE \(unconfirmedTransferFilter) ORDER BY r.effective_at DESC, r.id DESC LIMIT ?",
             [limit], mapRow
         )
     }
+
+    /// 合成一单的几笔里，不是最晚那一笔的（首页只显示最晚那一笔，金额是整单的）
+    static let orderMemberHidden = """
+    (r.order_group IS NOT NULL AND EXISTS (SELECT 1 FROM records o WHERE o.order_group = r.order_group \
+    AND (o.effective_at > r.effective_at OR (o.effective_at = r.effective_at AND o.id > r.id))))
+    """
+    /// 配对的转帐里转入的那一边（首页只显示转出那边，写成「招行 → 工行」）
+    static let pairedInflowHidden = """
+    (r.transfer_group IS NOT NULL AND r.direction = 'inflow' AND EXISTS (SELECT 1 FROM records p WHERE p.transfer_group = r.transfer_group AND p.id <> r.id))
+    """
+    /// 同一条通知拆出的手续费（合到那一笔下面显示）
+    static let splitFeeHidden = """
+    (r.kind = 'fee' AND r.part_index % 2 = 1 AND EXISTS (SELECT 1 FROM records m WHERE m.ingest_id = r.ingest_id AND m.part_index = r.part_index - 1))
+    """
 
     public static func unconfirmedTransferCount(_ db: SQLiteConnection) throws -> Int {
         Int(try db.scalarInt("SELECT COUNT(*) FROM records r WHERE \(unconfirmedTransferFilter)"))
@@ -281,7 +410,7 @@ public enum RecordDAO {
         let whereClause = conditions.isEmpty ? "" : "WHERE " + conditions.joined(separator: " AND ")
         values.append(limit)
         return try db.query(
-            "SELECT \(rowColumns) FROM records r JOIN accounts a ON a.id = r.account_id \(whereClause) ORDER BY r.effective_at DESC, r.id DESC LIMIT ?",
+            "SELECT \(rowColumns) \(rowFrom) \(whereClause) ORDER BY r.effective_at DESC, r.id DESC LIMIT ?",
             values, mapRow
         )
     }
@@ -293,7 +422,7 @@ public enum RecordDAO {
     public static func count(_ db: SQLiteConnection, filter: RecordFilter) throws -> Int {
         let (conditions, values) = filterClauses(filter)
         let whereClause = conditions.isEmpty ? "" : "WHERE " + conditions.joined(separator: " AND ")
-        return Int(try db.scalarInt("SELECT COUNT(*) FROM records r JOIN accounts a ON a.id = r.account_id \(whereClause)", values))
+        return Int(try db.scalarInt("SELECT COUNT(*) \(rowFrom) \(whereClause)", values))
     }
 
     /// 账户持有这笔流水的币种（主币种或其他币种之一）
@@ -328,14 +457,41 @@ public enum RecordDAO {
             conditions.append("r.effective_at < ?")
             values.append(to)
         }
+        if let type = filter.entryType {
+            conditions.append("\(entryTypeSQL) = ?")
+            values.append(type.rawValue)
+        }
+        if let categoryID = filter.categoryID {
+            if categoryID == RecordFilter.uncategorized {
+                conditions.append("(r.category_id IS NULL AND \(entryTypeSQL) IN ('expense', 'income'))")
+            } else {
+                conditions.append("(r.category_id = ? OR r.category_id IN (SELECT id FROM categories WHERE parent_id = ?))")
+                values.append(categoryID)
+                values.append(categoryID)
+            }
+        }
+        if filter.feed {
+            conditions.append("r.status = 'posted'")
+            conditions.append("NOT \(pairedInflowHidden)")
+            conditions.append("NOT \(orderMemberHidden)")
+        }
+        if filter.mergeFees {
+            conditions.append("NOT \(splitFeeHidden)")
+        }
         for word in filter.text.split(whereSeparator: \.isWhitespace).map(String.init) {
             let pattern = "%" + escapeLike(word) + "%"
-            var any = ["r.counterparty", "r.note", "a.name", "a.bank_name", "a.last4"].map { "\($0) LIKE ? ESCAPE '\\'" }
+            var any = ["r.counterparty", "r.note", "a.name", "a.bank_name", "a.last4", "c.name", "cp.name", "pa.name", "pa.bank_name"]
+                .map { "\($0) LIKE ? ESCAPE '\\'" }
             values += Array(repeating: pattern as SQLBindable, count: any.count)
             let kinds = TransactionKind.allCases.filter { $0.displayName.contains(word) }
             if !kinds.isEmpty {
                 any.append("r.kind IN (\(kinds.map { _ in "?" }.joined(separator: ", ")))")
                 values += kinds.map(\.rawValue) as [SQLBindable]
+            }
+            let types = EntryType.allCases.filter { $0.displayName.contains(word) }
+            if !types.isEmpty {
+                any.append("\(entryTypeSQL) IN (\(types.map { _ in "?" }.joined(separator: ", ")))")
+                values += types.map(\.rawValue) as [SQLBindable]
             }
             for (exponent, minor) in amountMinors(word) {
                 let codes: [String]
@@ -504,9 +660,20 @@ public enum IngestDAO {
         )
     }
 
+    /// 手动记的一笔也记一条输入（流水要有来源），不写正文、不进接收日志
+    public static func insertManual(_ db: SQLiteConnection, id: String, receivedAt: Date, processedAt: Date) throws {
+        try db.run(
+            """
+            INSERT INTO ingests (id, fingerprint, source, received_at, processed_at, classification, outcome, detail, parser_version) \
+            VALUES (?, ?, ?, ?, ?, ?, ?, '', 0)
+            """,
+            [id, "manual|" + id, SourceKind.manual.rawValue, receivedAt, processedAt, MessageClassification.transaction.rawValue, IngestOutcome.recorded.rawValue]
+        )
+    }
+
     public static func recent(_ db: SQLiteConnection, limit: Int) throws -> [IngestLogEntry] {
         try db.query(
-            "SELECT id, source, sender, subject, received_at, processed_at, classification, outcome, detail, raw_text, bound_account_id FROM ingests ORDER BY processed_at DESC LIMIT ?",
+            "SELECT id, source, sender, subject, received_at, processed_at, classification, outcome, detail, raw_text, bound_account_id FROM ingests WHERE source <> 'manual' ORDER BY processed_at DESC LIMIT ?",
             [limit]
         ) { row in
             IngestLogEntry(
@@ -694,6 +861,95 @@ public enum RateDAO {
             table[code] = rate
         }
         return table
+    }
+}
+
+/// 分类：大类和小类（最多两层）。默认的那套由迁移写入，之后全由用户管理。
+public enum CategoryDAO {
+    static let columns = "id, type, parent_id, name, symbol, sort_order, hidden, auto_key, locked"
+
+    static func map(_ row: SQLiteConnection.Row) -> LedgerCategory {
+        LedgerCategory(
+            id: row.string(0), type: CategoryType(rawValue: row.string(1)) ?? .expense, parentID: row.optionalString(2),
+            name: row.string(3), symbol: row.string(4), sortOrder: Int(row.int(5)), hidden: row.bool(6),
+            autoKey: row.optionalString(7), locked: row.bool(8)
+        )
+    }
+
+    public static func all(_ db: SQLiteConnection) throws -> [LedgerCategory] {
+        try db.query("SELECT \(columns) FROM categories ORDER BY type, sort_order, id", [], map)
+    }
+
+    public static func find(_ db: SQLiteConnection, id: String) throws -> LedgerCategory? {
+        try db.queryOne("SELECT \(columns) FROM categories WHERE id = ?", [id], map)
+    }
+
+    public static func insert(_ db: SQLiteConnection, _ c: LedgerCategory, now: Date) throws {
+        try db.run(
+            "INSERT INTO categories (id, type, parent_id, name, symbol, sort_order, hidden, auto_key, locked, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [c.id, c.type.rawValue, c.parentID, c.name, c.symbol, c.sortOrder, c.hidden, c.autoKey, c.locked, now]
+        )
+    }
+
+    /// 同一层里排在最后的位置
+    public static func nextSortOrder(_ db: SQLiteConnection, type: CategoryType, parentID: String?) throws -> Int {
+        let sql = "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM categories WHERE type = ? AND " + (parentID == nil ? "parent_id IS NULL" : "parent_id = ?")
+        let values: [SQLBindable] = parentID.map { [type.rawValue, $0] } ?? [type.rawValue]
+        return Int(try db.scalarInt(sql, values))
+    }
+
+    @discardableResult
+    public static func update(_ db: SQLiteConnection, id: String, name: String, symbol: String) throws -> Bool {
+        try db.run("UPDATE categories SET name = ?, symbol = ? WHERE id = ?", [name, symbol, id]) > 0
+    }
+
+    public static func setHidden(_ db: SQLiteConnection, id: String, hidden: Bool) throws {
+        try db.run("UPDATE categories SET hidden = ? WHERE id = ?", [hidden, id])
+    }
+
+    public static func setParent(_ db: SQLiteConnection, id: String, parentID: String?, sortOrder: Int) throws {
+        try db.run("UPDATE categories SET parent_id = ?, sort_order = ? WHERE id = ?", [parentID, sortOrder, id])
+    }
+
+    public static func setSortOrder(_ db: SQLiteConnection, id: String, sortOrder: Int) throws {
+        try db.run("UPDATE categories SET sort_order = ? WHERE id = ?", [sortOrder, id])
+    }
+
+    public static func setAutoKey(_ db: SQLiteConnection, id: String, autoKey: String?) throws {
+        try db.run("UPDATE categories SET auto_key = ? WHERE id = ?", [autoKey, id])
+    }
+
+    public static func delete(_ db: SQLiteConnection, id: String) throws {
+        try db.run("DELETE FROM categories WHERE id = ?", [id])
+    }
+}
+
+/// 按交易对方记住的分类。键是「类型|对方」：类型为 expense / income，或 own（对方是自己的账户，转账不算收支）。
+public enum CounterpartyRuleDAO {
+    public static func categoryID(_ db: SQLiteConnection, key: String) throws -> String?? {
+        try db.queryOne("SELECT category_id FROM counterparty_rules WHERE key = ?", [key]) { $0.optionalString(0) }
+    }
+
+    public static func set(_ db: SQLiteConnection, key: String, categoryID: String?, at date: Date) throws {
+        try db.run(
+            "INSERT INTO counterparty_rules (key, category_id, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET category_id = excluded.category_id, updated_at = excluded.updated_at",
+            [key, categoryID, date]
+        )
+    }
+
+    public static func delete(_ db: SQLiteConnection, key: String) throws {
+        try db.run("DELETE FROM counterparty_rules WHERE key = ?", [key])
+    }
+
+    /// 分类删除或合并：记住这些分类的规则改成 `to`；`to` 为 nil 时删除这些规则
+    public static func reassign(_ db: SQLiteConnection, from ids: [String], to: String?) throws {
+        guard !ids.isEmpty else { return }
+        let placeholders = ids.map { _ in "?" }.joined(separator: ", ")
+        if let to {
+            try db.run("UPDATE counterparty_rules SET category_id = ? WHERE category_id IN (\(placeholders))", ([to] as [SQLBindable]) + ids.map { $0 as SQLBindable })
+        } else {
+            try db.run("DELETE FROM counterparty_rules WHERE category_id IN (\(placeholders))", ids.map { $0 as SQLBindable })
+        }
     }
 }
 

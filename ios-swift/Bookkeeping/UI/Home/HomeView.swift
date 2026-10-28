@@ -1,10 +1,11 @@
 import SwiftUI
 import BKModel
 
-/// 首页：本月概览 + 全部账户的资金流水（按日期分组，分页加载）。分组列表，不做下拉刷新（数据变了会自动更新）。
+/// 首页：本月概览 + 全部账户的流水（按日期分组，分页加载）。分组列表，不做下拉刷新（数据变了会自动更新）。
+/// 一笔钱只占一行：转帐两边合成一行，合成的一单只占一行，手续费写在那一笔下面；失败、冻结的不在首页（在卡片详情里）。
 ///
-/// 顶部一行（`HomeTopBar`）和资产页一样：左边大标题「日常记账」，右边圆形的玻璃搜索按钮（不用系统导航栏，系统的大标题和按钮不在同一行）。
-/// 点搜索按钮展开搜索框，标题的位置变成「全部 / 支出 / 收入」的下拉按钮；可以按交易对方、备注、金额、卡号尾号、银行查流水。
+/// 顶部一行（`HomeTopBar`）和资产页一样：左边大标题「日常记账」，右边「记一笔」和搜索两个圆形玻璃按钮（不用系统导航栏，系统的大标题和按钮不在同一行）。
+/// 点搜索按钮展开搜索框，标题的位置变成「全部 / 支出 / 收入 / 转帐」的下拉按钮；可以按备注、交易对方、分类、金额、卡号尾号、银行查流水。
 /// 删除流水在流水详情里。
 struct HomeView: View {
     let openPending: () -> Void
@@ -16,23 +17,19 @@ struct HomeView: View {
     /// 已经查过的条件：结果对应这些条件时才显示「没有结果」
     @State private var searched: SearchKey?
     @State private var loadingMore = false
+    @State private var adding = false
 
     enum SearchScope: Hashable, CaseIterable {
-        case all, outflow, inflow
+        case all, expense, income, transfer
 
-        var title: String {
-            switch self {
-            case .all: "全部"
-            case .outflow: "支出"
-            case .inflow: "收入"
-            }
-        }
+        var title: String { entryType?.displayName ?? "全部" }
 
-        var direction: FlowDirection? {
+        var entryType: EntryType? {
             switch self {
             case .all: nil
-            case .outflow: .outflow
-            case .inflow: .inflow
+            case .expense: .expense
+            case .income: .income
+            case .transfer: .transfer
             }
         }
     }
@@ -65,13 +62,14 @@ struct HomeView: View {
             // 顶部一行固定在上面，列表从它下面滚过时系统加上边缘的渐隐效果。
             // 和资产页的标题行一样高、一样的位置：44pt 高，离状态栏 2pt
             .safeAreaBar(edge: .top) {
-                HomeTopBar(query: $query, scope: $scope)
+                HomeTopBar(query: $query, scope: $scope, add: { adding = true })
                     .frame(height: HomeTopBarView.height)
                     .padding(.horizontal, AppLayout.cardInset)
                     .padding(.top, 2)
                     .padding(.bottom, 6)
             }
             .navigationDestination(for: String.self) { id in RecordDetailView(recordID: id) }
+            .sheet(isPresented: $adding) { AddRecordView() }
             .task(id: SearchKey(text: trimmedQuery, scope: scope, revision: store.revision)) {
                 await search(SearchKey(text: trimmedQuery, scope: scope, revision: store.revision))
             }
@@ -87,11 +85,11 @@ struct HomeView: View {
         } header: {
             Text(Self.monthTitle)
         }
-        if store.pendingCount + store.transferConfirmCount > 0 {
+        if store.pendingCount + store.uncategorizedCount > 0 {
             Section { pendingBanner }
         }
         if store.homeRows.isEmpty {
-            Section("资金流水") { emptyState }
+            Section("流水") { emptyState }
         } else {
             ForEach(Self.group(store.homeRows), id: \.day) { group in
                 Section(group.title) {
@@ -150,7 +148,7 @@ struct HomeView: View {
         // 边打字边查：停下来一会儿再查
         try? await Task.sleep(for: .milliseconds(250))
         guard !Task.isCancelled else { return }
-        let rows = await store.records(RecordFilter(direction: key.scope.direction, text: key.text), after: nil, limit: LedgerStore.pageSize)
+        let rows = await store.records(Self.searchFilter(key), after: nil, limit: LedgerStore.pageSize)
         guard !Task.isCancelled else { return }
         results = rows
         resultsHaveMore = rows.count == LedgerStore.pageSize
@@ -161,11 +159,16 @@ struct HomeView: View {
         guard resultsHaveMore, !loadingMore, let key = searched, let last = results.last else { return }
         loadingMore = true
         defer { loadingMore = false }
-        let page = await store.records(RecordFilter(direction: key.scope.direction, text: key.text), after: last, limit: LedgerStore.pageSize)
+        let page = await store.records(Self.searchFilter(key), after: last, limit: LedgerStore.pageSize)
         guard searched == key else { return }
         let known = Set(results.map(\.id))
         results += page.filter { !known.contains($0.id) }
         resultsHaveMore = page.count == LedgerStore.pageSize
+    }
+
+    /// 搜索也和首页一样：一笔钱一行
+    private static func searchFilter(_ key: SearchKey) -> RecordFilter {
+        RecordFilter(text: key.text, entryType: key.scope.entryType, feed: true, mergeFees: true)
     }
 
     // MARK: 概览
@@ -181,19 +184,19 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 0) {
             Text("本月支出").font(.subheadline).foregroundStyle(.secondary)
             if let main = currencies.first {
-                Text(Fmt.money(main.expenseMinor, main.currency))
+                // 支出减去退款
+                Text(Fmt.money(main.netExpenseMinor, main.currency))
                     .font(.system(.largeTitle, design: .rounded).weight(.bold))
                     .monospacedDigit()
                     .lineLimit(1).minimumScaleFactor(0.6)
                     .padding(.top, 2)
                 HStack(alignment: .top, spacing: 20) {
                     stat("本月收入", Fmt.money(main.incomeMinor, main.currency))
-                    stat("退款/冲正", Fmt.money(main.refundMinor, main.currency))
-                    stat("流水", "\(main.recordCount) 笔")
+                    stat("结余", Fmt.money(main.balanceMinor, main.currency))
                 }
                 .padding(.top, 12)
                 if currencies.count > 1 {
-                    Text(currencies.dropFirst().map { "\($0.currency.rawValue) 支出 \(Fmt.money($0.expenseMinor, $0.currency))" }.joined(separator: " · "))
+                    Text(currencies.dropFirst().map { "\($0.currency.rawValue) 支出 \(Fmt.money($0.netExpenseMinor, $0.currency))" }.joined(separator: " · "))
                         .font(.footnote).foregroundStyle(.secondary).padding(.top, 10)
                 }
             } else {
@@ -213,8 +216,8 @@ struct HomeView: View {
 
     private var pendingTitle: String {
         var parts: [String] = []
+        if store.uncategorizedCount > 0 { parts.append("\(store.uncategorizedCount) 笔待分类") }
         if store.pendingCount > 0 { parts.append("\(store.pendingCount) 条通知待处理") }
-        if store.transferConfirmCount > 0 { parts.append("\(store.transferConfirmCount) 笔转账待确认") }
         return parts.joined(separator: "，")
     }
 
@@ -236,7 +239,7 @@ struct HomeView: View {
         ContentUnavailableView {
             Label("还没有流水", systemImage: "list.bullet.rectangle")
         } description: {
-            Text("添加银行卡并设置自动记账后，流水会出现在这里。")
+            Text("设置自动记账后，银行卡的流水会出现在这里；现金、电子钱包点右上角的「+」记一笔。")
         }
     }
 

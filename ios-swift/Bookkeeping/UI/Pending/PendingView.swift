@@ -1,7 +1,9 @@
 import SwiftUI
 import BKModel
 
-/// 待处理：只能「确认系统给出的候选」或「忽略」，不能借此手动编辑金额、方向、时间。
+/// 待处理：上面是「待分类」——已经入账、还没分类的支出和收入，点一下分类就行（可以顺手写备注）；
+/// 没确认对方的转账在这里选「转给自己」（不算收支）或直接选分类（算转给别人）。
+/// 下面是「通知待处理」：只能「确认系统给出的候选」或「忽略」，不能借此手动编辑金额、方向、时间。
 /// 认不准的写法可以用这条通知「做成识别模板」，之后同样写法的通知按模板识别。
 /// 从卡片详情进入时只列出与这张卡有关的项（候选里有这张卡，或通知尾号与它相同）。
 struct PendingView: View {
@@ -9,7 +11,7 @@ struct PendingView: View {
     @Environment(LedgerStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var items: [PendingItem] = []
-    @State private var transfers: [RecordRow] = []
+    @State private var waiting: [RecordRow] = []
     @State private var log: [IngestLogEntry] = []
     @State private var loaded = false
     @State private var errorText: String?
@@ -21,15 +23,17 @@ struct PendingView: View {
                 if let errorText {
                     Text(errorText).foregroundStyle(.red).font(.footnote)
                 }
-                if !shownTransfers.isEmpty {
+                if !shownWaiting.isEmpty {
                     Section {
-                        ForEach(shownTransfers) { row in
-                            TransferConfirmCard(row: row) { party in
-                                await run { try await store.setTransferParty(recordID: row.id, party: party) }
+                        ForEach(shownWaiting) { row in
+                            UncategorizedCard(row: row) { categoryID, note in
+                                await run { try await store.setCategory(recordID: row.id, categoryID: categoryID, note: note) }
+                            } own: {
+                                await run { try await store.setTransferParty(recordID: row.id, party: .own) }
                             }
                         }
                     } header: {
-                        Text("转账待确认")
+                        Text("待分类")
                     }
                 }
                 Section {
@@ -37,7 +41,7 @@ struct PendingView: View {
                         Text(account == nil ? "没有待处理的通知" : "这张卡没有待处理的账单").foregroundStyle(.secondary)
                     }
                     ForEach(shown) { item in
-                        PendingItemCard(item: item, accounts: store.accounts) { accountID in
+                        PendingItemCard(item: item, accounts: store.accounts.filter(\.isCard)) { accountID in
                             await run { try await store.confirmPending(id: item.id, accountID: accountID) }
                         } ignore: {
                             await run { try await store.ignorePending(id: item.id) }
@@ -46,7 +50,7 @@ struct PendingView: View {
                         }
                     }
                 } header: {
-                    Text(account.map { $0.displayTitle } ?? "待处理")
+                    Text(account.map { "\($0.displayTitle) 的通知" } ?? "通知待处理")
                 }
                 if account == nil {
                     Section {
@@ -75,9 +79,9 @@ struct PendingView: View {
         }
     }
 
-    private var shownTransfers: [RecordRow] {
-        guard let account else { return transfers }
-        return transfers.filter { $0.record.accountID == account.id }
+    private var shownWaiting: [RecordRow] {
+        guard let account else { return waiting }
+        return waiting.filter { $0.record.accountID == account.id }
     }
 
     private var shown: [PendingItem] {
@@ -87,12 +91,12 @@ struct PendingView: View {
 
     static func belongs(_ item: PendingItem, to account: Account) -> Bool {
         if item.candidateAccountIDs.contains(account.id) { return true }
-        return item.candidateAccountIDs.isEmpty && item.draft?.cardTail == account.last4
+        return account.isCard && item.candidateAccountIDs.isEmpty && item.draft?.cardTail == account.last4
     }
 
     private func reload() async {
         items = await store.pendingItems()
-        transfers = await store.unconfirmedTransfers()
+        waiting = await store.uncategorized()
         log = await store.ingestLog()
         loaded = true
     }
@@ -108,36 +112,54 @@ struct PendingView: View {
     }
 }
 
-/// 没配对到自己另一张卡的转账：问对方是不是自己的账户。已经照常入账，这里只决定算不算收支。
-private struct TransferConfirmCard: View {
+/// 一笔待分类：金额、对方、账户、时间；可以先写备注，再点分类。
+/// 没确认对方的转账多一个「转给自己的账户」：算转帐，不算收支（选了分类就是转给别人）
+private struct UncategorizedCard: View {
     let row: RecordRow
-    let choose: (TransferParty) async -> Void
+    let choose: (String, String?) async -> Void
+    let own: () async -> Void
+
+    @State private var note = ""
+    @State private var busy = false
 
     var body: some View {
         let r = row.record
-        let outflow = r.direction == .outflow
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("\(row.bankName) ·\(row.last4)").font(.subheadline.weight(.semibold))
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.title).font(.headline).lineLimit(1)
+                    Text("\(Fmt.dateTime(r.effectiveAt)) · \(row.account.text)").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                }
                 Spacer()
-                Text(Fmt.dateTime(r.effectiveAt)).font(.caption).foregroundStyle(.secondary)
+                Text(row.amountText(inAccount: false))
+                    .font(.headline).monospacedDigit()
+                    .foregroundStyle(row.amountColor(inAccount: false))
             }
-            Text([r.kind.displayName, Fmt.money(r.amountMinor, r.currency), r.counterparty].compactMap { $0 }.joined(separator: " · "))
-                .font(.footnote)
-            Button {
-                Task { await choose(.own) }
-            } label: {
-                Label(outflow ? "转给自己的账户" : "来自自己的账户", systemImage: "arrow.left.arrow.right.circle")
+            TextField("备注（选填），比如买了什么", text: $note)
+                .textFieldStyle(.roundedBorder)
+            if r.needsTransferConfirmation {
+                Button {
+                    Task {
+                        busy = true
+                        await own()
+                        busy = false
+                    }
+                } label: {
+                    Label(r.direction == .outflow ? "转给自己的账户（不算支出）" : "来自自己的账户（不算收入）", systemImage: "arrow.left.arrow.right.circle")
+                }
+                .buttonStyle(.borderless)
             }
-            .buttonStyle(.borderless)
-            Button {
-                Task { await choose(.other) }
-            } label: {
-                Label(outflow ? "转给别人（算支出）" : "来自别人（算收入）", systemImage: "person.circle")
+            CategoryGrid(type: CategoryType(row.entryType)) { id in
+                Task {
+                    busy = true
+                    let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+                    await choose(id, trimmed.isEmpty ? nil : trimmed)
+                    busy = false
+                }
             }
-            .buttonStyle(.borderless)
         }
-        .padding(.vertical, 4)
+        .disabled(busy)
+        .padding(.vertical, 6)
     }
 }
 
@@ -171,7 +193,7 @@ private struct PendingItemCard: View {
                 // 通知里没认出尾号，或尾号对不上任何卡：选一张卡记入
                 Menu {
                     ForEach(accounts) { account in
-                        Button("\(account.bankName) ·\(account.last4)") { Task { await confirm(account.id) } }
+                        Button(account.displayTitle) { Task { await confirm(account.id) } }
                     }
                 } label: {
                     Label("选择账户记入", systemImage: "creditcard")
@@ -182,7 +204,7 @@ private struct PendingItemCard: View {
                     Button {
                         Task { await confirm(account.id) }
                     } label: {
-                        Label(item.reason == .possibleDuplicate ? "不是重复，记入 \(account.bankName) ·\(account.last4)" : "记入 \(account.bankName) ·\(account.last4)", systemImage: "checkmark.circle")
+                        Label(item.reason == .possibleDuplicate ? "不是重复，记入 \(account.displayTitle)" : "记入 \(account.displayTitle)", systemImage: "checkmark.circle")
                     }
                     .buttonStyle(.borderless)
                 }

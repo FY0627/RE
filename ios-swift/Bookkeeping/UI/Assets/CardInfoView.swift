@@ -3,9 +3,11 @@ import UIKit
 import BKModel
 import BKBackend
 
-/// 卡片信息：银行、卡类型、币种、每个币种的余额和初始余额、完整卡号（选填，默认遮住）、账号。
-/// 编辑时可以改账户名称、卡类型、主币种、多币种账户的其他币种、每个币种的初始余额、卡号和账号（银行和尾号不能改）；
+/// 卡片信息：银行、卡类型、币种、每个币种的余额和校准余额、完整卡号（选填，默认遮住）、账号。
+/// 编辑时可以改账户名称、卡类型、主币种、多币种账户的其他币种、校准余额、卡号和账号（银行和尾号不能改）；
 /// 也可以停用 / 启用这张卡。
+/// 校准余额（参考 MOZE 的余额调整）：App 里的余额和实际对不上时，填「现在」实际有多少，之后的流水从这里接着算。
+/// 放在这里不显眼的地方，平时用不到。现金、电子钱包没有银行和卡号。
 struct CardInfoView: View {
     let accountID: String
 
@@ -41,35 +43,37 @@ struct CardInfoView: View {
                 infoFields(account)
             }
 
-            Section {
-                if editing {
-                    TextField("完整卡号（选填）", text: $number)
-                        .keyboardType(.numberPad)
-                        .font(.body.monospacedDigit())
-                        .onChange(of: number) { _, value in
-                            let digits = String(value.filter { $0.isASCII && $0.isNumber }.prefix(19))
-                            if digits != value { number = digits }
+            if account.isCard {
+                Section {
+                    if editing {
+                        TextField("完整卡号（选填）", text: $number)
+                            .keyboardType(.numberPad)
+                            .font(.body.monospacedDigit())
+                            .onChange(of: number) { _, value in
+                                let digits = String(value.filter { $0.isASCII && $0.isNumber }.prefix(19))
+                                if digits != value { number = digits }
+                            }
+                    } else if let full = account.cardNumber {
+                        numberRow(full)
+                        Button(copied ? "已复制" : "复制卡号", systemImage: copied ? "checkmark" : "doc.on.doc") {
+                            UIPasteboard.general.string = full
+                            copied = true
                         }
-                } else if let full = account.cardNumber {
-                    numberRow(full)
-                    Button(copied ? "已复制" : "复制卡号", systemImage: copied ? "checkmark" : "doc.on.doc") {
-                        UIPasteboard.general.string = full
-                        copied = true
+                    } else {
+                        LabeledContent("卡号", value: "尾号 \(account.last4)")
                     }
-                } else {
-                    LabeledContent("卡号", value: "尾号 \(account.last4)")
+                    // 只写账号不写卡号尾号的通知（例如转账邮件）靠账号匹配；可以直接粘贴通知里打码的账号
+                    if editing {
+                        TextField("账号（选填，可粘贴打码的账号）", text: $accountNumber)
+                            .font(.body.monospacedDigit())
+                            .textInputAutocapitalization(.characters)
+                            .autocorrectionDisabled()
+                    } else if let value = account.accountNumber {
+                        LabeledContent("账号") { Text(value).monospacedDigit() }
+                    }
+                } header: {
+                    Text("卡号")
                 }
-                // 只写账号不写卡号尾号的通知（例如转账邮件）靠账号匹配；可以直接粘贴通知里打码的账号
-                if editing {
-                    TextField("账号（选填，可粘贴打码的账号）", text: $accountNumber)
-                        .font(.body.monospacedDigit())
-                        .textInputAutocapitalization(.characters)
-                        .autocorrectionDisabled()
-                } else if let value = account.accountNumber {
-                    LabeledContent("账号") { Text(value).monospacedDigit() }
-                }
-            } header: {
-                Text("卡号")
             }
 
             if let errorText {
@@ -124,8 +128,10 @@ struct CardInfoView: View {
     private func infoFields(_ account: Account) -> some View {
         Section {
             LabeledContent("账户名称", value: account.name)
-            LabeledContent("银行", value: account.bankName)
-            LabeledContent("卡类型", value: account.cardType.displayName)
+            if account.isCard {
+                LabeledContent("银行", value: account.bankName)
+            }
+            LabeledContent(account.isCard ? "卡类型" : "类型", value: account.cardType.displayName)
             LabeledContent(account.isMultiCurrency ? "主币种" : "币种", value: Self.title(account.currency))
             if account.isMultiCurrency {
                 LabeledContent("其他币种", value: account.extraCurrencies.map(\.chineseName).joined(separator: "、"))
@@ -139,7 +145,7 @@ struct CardInfoView: View {
                 LabeledContent("\(prefix)余额") {
                     Text(summary?.ledgerDerivedMinor.map { Fmt.money($0, code) } ?? "未知").monospacedDigit()
                 }
-                LabeledContent("\(prefix)初始余额") {
+                LabeledContent("\(prefix)上次校准") {
                     Text(account.openingBalance(code).map { Fmt.money($0.amountMinor, code) } ?? "未填写").monospacedDigit()
                 }
                 if let unconverted = summary?.unconvertedCount, unconverted > 0 {
@@ -155,17 +161,21 @@ struct CardInfoView: View {
     private func editFields(_ account: Account) -> some View {
         Section {
             TextField("账户名称", text: $name)
-            LabeledContent("银行", value: account.bankName)
-            Picker("卡类型", selection: $cardType) {
-                ForEach(CardType.allCases, id: \.self) { Text($0.displayName).tag($0) }
+            if account.isCard {
+                LabeledContent("银行", value: account.bankName)
+                Picker("卡类型", selection: $cardType) {
+                    ForEach(CardType.cardCases, id: \.self) { Text($0.displayName).tag($0) }
+                }
             }
         }
-        Section("币种与初始余额") {
+        Section {
             CurrencyLink(title: multiCurrency ? "主币种" : "币种", currency: primaryCurrency)
             if let currency {
-                OpeningBalanceRow(currency: currency, label: multiCurrency ? currency.chineseName : nil, input: balance(currency))
+                OpeningBalanceRow(currency: currency, label: multiCurrency ? currency.chineseName : nil, input: balance(currency), placeholderTitle: "校准余额")
             }
-            Toggle("多币种账户", isOn: $multiCurrency)
+            if account.isCard {
+                Toggle("多币种账户", isOn: $multiCurrency)
+            }
             if multiCurrency {
                 NavigationLink {
                     CurrencyPicker(title: "其他币种", selection: $extras, multiple: true, fixed: currency)
@@ -173,9 +183,13 @@ struct CardInfoView: View {
                     LabeledContent("其他币种", value: heldExtras.isEmpty ? "请选择" : heldExtras.map(\.chineseName).joined(separator: "、"))
                 }
                 ForEach(heldExtras, id: \.self) { code in
-                    OpeningBalanceRow(currency: code, label: code.chineseName, input: balance(code))
+                    OpeningBalanceRow(currency: code, label: code.chineseName, input: balance(code), placeholderTitle: "校准余额")
                 }
             }
+        } header: {
+            Text("币种与校准余额")
+        } footer: {
+            Text("余额对不上时，填现在实际有多少。")
         }
     }
 
@@ -264,7 +278,7 @@ struct CardInfoView: View {
             let entered: Int64?
             switch value {
             case .invalid:
-                errorText = "\(code.chineseName)的初始余额格式不对，例如 1234.56"
+                errorText = "\(code.chineseName)的校准余额格式不对，例如 1234.56"
                 return
             case .empty: entered = nil
             case .valid(let minor): entered = minor

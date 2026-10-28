@@ -5,7 +5,7 @@
 /// - 每个迁移在一个事务里执行，失败整体回滚，版本号不变；
 /// - 每次修改表结构都要在 `DatabaseTests` 里补迁移测试。
 public enum Migrations {
-    public static let latestVersion = 7
+    public static let latestVersion = 8
 
     static let steps: [(version: Int, sql: String)] = [
         (1, """
@@ -179,7 +179,102 @@ public enum Migrations {
             PRIMARY KEY (day, currency)
         );
         """),
+        // 参考 MOZE 的基础记账：用户自己定的分类（最多两层，默认一套只是起点）；流水的分类、合成一单；
+        // 按交易对方记住的分类（`kind|对方`，kind 为 expense / income / own）。
+        // 已有流水里能直接归类的（手续费、扣息、工资、利息）补上分类，其余是待分类
+        (8, """
+        CREATE TABLE categories (
+            id TEXT PRIMARY KEY NOT NULL,
+            type TEXT NOT NULL CHECK (type IN ('expense', 'income', 'transfer')),
+            parent_id TEXT REFERENCES categories(id),
+            name TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            sort_order INTEGER NOT NULL,
+            hidden INTEGER NOT NULL DEFAULT 0,
+            auto_key TEXT UNIQUE,
+            locked INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX categories_parent ON categories(type, parent_id, sort_order);
+        \(defaultCategoriesSQL)
+        ALTER TABLE records ADD COLUMN category_id TEXT;
+        ALTER TABLE records ADD COLUMN order_group TEXT;
+        CREATE INDEX records_category ON records(category_id);
+        CREATE INDEX records_ingest ON records(ingest_id, part_index);
+        CREATE INDEX records_related ON records(related_record_id);
+        CREATE INDEX records_transfer_group ON records(transfer_group);
+        CREATE INDEX records_order_group ON records(order_group);
+        CREATE TABLE counterparty_rules (
+            key TEXT PRIMARY KEY NOT NULL,
+            category_id TEXT,
+            updated_at REAL NOT NULL
+        );
+        UPDATE records SET category_id = 'sys.fee' WHERE kind = 'fee' AND direction = 'outflow';
+        UPDATE records SET category_id = 'sys.interest' WHERE kind = 'interestCharge' AND direction = 'outflow';
+        UPDATE records SET category_id = 'in.salary' WHERE kind = 'salary' AND direction = 'inflow';
+        UPDATE records SET category_id = 'in.interest' WHERE kind = 'interestIncome' AND direction = 'inflow';
+        """),
     ]
+
+    /// 第一次打开时的默认分类（迁移 8 写入，之后不再改这里）。
+    /// 支出两层、收入一层；手续费、扣息是系统分类，转帐的三个分类按交易性质自动对应，这些都不能删除
+    static let defaultCategoriesSQL: String = {
+        // (id, type, parent, name, symbol, autoKey, locked)
+        let seeds: [(String, String, String?, String, String, String?, Bool)] = [
+            ("ex.food", "expense", nil, "饮食", "fork.knife", "food", false),
+            ("ex.food.breakfast", "expense", "ex.food", "早餐", "sunrise", "food.breakfast", false),
+            ("ex.food.lunch", "expense", "ex.food", "午餐", "sun.max", "food.lunch", false),
+            ("ex.food.dinner", "expense", "ex.food", "晚餐", "moon.stars", "food.dinner", false),
+            ("ex.food.snack", "expense", "ex.food", "饮料零食", "cup.and.saucer", nil, false),
+            ("ex.clothes", "expense", nil, "衣着", "tshirt", nil, false),
+            ("ex.clothes.wear", "expense", "ex.clothes", "服装", "tshirt", nil, false),
+            ("ex.clothes.bag", "expense", "ex.clothes", "鞋包", "bag", nil, false),
+            ("ex.home", "expense", nil, "居住", "house", nil, false),
+            ("ex.home.rent", "expense", "ex.home", "房租", "key", nil, false),
+            ("ex.home.utility", "expense", "ex.home", "水电燃气", "bolt", nil, false),
+            ("ex.home.phone", "expense", "ex.home", "话费网费", "wifi", nil, false),
+            ("ex.traffic", "expense", nil, "交通", "car", nil, false),
+            ("ex.traffic.transit", "expense", "ex.traffic", "公交地铁", "tram.fill", nil, false),
+            ("ex.traffic.taxi", "expense", "ex.traffic", "打车", "car.fill", nil, false),
+            ("ex.traffic.fuel", "expense", "ex.traffic", "加油停车", "fuelpump", nil, false),
+            ("ex.traffic.trip", "expense", "ex.traffic", "火车飞机", "airplane", nil, false),
+            ("ex.study", "expense", nil, "学习", "graduationcap", nil, false),
+            ("ex.study.book", "expense", "ex.study", "书", "book.closed", nil, false),
+            ("ex.study.course", "expense", "ex.study", "课程", "pencil", nil, false),
+            ("ex.fun", "expense", nil, "娱乐", "gamecontroller", nil, false),
+            ("ex.fun.media", "expense", "ex.fun", "游戏电影", "film", nil, false),
+            ("ex.fun.travel", "expense", "ex.fun", "旅游", "suitcase", nil, false),
+            ("ex.fun.sport", "expense", "ex.fun", "运动", "figure.run", nil, false),
+            ("ex.daily", "expense", nil, "日用品", "basket", nil, false),
+            ("ex.medical", "expense", nil, "医疗", "cross.case", nil, false),
+            ("ex.gift", "expense", nil, "人情", "gift", nil, false),
+            ("ex.gift.redpacket", "expense", "ex.gift", "红包", "envelope", nil, false),
+            ("ex.gift.present", "expense", "ex.gift", "礼物", "gift", nil, false),
+            ("ex.gift.treat", "expense", "ex.gift", "请客", "person.2", nil, false),
+            ("ex.other", "expense", nil, "其他", "ellipsis.circle", nil, false),
+            ("sys.fee", "expense", nil, "手续费", "doc.text", "fee", true),
+            ("sys.interest", "expense", nil, "扣息", "percent", "interest", true),
+            ("in.salary", "income", nil, "工资", "briefcase", "salary", false),
+            ("in.bonus", "income", nil, "奖金", "star", nil, false),
+            ("in.interest", "income", nil, "利息理财", "chart.line.uptrend.xyaxis", "interestIncome", false),
+            ("in.gift", "income", nil, "红包和转来的钱", "envelope", nil, false),
+            ("in.other", "income", nil, "其他", "ellipsis.circle", nil, false),
+            ("tr.own", "transfer", nil, "转帐", "arrow.left.arrow.right", "transfer.own", true),
+            ("tr.repayment", "transfer", nil, "还信用卡", "creditcard", "transfer.repayment", true),
+            ("tr.cash", "transfer", nil, "存取现金", "banknote", "transfer.cash", true),
+        ]
+        var order: [String: Int] = [:]
+        return seeds.map { id, type, parent, name, symbol, autoKey, locked in
+            let group = type + "|" + (parent ?? "")
+            let sort = order[group, default: 0]
+            order[group] = sort + 1
+            let values = [
+                "'\(id)'", "'\(type)'", parent.map { "'\($0)'" } ?? "NULL", "'\(name)'", "'\(symbol)'", String(sort),
+                autoKey.map { "'\($0)'" } ?? "NULL", locked ? "1" : "0",
+            ]
+            return "INSERT INTO categories (id, type, parent_id, name, symbol, sort_order, auto_key, locked, created_at) VALUES (\(values.joined(separator: ", ")), 0);"
+        }.joined(separator: "\n")
+    }()
 
     public static func migrate(_ connection: SQLiteConnection) throws {
         let current = connection.userVersion

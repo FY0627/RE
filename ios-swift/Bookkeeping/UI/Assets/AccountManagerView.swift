@@ -51,7 +51,7 @@ struct AccountManagerView: View {
                 .grayscale(on ? 0 : 1)
             VStack(alignment: .leading, spacing: 2) {
                 Text(account.name).lineLimit(1)
-                Text("\(account.bankName) · \(account.cardType.displayName) · \(account.last4)")
+                Text(account.isCard ? "\(account.bankName) · \(account.cardType.displayName) · \(account.last4)" : account.cardType.displayName)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

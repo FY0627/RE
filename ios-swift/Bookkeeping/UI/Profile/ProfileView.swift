@@ -61,6 +61,14 @@ struct ProfileView: View {
                     Text("币种与汇率")
                 }
 
+                Section("记账") {
+                    NavigationLink {
+                        CategoryManagerView()
+                    } label: {
+                        Label("分类", systemImage: "square.grid.2x2")
+                    }
+                }
+
                 Section("自动记账") {
                     NavigationLink {
                         AutoSetupGuideView()
@@ -171,8 +179,8 @@ struct AutomationStatusView: View {
     var body: some View {
         List {
             Section("各卡最近一次成功接收") {
-                if store.accounts.isEmpty { Text("还没有添加银行卡").foregroundStyle(.secondary) }
-                ForEach(store.accounts) { account in
+                if !store.accounts.contains(where: \.isCard) { Text("还没有添加银行卡").foregroundStyle(.secondary) }
+                ForEach(store.accounts.filter(\.isCard)) { account in
                     let status = store.automation[account.id]
                     VStack(alignment: .leading, spacing: 2) {
                         Text("\(account.bankName) ·\(account.last4)")
