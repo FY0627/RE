@@ -139,7 +139,8 @@ final class HomeTopBarView: UIView, UITextFieldDelegate {
         }
         if window != nil {
             GlassControls.morph { self.applyLayout() }
-            GlassControls.fade(delay: searching ? 0.06 : 0) { self.applyContent() }
+            let searchContent: [UIView] = [scopeButton, closeButton, textField]
+            GlassControls.swapContent(show: searching ? searchContent : [titleLabel], hide: searching ? [titleLabel] : searchContent)
         } else {
             applyLayout()
             applyContent()

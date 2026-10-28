@@ -63,7 +63,7 @@ docker run --rm -v "<仓库>/ios-swift/Packages/BKCore:/pkg" -w /pkg bk-swift sw
   收到后面的卡的缩放比例 `behindScale`。卡片不做 3D 倾斜（会让卡片之间的上下层错乱）。
 - `UI/Assets/WalletTopBar.swift`：顶部按钮，UIKit 液态玻璃（同一个玻璃容器里的三块玻璃，共用部分在 `UI/Common/GlassControls.swift`）。
   卡包里「+」和「更多」合成一个胶囊；打开详情时「+」那一半像水滴一样分出来、弹一下，变成选时间段的胶囊，左边凝结出返回按钮；
-  返回时并回去。停下来时玻璃之间的空隙比融合距离大，中间不会连着带尖角的细颈。
+  返回时并回去。移动途中两块玻璃之间拉出水滴一样的细颈，停下时正好断开（融合距离和停下的间距差不多大）。
 - `UI/Assets/AssetsView.swift`：SwiftUI 外壳，标签栏显隐、弹出页面、标题区和净资产卡。
 - 卡面仍是 SwiftUI 的 `WalletCardView`，阴影只画在一个圆角矩形上；转场时卡面不重新计算，只是整张移动。
 

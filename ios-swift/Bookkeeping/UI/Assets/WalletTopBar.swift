@@ -81,7 +81,8 @@ final class WalletTopBar: UIView {
             self.applyLayout()
             self.applyGlass()
         }
-        GlassControls.fade(delay: detail ? 0.06 : 0) { self.applyContent() }
+        let detailContent: [UIView] = [backButton, periodButton]
+        GlassControls.swapContent(show: detail ? detailContent : [addButton], hide: detail ? [addButton] : detailContent)
     }
 
     /// 时间段胶囊上写的字；宽度跟着变

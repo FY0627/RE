@@ -2,15 +2,20 @@ import UIKit
 
 /// UIKit 液态玻璃按钮的共用部分：资产页（`WalletTopBar`）和首页（`HomeTopBarView`）顶部那一行。
 ///
-/// 同一个玻璃容器（`UIGlassContainerEffect`）里的玻璃重叠或相距不到 `mergeSpacing` 时画成一整块，分开时像水滴一样拉开。
-/// 停下来时相邻的玻璃隔开 `gap`，比 `mergeSpacing` 大：停在融合距离以内时，两块玻璃之间会连着一道带尖角的细颈。
+/// 同一个玻璃容器（`UIGlassContainerEffect`）里的玻璃重叠时画成一整块；相距不到 `mergeSpacing` 时中间连着一道细颈，
+/// 越近越粗，像两滴水粘在一起。按钮分开 / 合上时一路移动，细颈从粗拉到细再断开（合上时反过来）。
+///
+/// 和 Apple 的做法一样，停下来的间距 `gap` 和融合距离差不多大，只稍大一点：
+/// - 融合距离太小（第一版 8pt）：细颈一闪而过，看起来像一个按钮从另一个按钮下面滑出来；
+/// - 停下时还在融合距离以内（更早一版间距 10pt、融合距离 16pt）：中间一直连着一道带尖角的细颈。
+///
 /// 位置和大小用 UIKit 的弹簧动画，交给 Core Animation，由系统渲染进程播放，主线程忙也不掉帧。
 @MainActor
 enum GlassControls {
     /// 和系统导航栏按钮一样：44pt 高
     static let size: CGFloat = 44
-    static let mergeSpacing: CGFloat = 8
-    static let gap: CGFloat = 12
+    static let mergeSpacing: CGFloat = 22
+    static let gap: CGFloat = 24
 
     static func container() -> UIVisualEffectView {
         let effect = UIGlassContainerEffect()
@@ -80,9 +85,16 @@ enum GlassControls {
         }
     }
 
-    /// 胶囊里的内容换成另一个：短一点的淡入淡出
-    static func fade(delay: Double = 0, _ changes: @escaping () -> Void) {
-        UIView.animate(withDuration: 0.2, delay: delay, options: [.beginFromCurrentState, .allowUserInteraction], animations: changes)
+    /// 玻璃里的文字和图标：要消失的马上淡出；要出现的等玻璃差不多分开了再淡入，
+    /// 不会在别的玻璃上面滑过去（那样看起来像两个按钮叠在一起）
+    static func swapContent(show: [UIView], hide: [UIView]) {
+        let options: UIView.AnimationOptions = [.beginFromCurrentState, .allowUserInteraction]
+        UIView.animate(withDuration: 0.12, delay: 0, options: options) {
+            for view in hide { view.alpha = 0 }
+        }
+        UIView.animate(withDuration: 0.2, delay: 0.22, options: options) {
+            for view in show { view.alpha = 1 }
+        }
     }
 
     /// 摆放可能带着缩放的视图：用 bounds 和 center，不直接设 frame
