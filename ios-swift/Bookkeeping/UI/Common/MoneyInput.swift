@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import BKBackend
 import BKModel
 
@@ -31,18 +32,29 @@ enum MoneyInput {
 struct BalanceInput: Hashable {
     var text = ""
     var isDebt = false
+    /// 已经填过的初始余额（卡片信息里编辑时）：输入框空着，原来的金额灰色显示在框里；不填就保持原来的金额
+    var existing: Int64?
 
     func value(_ currency: CurrencyCode) -> MoneyInput.Value {
-        MoneyInput.parse(text, negative: isDebt, currency: currency)
+        if let existing, text.allSatisfy(\.isWhitespace) {
+            let magnitude = existing == .min ? Int64.max : abs(existing)
+            return .valid(isDebt ? -magnitude : magnitude)
+        }
+        return MoneyInput.parse(text, negative: isDebt, currency: currency)
     }
 
-    /// 已经填过的初始余额
-    static func existing(_ minor: Int64, currency: CurrencyCode) -> BalanceInput {
-        BalanceInput(text: MoneyInput.editingText(minor, currency: currency), isDebt: minor < 0)
+    /// 输入框里灰色的提示：原来的金额，没填过时提示选填
+    func placeholder(_ currency: CurrencyCode) -> String {
+        guard let existing else { return "初始余额（选填）" }
+        return MoneyFormat.plain(existing == .min ? 0 : abs(existing), exponent: currency.minorUnitExponent)
+    }
+
+    static func existing(_ minor: Int64) -> BalanceInput {
+        BalanceInput(isDebt: minor < 0, existing: minor)
     }
 }
 
-/// 一个币种的初始余额（选填）：左边下拉选「余额 / 欠款」（和卡类型一样的下拉框），右边填金额。
+/// 一个币种的初始余额（选填）：左边下拉选「余额 / 欠款」，右边填金额。
 /// 放在选好的币种下面，添加银行卡和卡片信息共用。
 struct OpeningBalanceRow: View {
     let currency: CurrencyCode
@@ -55,14 +67,26 @@ struct OpeningBalanceRow: View {
             if let label {
                 Text(label).lineLimit(1)
             }
-            Picker("余额类型", selection: $input.isDebt) {
-                Text("余额").tag(false)
-                Text("欠款").tag(true)
+            // 只是文字加箭头，不用系统下拉框的按钮外框（那样这一行会变高）
+            Menu {
+                Picker("余额类型", selection: $input.isDebt) {
+                    Text("余额").tag(false)
+                    Text("欠款").tag(true)
+                }
+            } label: {
+                HStack(spacing: 3) {
+                    Text(input.isDebt ? "欠款" : "余额")
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color.secondary)
+                }
+                .foregroundStyle(Color.primary)
             }
-            .pickerStyle(.menu)
-            .labelsHidden()
+            .menuStyle(.button)
+            .buttonStyle(.borderless)
             .fixedSize()
-            TextField("初始余额（选填）", text: $input.text)
+            .accessibilityLabel(input.isDebt ? "欠款" : "余额")
+            TextField(input.placeholder(currency), text: $input.text)
                 .keyboardType(.decimalPad)
                 .multilineTextAlignment(.trailing)
                 .font(.body.monospacedDigit())
@@ -71,5 +95,20 @@ struct OpeningBalanceRow: View {
         if case .invalid = input.value(currency) {
             Text("金额格式不对，例如 1234.56").font(.footnote).foregroundStyle(.red)
         }
+    }
+}
+
+extension View {
+    /// 数字键盘没有收起键：键盘上方右边放一个收起按钮，往下拖动表单也会收起
+    func keyboardDismissible() -> some View {
+        scrollDismissesKeyboard(.interactively)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("收起键盘", systemImage: "keyboard.chevron.compact.down") {
+                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    }
+                }
+            }
     }
 }

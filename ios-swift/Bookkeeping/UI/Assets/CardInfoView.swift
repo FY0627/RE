@@ -87,6 +87,7 @@ struct CardInfoView: View {
                 }
             }
         }
+        .keyboardDismissible()
         .navigationTitle(account.displayTitle)
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: cardType) { old, new in
@@ -207,7 +208,7 @@ struct CardInfoView: View {
         extras = account.extraCurrencies
         var inputs: [CurrencyCode: BalanceInput] = [:]
         for opening in account.openingBalances {
-            inputs[opening.currency] = .existing(opening.amountMinor, currency: opening.currency)
+            inputs[opening.currency] = .existing(opening.amountMinor)
         }
         balances = inputs
         number = account.cardNumber ?? ""
@@ -256,7 +257,8 @@ struct CardInfoView: View {
     private func save(_ account: Account) async {
         guard let currency else { return }
         let held = [currency] + heldExtras
-        // 只有改过的初始余额才重新记（记为「现在」的余额）；没动的保持原来的时间点
+        // 只有改过的初始余额才重新记（记为「现在」的余额）；没动的保持原来的时间点。
+        // 输入框空着表示保持原来的金额，只换了余额 / 欠款就按原来的金额换方向
         var changes: [OpeningBalanceChange] = []
         for code in held {
             let value = balance(code).wrappedValue.value(code)

@@ -2,25 +2,25 @@ import SwiftUI
 import UIKit
 import BKModel
 
-/// 资产页交给卡包的操作。
+/// 资产页交给卡包的操作：弹出各个页面
 struct WalletActions {
-    /// 打开了一张卡（它的标识）或返回了卡包（nil）：资产页据此显示返回按钮、隐藏标签栏
+    /// 打开了一张卡（它的标识）或返回了卡包（nil）：资产页据此隐藏标签栏
     var selectionChanged: (String?) -> Void = { _ in }
     var addAccount: () -> Void = {}
+    /// 卡包状态的「更多」
+    var manageAccounts: () -> Void = {}
+    var openInfo: () -> Void = {}
+    var openFace: () -> Void = {}
     var openPending: () -> Void = {}
     var openRecord: (RecordRow) -> Void = { _ in }
     /// 流水的时间段选了「自定义…」
     var chooseCustomPeriod: () -> Void = {}
 }
 
-/// 资产页通过它让卡包返回（顶部的返回按钮），或换详情里流水的时间段（自定义时间的面板）。
+/// 资产页通过它换详情里流水的时间段（自定义时间的面板）。
 @MainActor
 final class WalletBridge {
     weak var controller: WalletController?
-
-    func close() {
-        controller?.close()
-    }
 
     func setPeriod(_ period: RecordPeriod) {
         controller?.setPeriod(period)
@@ -65,7 +65,8 @@ struct WalletPage: UIViewControllerRepresentable {
 /// - 打开 / 关闭时把卡片的模型位置直接改成终点，再加 Core Animation 的叠加动画（`CardMotion`），由系统渲染进程播放，
 ///   主线程读流水、生成列表行都不影响动画。动画途中滚动或再次点按，新的位移叠加上去，卡片从当前位置平滑转向；
 /// - 卡片不接收触摸。点按由下面的滚动区识别，再按卡片显示的位置（动画途中也是）找到点中的卡；
-///   拖动卡片就是拖动下面的滚动区，所以点开马上能滑，返回一开始卡包就能滑、能点。
+///   拖动卡片就是拖动下面的滚动区，所以点开马上能滑，返回一开始卡包就能滑、能点；
+/// - 顶部按钮（`WalletTopBar`）也是 UIKit 的液态玻璃，和卡片同时开始动画。
 final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     var actions = WalletActions()
 
@@ -73,10 +74,11 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
     private let rates: ExchangeRateStore
     private let detailModel: WalletDetailModel
 
-    // 从下到上：详情列表、卡包、卡片。详情打开时卡包不接收触摸，触摸落到下面的详情
+    // 从下到上：详情列表、卡包、卡片、顶部按钮。详情打开时卡包不接收触摸，触摸落到下面的详情
     private var detailList: WalletDetailList!
     private let stackScroll = UIScrollView()
     private let cardsView = UIView()
+    private let topBar = WalletTopBar()
     private var headerHost: UIHostingController<WalletHeader>!
     private var archivedTitleHost: UIHostingController<ArchivedPileTitle>!
     private var stackTap: UITapGestureRecognizer!
@@ -127,7 +129,6 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
         detailList.onScroll = { [weak self] in self?.detailScrolled() }
         detailList.onSelectRecord = { [weak self] row in self?.actions.openRecord(row) }
         detailList.onOpenPending = { [weak self] in self?.actions.openPending() }
-        detailList.onChooseCustomPeriod = { [weak self] in self?.actions.chooseCustomPeriod() }
         detailList.onActivateCard = { [weak self] in self?.close() }
 
         stackScroll.delegate = self
@@ -144,6 +145,13 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
         // 读屏用卡包滚动区里的代替元素（见 updateCardElements），这里的卡片视图不出现
         cardsView.accessibilityElementsHidden = true
         view.addSubview(cardsView)
+
+        view.addSubview(topBar)
+        topBar.onBack = { [weak self] in self?.close() }
+        topBar.onAdd = { [weak self] in self?.actions.addAccount() }
+        topBar.onManage = { [weak self] in self?.actions.manageAccounts() }
+        topBar.moreMenu = { [weak self] in self?.moreMenuItems() ?? [] }
+        topBar.periodMenu = { [weak self] in self?.periodMenuItems() ?? [] }
 
         stackTap = UITapGestureRecognizer(target: self, action: #selector(stackTapped(_:)))
         stackTap.delegate = self
@@ -285,6 +293,9 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
             laidOutWidth = bounds.width
             detailList.invalidateSizes()
         }
+        // 和资产页标题「资产」同一行：状态栏下面 2pt
+        let barFrame = CGRect(x: AppLayout.cardInset, y: safeTop + 2, width: bounds.width - 2 * AppLayout.cardInset, height: WalletTopBar.height)
+        if topBar.frame != barFrame { topBar.frame = barFrame }
         layoutStack()
     }
 
@@ -415,6 +426,8 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
         behindFollowsScroll = true
         dropDistance = view.bounds.height + max(0, -pileTop)
         detailList.open(account)
+        topBar.setPeriodTitle(detailModel.period.title, animated: false)
+        topBar.setDetail(true, animated: true)
         placeCards()
 
         let transition = CardMotion.transition(reduceMotion: reduceMotion)
@@ -449,9 +462,34 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
         }
     }
 
-    /// 详情里流水换一个时间段（自定义时间）
+    /// 详情里流水换一个时间段：顶部时间段胶囊的菜单，或自定义时间的面板
     func setPeriod(_ period: RecordPeriod) {
         detailList.setPeriod(period)
+        topBar.setPeriodTitle(detailModel.period.title, animated: true)
+    }
+
+    /// 顶部时间段胶囊的菜单：常用时间段，另起一组「自定义…」（选中时写自定义的日期）
+    private func periodMenuItems() -> [UIMenuElement] {
+        let current = detailModel.period
+        let presets: [UIMenuElement] = RecordPeriod.presets.map { period in
+            UIAction(title: period.title, state: period == current ? .on : .off) { [weak self] _ in self?.setPeriod(period) }
+        }
+        let custom = UIAction(title: current.isCustom ? current.title : "自定义…", state: current.isCustom ? .on : .off) { [weak self] _ in
+            self?.actions.chooseCustomPeriod()
+        }
+        return presets + [UIMenu(options: .displayInline, children: [custom])]
+    }
+
+    /// 详情里「更多」的菜单
+    private func moreMenuItems() -> [UIMenuElement] {
+        let pending = detailModel.pendingCount
+        return [
+            UIAction(title: "卡片信息", image: UIImage(systemName: "creditcard")) { [weak self] _ in self?.actions.openInfo() },
+            UIAction(title: "编辑卡面", image: UIImage(systemName: "paintbrush")) { [weak self] _ in self?.actions.openFace() },
+            UIAction(title: pending > 0 ? "待处理账单（\(pending)）" : "待处理账单", image: UIImage(systemName: "tray")) { [weak self] _ in
+                self?.actions.openPending()
+            },
+        ]
     }
 
     func close() {
@@ -491,6 +529,7 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
         }
         // 内容退到屏幕底下；卡包马上能滑动、能点，返回途中再点卡片会从当前位置转向重新打开
         detailList.close()
+        topBar.setDetail(false, animated: true)
         stackScroll.isUserInteractionEnabled = true
         stackScroll.scrollsToTop = true
         stackScroll.accessibilityElementsHidden = false
@@ -518,6 +557,7 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
         }
         detailList.close()
         detailList.finishClose()
+        topBar.setDetail(false, animated: false)
         stackScroll.isUserInteractionEnabled = true
         stackScroll.scrollsToTop = true
         stackScroll.accessibilityElementsHidden = false

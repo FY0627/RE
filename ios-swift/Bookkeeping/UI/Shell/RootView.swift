@@ -34,7 +34,7 @@ final class DetailMotionState {
 
     var isOpen: Bool { selectedAccountID != nil }
 
-    /// 打开 / 关闭详情时返回按钮和标签栏显隐的动画；卡片的 Core Animation 弹簧（`CardMotion.transition`）参数相同，节奏一致
+    /// 打开 / 关闭详情时标签栏显隐的动画；卡片的 Core Animation 弹簧（`CardMotion.transition`）参数相同，节奏一致
     static func transition(reduceMotion: Bool) -> Animation {
         reduceMotion ? .easeInOut(duration: 0.25) : .spring(response: 0.5, dampingFraction: 0.86)
     }

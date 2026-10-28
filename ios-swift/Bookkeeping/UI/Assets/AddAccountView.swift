@@ -96,6 +96,7 @@ struct AddAccountView: View {
                     Section { Text(errorText).foregroundStyle(.red) }
                 }
             }
+            .keyboardDismissible()
             .navigationTitle("添加银行卡")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -179,16 +180,17 @@ struct AddAccountView: View {
     }
 }
 
-/// 输入银行名称时列出的一家银行：中文全称，下面是英文或当地名称和地区
+/// 输入银行名称时列出的一家银行：中文全称，下面是英文或当地名称和地区。
+/// 颜色用 `Color.primary` / `Color.secondary`：按钮里的层级样式 `.primary` 会跟着强调色变成蓝色
 private struct BankSuggestionRow: View {
     let entry: BankEntry
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(entry.name).foregroundStyle(.primary)
+            Text(entry.name).foregroundStyle(Color.primary)
             Text(entry.localName == entry.name ? entry.region : "\(entry.localName) · \(entry.region)")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.secondary)
                 .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -4,9 +4,9 @@ import BKBackend
 
 /// 资产页：卡包 → 点按卡片展开详情 → 返回。最下方是灰色的「已停用」卡包，也可以点开查看详情。
 ///
-/// 卡包、详情和它们之间的转场在 `WalletController`（UIKit + Core Animation，ADR 0012）。
-/// 这里是 SwiftUI 的外壳：顶部按钮、标签栏显隐和各个弹出页面。打开 / 关闭时 `WalletController` 通知这里，
-/// 返回按钮、「+」的液态玻璃合并和标签栏用同样参数的弹簧，和卡片同时开始。
+/// 卡包、详情、顶部按钮和它们之间的转场在 `WalletController`（UIKit + Core Animation，ADR 0012）。
+/// 这里是 SwiftUI 的外壳：标签栏显隐和各个弹出页面。打开 / 关闭时 `WalletController` 通知这里，
+/// 标签栏和卡片用同样参数的弹簧同时开始。
 struct AssetsView: View {
     let openAddAccount: () -> Void
 
@@ -18,7 +18,6 @@ struct AssetsView: View {
     @State private var detail = WalletDetailModel()
     @State private var bridge = WalletBridge()
     @State private var sheet: AssetsSheet?
-    @Namespace private var glass
 
     private var selectedID: String? { motion.selectedAccountID }
     private var isOpen: Bool { selectedID != nil }
@@ -30,25 +29,19 @@ struct AssetsView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .top) {
-            WalletPage(
-                accounts: store.accounts + store.archivedAccounts,
-                activeCount: store.accounts.count,
-                balanceTexts: store.balances.mapValues(\.cardText),
-                revision: store.revision,
-                store: store,
-                rates: rates,
-                detail: detail,
-                bridge: bridge,
-                actions: actions
-            )
-            // 铺满屏幕：标签栏显隐不改变页面尺寸；内容从状态栏下面开始由 WalletController 按窗口的安全区处理
-            .ignoresSafeArea()
-
-            topBar
-                .padding(.horizontal, AppLayout.cardInset)
-                .padding(.top, 2)
-        }
+        WalletPage(
+            accounts: store.accounts + store.archivedAccounts,
+            activeCount: store.accounts.count,
+            balanceTexts: store.balances.mapValues(\.cardText),
+            revision: store.revision,
+            store: store,
+            rates: rates,
+            detail: detail,
+            bridge: bridge,
+            actions: actions
+        )
+        // 铺满屏幕：标签栏显隐不改变页面尺寸；内容和顶部按钮从状态栏下面开始，由 WalletController 按窗口的安全区处理
+        .ignoresSafeArea()
         // 详情展开时用系统的方式隐藏标签栏（随打开 / 关闭的动画滑出 / 滑入）。
         // 放在资产页里而不是根视图上：打开详情时只有资产页重新计算，其他标签页不受影响
         .toolbarVisibility(isOpen ? .hidden : .visible, for: .tabBar)
@@ -65,6 +58,9 @@ struct AssetsView: View {
                 }
             },
             addAccount: openAddAccount,
+            manageAccounts: { sheet = .manage },
+            openInfo: { sheet = .info },
+            openFace: { sheet = .face },
             openPending: { sheet = .pending },
             openRecord: { sheet = .record($0) },
             chooseCustomPeriod: { sheet = .customPeriod }
@@ -87,67 +83,6 @@ struct AssetsView: View {
         case .customPeriod:
             CustomPeriodSheet(initial: detail.period.customDates) { [bridge] period in bridge.setPeriod(period) }
         }
-    }
-
-    // MARK: 顶部按钮
-
-    /// 左侧返回按钮随详情一起出现。右侧卡包状态是「+」和「更多」合成的玻璃胶囊；
-    /// 打开详情时「+」从胶囊里收起（液态玻璃的合并动画），剩下的按钮变成详情菜单。
-    private var topBar: some View {
-        HStack {
-            if isOpen {
-                Button { bridge.close() } label: {
-                    ToolbarIcon("chevron.left")
-                }
-                .buttonStyle(.plain)
-                .glassEffect(.regular.interactive(), in: Circle())
-                .accessibilityLabel("返回卡包")
-                .transition(.opacity.combined(with: .scale(scale: 0.6)))
-            }
-            Spacer()
-            GlassEffectContainer {
-                HStack(spacing: 0) {
-                    if !isOpen {
-                        Button(action: openAddAccount) {
-                            ToolbarIcon("plus")
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("添加银行卡")
-                        .glassEffect(.regular.interactive(), in: Capsule())
-                        .glassEffectUnion(id: "actions", namespace: glass)
-                        .glassEffectID("add", in: glass)
-                    }
-                    moreButton
-                        .glassEffect(.regular.interactive(), in: Capsule())
-                        .glassEffectUnion(id: "actions", namespace: glass)
-                        .glassEffectID("more", in: glass)
-                }
-            }
-        }
-    }
-
-    /// 卡包状态：管理银行卡（启用 / 停用）；详情状态：这张卡的菜单。
-    ///
-    /// 始终是同一个 Menu，图标不变；卡包状态在上面盖一层透明按钮直接打开「管理银行卡」。
-    /// 如果两种状态用两个不同的视图，切换时图标会交叉淡入淡出，看起来闪一下。
-    private var moreButton: some View {
-        Menu {
-            Button("卡片信息", systemImage: "creditcard") { sheet = .info }
-            Button("编辑卡面", systemImage: "paintbrush") { sheet = .face }
-            Button(detail.pendingCount > 0 ? "待处理账单（\(detail.pendingCount)）" : "待处理账单", systemImage: "tray") { sheet = .pending }
-        } label: {
-            ToolbarIcon("ellipsis")
-        }
-        .tint(Color.primary)
-        .overlay {
-            if !isOpen {
-                Button { sheet = .manage } label: {
-                    Color.clear.contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .accessibilityLabel(isOpen ? "更多" : "管理银行卡")
     }
 }
 

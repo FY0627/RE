@@ -1,38 +1,31 @@
 import SwiftUI
 import BKModel
 
-/// 卡片详情里卡片下面、流水之前的部分：待处理提示；多币种的卡按币种分开看流水；
-/// 「交易记录」标题、时间段和笔数（没有流水时还有「暂无流水」）。
-/// 放在详情列表（`WalletDetailList`）里；卡片本身、流水和顶部按钮在别处。余额在卡片上，初始余额在「卡片信息」里。
+/// 卡片详情里卡片下面、流水之前的部分：待处理提示；「交易记录」标题、币种（多币种的卡按币种分开看流水）和笔数。
+/// 放在详情列表（`WalletDetailList`）里；卡片本身、流水、「暂无流水」和顶部按钮（含时间段）在别处。
+/// 余额在卡片上，初始余额在「卡片信息」里。
+///
+/// 高度只随待处理提示变化：换币种、换时间段时这一格不变高变矮，下面的流水格子增减。
 struct AccountDetailSummary: View {
     let model: WalletDetailModel
     let openPending: () -> Void
     let selectCurrency: (CurrencyCode) -> Void
-    let selectPeriod: (RecordPeriod) -> Void
-    let chooseCustomPeriod: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if model.pendingCount > 0 {
                 pendingStrip.padding(.bottom, 16)
             }
-            if model.currencies.count > 1 {
-                currencyPicker.padding(.bottom, 16)
-            }
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text("交易记录").font(.title3.weight(.semibold))
-                periodMenu
+                if model.currencies.count > 1 {
+                    currencyMenu
+                }
                 Spacer()
                 Text("共 \(model.recordTotal) 笔").font(.subheadline).foregroundStyle(.secondary)
             }
             .padding(.top, 8)
             .padding(.bottom, 10)
-            if !model.hasRecords {
-                Text("暂无流水")
-                    .font(.subheadline).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity).padding(.vertical, 28)
-                    .multilineTextAlignment(.center)
-            }
         }
     }
 
@@ -50,48 +43,40 @@ struct AccountDetailSummary: View {
         .tapAction(openPending)
     }
 
-    /// 每个币种的流水分开看。卡里没有的币种的交易按主币种扣款，放在主币种里
-    @ViewBuilder
-    private var currencyPicker: some View {
-        let selection = Binding<CurrencyCode> {
-            model.currency ?? model.currencies.first ?? .cny
-        } set: { selectCurrency($0) }
-        if model.currencies.count <= 4 {
-            Picker("币种", selection: selection) {
-                ForEach(model.currencies, id: \.self) { Text(Self.shortName($0)).tag($0) }
-            }
-            .pickerStyle(.segmented)
-        } else {
-            Picker("币种", selection: selection) {
-                ForEach(model.currencies, id: \.self) { Text("\($0.chineseName) \($0.rawValue)").tag($0) }
-            }
-            .pickerStyle(.menu)
-        }
-    }
-
-    /// 分段控件放得下的名称：中文名不超过 4 个字，否则用代码
-    private static func shortName(_ code: CurrencyCode) -> String {
-        code.chineseName.count <= 4 ? code.chineseName : code.rawValue
-    }
-
-    private var periodMenu: some View {
-        Menu {
-            ForEach(RecordPeriod.presets, id: \.self) { period in
-                Button { selectPeriod(period) } label: {
-                    if model.period == period { Label(period.title, systemImage: "checkmark") } else { Text(period.title) }
+    /// 每个币种的流水分开看，放在「交易记录」旁边。卡里没有的币种的交易按主币种扣款，放在主币种里
+    private var currencyMenu: some View {
+        let current = model.currency ?? model.currencies.first ?? .cny
+        return Menu {
+            ForEach(model.currencies, id: \.self) { code in
+                Button { selectCurrency(code) } label: {
+                    if code == current {
+                        Label("\(code.chineseName) \(code.rawValue)", systemImage: "checkmark")
+                    } else {
+                        Text("\(code.chineseName) \(code.rawValue)")
+                    }
                 }
             }
-            Button(action: chooseCustomPeriod) {
-                if model.period.isCustom { Label(model.period.title, systemImage: "checkmark") } else { Text("自定义…") }
-            }
         } label: {
+            // 文字用 Color.primary：菜单里的层级样式 .primary 会跟着强调色变成蓝色
             HStack(spacing: 3) {
-                Text(model.period.title)
+                Text(current.chineseName)
                 Image(systemName: "chevron.up.chevron.down").font(.caption2.weight(.semibold))
             }
             .font(.subheadline.weight(.medium))
+            .foregroundStyle(Color.primary)
         }
-        .accessibilityLabel("时间：\(model.period.title)")
+        .accessibilityLabel("币种：\(current.chineseName)")
+    }
+}
+
+/// 当前币种、时间段里没有流水。单独一格，出现和消失不改变上面一格的高度
+struct EmptyRecordsView: View {
+    var body: some View {
+        Text("暂无流水")
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 28)
     }
 }
 
@@ -104,7 +89,7 @@ private extension View {
     }
 }
 
-/// 卡片详情里看哪段时间的流水（按收到通知的时间）
+/// 卡片详情里看哪段时间的流水（按收到通知的时间）。在详情右上角的时间段胶囊里选
 enum RecordPeriod: Hashable {
     case all
     case thisWeek

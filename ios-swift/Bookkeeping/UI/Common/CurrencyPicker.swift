@@ -12,12 +12,27 @@ struct CurrencyEntry: Identifiable, Hashable, Sendable {
     var id: String { code.rawValue }
 }
 
+/// 选币种页面「全部币种」里的一组：中文名称拼音首字母相同的币种
+struct CurrencySection: Identifiable, Sendable {
+    let letter: String
+    let entries: [CurrencyEntry]
+    var id: String { letter }
+}
+
 /// 汇率数据源支持的全部币种。第一次用到时生成（要查系统的名称），添加银行卡等页面出现时先在后台准备好。
 enum CurrencyCatalog {
     /// 按中文名称的拼音排序
     static let all: [CurrencyEntry] = CurrencyCode.supported.map(makeEntry)
         .sorted { $0.name.compare($1.name, locale: simplifiedChinese) == .orderedAscending }
     static let common: [CurrencyEntry] = CurrencyCode.common.map(entry)
+    /// 按拼音首字母 A–Z 分组（侧边的字母索引跳到这里），不是字母开头的放在最后的「#」
+    static let sections: [CurrencySection] = {
+        var groups: [String: [CurrencyEntry]] = [:]
+        for entry in all { groups[initial(entry.name), default: []].append(entry) }
+        return groups.keys
+            .sorted { a, b in a == "#" ? false : b == "#" ? true : a < b }
+            .map { CurrencySection(letter: $0, entries: groups[$0] ?? []) }
+    }()
 
     static func entry(_ code: CurrencyCode) -> CurrencyEntry {
         byCode[code.rawValue] ?? makeEntry(code)
@@ -41,7 +56,17 @@ enum CurrencyCatalog {
 
     /// 在后台生成列表，打开选币种页面时不卡
     static func prepare() async {
-        await Task.detached(priority: .utility) { _ = CurrencyCatalog.all.count }.value
+        await Task.detached(priority: .utility) { _ = CurrencyCatalog.sections.count }.value
+    }
+
+    /// 名称拼音的首字母（大写）
+    private static func initial(_ name: String) -> String {
+        let latin = name.applyingTransform(.mandarinToLatin, reverse: false)?
+            .applyingTransform(.stripDiacritics, reverse: false) ?? name
+        guard let first = latin.uppercased().unicodeScalars.first, first.isASCII, CharacterSet.uppercaseLetters.contains(first) else {
+            return "#"
+        }
+        return String(first)
     }
 
     private static let byCode: [String: CurrencyEntry] = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -78,7 +103,8 @@ enum CurrencyCatalog {
     }
 }
 
-/// 选币种：全部 160 多种币种，带国旗；最下面的搜索框可以打中文、英文、代码或国家名，也可以直接往下翻着选。
+/// 选币种：全部 160 多种币种，带国旗，按拼音首字母分组，侧边的 A–Z 索引可以直接跳；
+/// 最下面的搜索框可以打中文、英文、代码或国家名，也可以直接往下翻着选。
 /// 单选（币种、主币种、主要币种）点一下就返回；多选（多币种账户的其他币种）勾好后点「完成」返回。
 struct CurrencyPicker: View {
     let title: String
@@ -97,7 +123,10 @@ struct CurrencyPicker: View {
                     Section("已选") { ForEach(chosen) { row($0) } }
                 }
                 Section("常用") { ForEach(CurrencyCatalog.common) { row($0) } }
-                Section("全部币种") { ForEach(CurrencyCatalog.all) { row($0) } }
+                ForEach(CurrencyCatalog.sections) { section in
+                    Section(section.letter) { ForEach(section.entries) { row($0) } }
+                        .sectionIndexLabel(Text(section.letter))
+                }
             } else {
                 let results = CurrencyCatalog.search(query)
                 if results.isEmpty {
@@ -107,6 +136,7 @@ struct CurrencyPicker: View {
                 }
             }
         }
+        .listSectionIndexVisibility(.visible)
         .searchable(text: $query, prompt: "币种、代码或国家")
         .autocorrectionDisabled()
         .navigationTitle(title)
@@ -132,21 +162,22 @@ struct CurrencyPicker: View {
             choose(entry.code)
         } label: {
             HStack(spacing: 12) {
+                // 颜色用 Color.primary / Color.secondary：按钮里的层级样式 .primary 会跟着强调色变成蓝色
                 Group {
                     if let flag = entry.flag {
                         Text(flag).font(.title2)
                     } else {
-                        Image(systemName: "globe").font(.title3).foregroundStyle(.secondary)
+                        Image(systemName: "globe").font(.title3).foregroundStyle(Color.secondary)
                     }
                 }
                 .frame(width: 36)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(isFixed ? "\(entry.name)（主币种）" : entry.name).foregroundStyle(.primary)
-                    Text(entry.detail).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                    Text(isFixed ? "\(entry.name)（主币种）" : entry.name).foregroundStyle(isFixed ? Color.secondary : Color.primary)
+                    Text(entry.detail).font(.footnote).foregroundStyle(Color.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 8)
                 if isSelected {
-                    Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(.tint)
+                    Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(Color.accentColor)
                 }
             }
             .contentShape(Rectangle())

@@ -8,7 +8,6 @@ import BKModel
 final class WalletDetailModel {
     var pendingCount = 0
     var recordTotal = 0
-    var hasRecords = true
     /// 卡里的币种，主币种在前；多币种的卡按币种分开看流水
     var currencies: [CurrencyCode] = []
     /// 正在看的币种；单币种的卡为 nil（看全部）
@@ -17,7 +16,8 @@ final class WalletDetailModel {
     var period: RecordPeriod = .all
 }
 
-/// 卡片详情的滚动列表（UIKit）：顶部给选中的卡留出位置，下面是余额等内容（`AccountDetailSummary`）和流水。
+/// 卡片详情的滚动列表（UIKit）：顶部给选中的卡留出位置，下面是「交易记录」标题一行（`AccountDetailSummary`）和流水，
+/// 没有流水时是单独一格「暂无流水」。
 ///
 /// 卡片本身不在列表里，画在列表上层（`WalletController`），按这里的滚动距离摆放：
 /// 卡片和内容一起滚动；在顶部往下拉时卡片不动，只有下面的内容被拉开。
@@ -38,6 +38,8 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
         case card
         case summary
         case record(String)
+        /// 「暂无流水」
+        case empty
     }
 
     let collectionView: UICollectionView
@@ -45,8 +47,6 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
     var onScroll: () -> Void = {}
     var onSelectRecord: (RecordRow) -> Void = { _ in }
     var onOpenPending: () -> Void = {}
-    /// 时间段选了「自定义…」：资产页弹出选日期的面板
-    var onChooseCustomPeriod: () -> Void = {}
     /// 读屏激活顶部的卡片：返回卡包
     var onActivateCard: () -> Void = {}
 
@@ -60,6 +60,8 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
     private var summaryHeight: CGFloat = 0
     /// 流水行的高度，按有没有备注各量一次；宽度或系统字号变了清空
     private var rowHeights: [Bool: CGFloat] = [:]
+    /// 「暂无流水」的高度；宽度或系统字号变了清空
+    private var emptyHeight: CGFloat?
     private var account: Account?
     private var rows: [RecordRow] = []
     private var rowsByID: [String: RecordRow] = [:]
@@ -115,6 +117,10 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
             guard let self, case .record(let id) = item, let row = self.rowsByID[id] else { return }
             cell.show(RecordRowView(row: row, showAccount: false, boxed: true), parent: self.parent)
         }
+        let empty = UICollectionView.CellRegistration<HostingCell, Item> { [weak self] cell, _, _ in
+            guard let self else { return }
+            cell.show(EmptyRecordsView(), parent: self.parent)
+        }
         dataSource = UICollectionViewDiffableDataSource<Section, Item>(collectionView: collectionView) { collectionView, indexPath, item in
             switch item {
             case .card:
@@ -123,6 +129,8 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
                 return collectionView.dequeueConfiguredReusableCell(using: summary, for: indexPath, item: item)
             case .record:
                 return collectionView.dequeueConfiguredReusableCell(using: record, for: indexPath, item: item)
+            case .empty:
+                return collectionView.dequeueConfiguredReusableCell(using: empty, for: indexPath, item: item)
             }
         }
         applySnapshot(reconfigure: false)
@@ -132,9 +140,7 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
         AccountDetailSummary(
             model: model,
             openPending: { [weak self] in self?.onOpenPending() },
-            selectCurrency: { [weak self] currency in self?.setCurrency(currency) },
-            selectPeriod: { [weak self] period in self?.setPeriod(period) },
-            chooseCustomPeriod: { [weak self] in self?.onChooseCustomPeriod() }
+            selectCurrency: { [weak self] currency in self?.setCurrency(currency) }
         )
     }
 
@@ -151,6 +157,9 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
             return CGSize(width: contentWidth, height: summaryHeight)
         case .record(let id):
             return CGSize(width: contentWidth, height: rowHeight(rowsByID[id], width: contentWidth))
+        case .empty:
+            if emptyHeight == nil { emptyHeight = measure(EmptyRecordsView(), width: contentWidth) }
+            return CGSize(width: contentWidth, height: emptyHeight ?? 1)
         case nil:
             return CGSize(width: contentWidth, height: 1)
         }
@@ -175,6 +184,7 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
     /// 宽度或系统字号变了：重新量高度
     func invalidateSizes() {
         rowHeights = [:]
+        emptyHeight = nil
         updateSummaryHeight()
         collectionView.collectionViewLayout.invalidateLayout()
     }
@@ -361,7 +371,6 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
             // 只在变化时写入：写入就会让读它的 SwiftUI 视图重新计算
             if self.model.recordTotal != total { self.model.recordTotal = total }
             if self.model.pendingCount != pending { self.model.pendingCount = pending }
-            if self.model.hasRecords == first.isEmpty { self.model.hasRecords = !first.isEmpty }
             let reveal = !self.contentShown
             self.contentShown = true
             self.applySnapshot(reconfigure: true)
@@ -404,12 +413,9 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
         snapshot.appendSections([.card])
         snapshot.appendItems([.card], toSection: .card)
         if contentShown {
-            snapshot.appendSections([.summary])
+            snapshot.appendSections([.summary, .records])
             snapshot.appendItems([.summary], toSection: .summary)
-            if !rows.isEmpty {
-                snapshot.appendSections([.records])
-                snapshot.appendItems(rows.map { Item.record($0.id) }, toSection: .records)
-            }
+            snapshot.appendItems(rows.isEmpty ? [.empty] : rows.map { Item.record($0.id) }, toSection: .records)
         }
         if reconfigure {
             // 已经显示的格子内容可能变了（备注、状态、余额），重新配置；新出现的格子本来就会配置
@@ -457,12 +463,13 @@ final class WalletDetailList: NSObject, UICollectionViewDelegateFlowLayout {
 }
 
 /// 一格由 SwiftUI 画的内容。用 `UIHostingController` 是为了关掉安全区：
-/// 格子滚到状态栏下面时，SwiftUI 不会因为安全区变化把内容往下推、重新布局
+/// 格子滚到状态栏下面时，SwiftUI 不会因为安全区变化把内容往下推、重新布局。
+/// 内容贴着格子顶端：格子高度还没跟上内容时，内容只往下伸，不会居中往上跑到卡片后面
 private final class HostingCell: UICollectionViewCell {
     private var host: UIHostingController<AnyView>?
 
     func show(_ content: some View, parent: UIViewController) {
-        let view = AnyView(content)
+        let view = AnyView(content.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top))
         if let host {
             host.rootView = view
             return

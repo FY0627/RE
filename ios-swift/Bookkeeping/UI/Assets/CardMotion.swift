@@ -17,7 +17,7 @@ enum CardMotion {
         case easeInOut(Double)
     }
 
-    /// 选中的卡和收到后面的卡；和标签栏、顶部按钮的 SwiftUI 动画（`DetailMotionState.transition`）同一个弹簧
+    /// 选中的卡和收到后面的卡；和标签栏的 SwiftUI 动画（`DetailMotionState.transition`）同一个弹簧
     static func transition(reduceMotion: Bool) -> Timing {
         reduceMotion ? .easeInOut(0.25) : .spring(response: 0.5, damping: 0.86)
     }
