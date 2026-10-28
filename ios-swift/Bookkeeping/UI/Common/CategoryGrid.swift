@@ -2,7 +2,7 @@ import SwiftUI
 import BKModel
 
 /// 选分类：大类排成格子，点一下就选上；有小类的大类名称旁有个小箭头，点它也先选上大类，同时在下面展开小类
-/// （第一格是「不细分」，就记在大类上）。待分类、编辑流水、手动记一笔、流水详情里改分类共用。隐藏的分类不出现。
+/// （第一格是「不细分」，就记在大类上）。待分类、编辑流水、手动记一笔共用。隐藏的分类不出现。
 ///
 /// 放在列表的一个分组里：大类格子是一行，展开的小类是下一行（中间是列表的分隔线）。
 /// 展开时是分组的框往下变大、多出一行，大类那一行不变，图标不会重新排一遍。
@@ -12,8 +12,6 @@ struct CategoryGrid: View {
     let type: CategoryType
     var selected: String?
     let pick: (String) -> Void
-    /// 选定了不再细分的分类（没有小类的大类、小类或「不细分」）。点有小类的大类只是先选上它，不算
-    var done: ((String) -> Void)?
 
     @Environment(LedgerStore.self) private var store
     @State private var expanded: String?
@@ -49,7 +47,6 @@ struct CategoryGrid: View {
                 rows(cells) { cell in
                     button(cell, isSelected: selected == cell.id) {
                         withAnimation(.snappy(duration: 0.25)) { pick(cell.id) }
-                        done?(cell.id)
                     }
                 }
             }
@@ -72,7 +69,6 @@ struct CategoryGrid: View {
                 if selectedTop != cell.id { pick(cell.id) }
             }
         }
-        if !cell.hasChildren { done?(cell.id) }
     }
 
     /// 每行 4 格；最后一行不满时用空白补齐，格子宽度不变
@@ -119,40 +115,6 @@ struct CategoryGrid: View {
         .accessibilityLabel(cell.name)
         .accessibilityHint(Text(cell.hasChildren ? "展开小类" : ""))
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-    }
-}
-
-/// 面板里选一个分类：选定了（没有小类的大类、小类或「不细分」）就关上
-struct CategoryPickerSheet: View {
-    let type: CategoryType
-    let pick: (String) -> Void
-    @Environment(\.dismiss) private var dismiss
-    /// 点了有小类的大类：先选上它，等选小类或「不细分」
-    @State private var current: String?
-
-    init(type: CategoryType, selected: String?, pick: @escaping (String) -> Void) {
-        self.type = type
-        self.pick = pick
-        _current = State(initialValue: selected)
-    }
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    CategoryGrid(type: type, selected: current, pick: { current = $0 }) { id in
-                        pick(id)
-                        dismiss()
-                    }
-                }
-            }
-            .navigationTitle("选择分类")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消", systemImage: "xmark") { dismiss() } }
-            }
-        }
-        .presentationDetents([.medium, .large])
     }
 }
 

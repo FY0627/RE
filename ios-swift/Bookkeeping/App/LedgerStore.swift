@@ -322,8 +322,14 @@ final class LedgerStore {
         (try? await backend?.ingestLog(limit: 100)) ?? []
     }
 
-    func stats(year: Int, month: Int) async -> MonthStats? {
-        try? await backend?.monthStats(year: year, month: month)
+    /// 统计页：一段时间的统计，nil 表示不限
+    func stats(from: Date?, to: Date?) async -> MonthStats? {
+        try? await backend?.stats(from: from, to: to)
+    }
+
+    /// 账户没有这个币种时，按它的主币种大概扣（入）多少（手动记一笔时提示）
+    func estimateCharge(amountMinor: Int64, currency: CurrencyCode, to primary: CurrencyCode, at time: Date) async -> RecordCharge? {
+        try? await backend?.estimateCharge(amountMinor: amountMinor, currency: currency, to: primary, at: time)
     }
 
     func retentionDays() async -> Int {

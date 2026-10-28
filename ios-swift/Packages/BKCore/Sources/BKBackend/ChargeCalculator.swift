@@ -22,13 +22,22 @@ final class ChargeCalculator {
         if let settlement = record.settlement, settlement.currency == primary {
             return RecordCharge(currency: primary, amountMinor: settlement.minorUnits, isActual: true, rateDay: nil)
         }
-        guard let day = try rateDay(for: record) else {
-            return RecordCharge(currency: primary, amountMinor: nil, isActual: false, rateDay: nil)
-        }
+        return try convert(record.amountMinor, record.currency, day: try rateDay(for: record), primary: primary)
+    }
+
+    /// 还没记下的一笔（手动记一笔时提示）：用 `date` 当天的汇率，那天没有就用日期最近的一天
+    func estimate(_ amountMinor: Int64, _ currency: CurrencyCode, at date: Date, primary: CurrencyCode) throws -> RecordCharge {
+        let days = try self.days()
+        let day = RateDay.key(date, calendar: calendar)
+        return try convert(amountMinor, currency, day: Self.contains(days, day) ? day : Self.nearest(days, to: day), primary: primary)
+    }
+
+    private func convert(_ amountMinor: Int64, _ currency: CurrencyCode, day: String?, primary: CurrencyCode) throws -> RecordCharge {
+        guard let day else { return RecordCharge(currency: primary, amountMinor: nil, isActual: false, rateDay: nil) }
         let table = try rates(day)
         var amount: Int64?
-        if let from = table[record.currency.rawValue], let to = table[primary.rawValue] {
-            amount = ExchangeRates.convert(record.amountMinor, from: record.currency, rate: from, to: primary, rate: to)
+        if let from = table[currency.rawValue], let to = table[primary.rawValue] {
+            amount = ExchangeRates.convert(amountMinor, from: currency, rate: from, to: primary, rate: to)
         }
         return RecordCharge(currency: primary, amountMinor: amount, isActual: false, rateDay: day)
     }

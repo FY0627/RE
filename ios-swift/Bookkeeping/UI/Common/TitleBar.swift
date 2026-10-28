@@ -39,24 +39,27 @@ extension View {
     }
 }
 
-/// 页面顶部一行：左边大标题，右边一个玻璃胶囊，里面几个图标按钮。和首页、资产页的标题行一样高、一样的字号。
-/// 统计页用它放「上个月 / 下个月」；「我的」没有按钮，只有标题。
+/// 页面顶部一行：左边大标题，右边可以有一个玻璃胶囊下拉按钮（写着当前选的，点开是菜单）。
+/// 和首页、资产页的标题行一样高、一样的字号。统计页用它选时间段（和卡片详情的时间段胶囊一样）；「我的」只有标题。
 struct TitleBar: UIViewRepresentable {
-    struct Item {
-        let symbol: String
-        let label: String
-        let action: () -> Void
+    struct Menu {
+        /// 胶囊上写的字，例如「本月」
+        let title: String
+        /// 每次打开菜单时生成，显示的永远是当时的状态
+        let items: @MainActor () -> [UIMenuElement]
     }
 
     let title: String
-    let items: [Item]
+    var menu: Menu?
 
     func makeUIView(context: Context) -> TitleBarView {
-        TitleBarView(title: title, items: items.map { (symbol: $0.symbol, label: $0.label) })
+        TitleBarView(title: title, hasMenu: menu != nil)
     }
 
     func updateUIView(_ view: TitleBarView, context: Context) {
-        view.actions = items.map(\.action)
+        guard let menu else { return }
+        view.menuItems = menu.items
+        view.setMenuTitle(menu.title)
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: TitleBarView, context: Context) -> CGSize? {
@@ -66,15 +69,16 @@ struct TitleBar: UIViewRepresentable {
 
 @MainActor
 final class TitleBarView: UIView {
-    /// 和按钮一一对应
-    var actions: [() -> Void] = []
+    var menuItems: @MainActor () -> [UIMenuElement] = { [] }
 
     private let titleLabel = UILabel()
     private let container = GlassControls.container()
     private let capsule = GlassControls.capsule(GlassControls.glass())
-    private var buttons: [UIButton] = []
+    private let menuButton: UIButton?
+    private var menuTitle = ""
 
-    init(title: String, items: [(symbol: String, label: String)]) {
+    init(title: String, hasMenu: Bool) {
+        menuButton = hasMenu ? UIButton(configuration: GlassControls.pillConfiguration("")) : nil
         super.init(frame: .zero)
         let metrics = UIFontMetrics(forTextStyle: .largeTitle)
         titleLabel.font = metrics.scaledFont(for: UIFont.systemFont(ofSize: 34, weight: .bold))
@@ -86,36 +90,46 @@ final class TitleBarView: UIView {
 
         container.frame = bounds
         container.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        container.isHidden = items.isEmpty
+        container.isHidden = menuButton == nil
         addSubview(container)
         container.contentView.addSubview(capsule)
-        for (index, item) in items.enumerated() {
-            let button = GlassControls.iconButton(item.symbol, label: item.label)
-            button.addAction(UIAction { [weak self] _ in
-                guard let self, self.actions.indices.contains(index) else { return }
-                self.actions[index]()
-            }, for: .primaryActionTriggered)
-            capsule.contentView.addSubview(button)
-            buttons.append(button)
+        if let menuButton {
+            menuButton.showsMenuAsPrimaryAction = true
+            menuButton.menu = GlassControls.deferredMenu { [weak self] in self?.menuItems() ?? [] }
+            capsule.contentView.addSubview(menuButton)
         }
-        accessibilityElements = [titleLabel as UIView] + buttons.map { $0 as UIView }
+        accessibilityElements = [titleLabel as UIView] + (menuButton.map { [$0 as UIView] } ?? [])
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
+    /// 胶囊上写的字；宽度跟着变（玻璃胶囊伸缩）
+    func setMenuTitle(_ title: String) {
+        guard let menuButton, title != menuTitle else { return }
+        let first = menuTitle.isEmpty
+        menuTitle = title
+        UIView.performWithoutAnimation {
+            menuButton.configuration = GlassControls.pillConfiguration(title)
+            menuButton.layoutIfNeeded()
+        }
+        setNeedsLayout()
+        if !first, window != nil {
+            GlassControls.morph { self.layoutIfNeeded() }
+        }
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         let size = GlassControls.size
-        let width = size * CGFloat(buttons.count)
-        if !buttons.isEmpty {
+        var trailing: CGFloat = 0
+        if let menuButton {
+            let width = GlassControls.pillWidth(menuButton)
             GlassControls.place(capsule, CGRect(x: bounds.width - width, y: 0, width: width, height: size))
+            menuButton.frame = CGRect(x: 0, y: 0, width: width, height: size)
+            trailing = width + GlassControls.gap
         }
-        for (index, button) in buttons.enumerated() {
-            button.frame = CGRect(x: CGFloat(index) * size, y: 0, width: size, height: size)
-        }
-        let trailing = buttons.isEmpty ? 0 : width + GlassControls.gap
         titleLabel.frame = CGRect(x: 4, y: 0, width: max(0, bounds.width - trailing - 4), height: size)
     }
 

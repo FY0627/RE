@@ -148,7 +148,7 @@ struct ProfileView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbarVisibility(.hidden, for: .navigationBar)
             .safeAreaBar(edge: .top) {
-                TitleBar(title: "我的", items: [])
+                TitleBar(title: "我的")
                     .frame(height: GlassControls.size)
                     .padding(.horizontal, AppLayout.cardInset)
                     .padding(.top, 2)

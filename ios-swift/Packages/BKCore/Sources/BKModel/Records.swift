@@ -497,10 +497,15 @@ public struct ManualEntry: Hashable, Sendable {
     public var counterparty: String?
     public var note: String
     public var time: Date
+    /// 账户（转帐时是转出的账户）没有这个币种时，实际扣款或入账多少账户主币种；nil 按交易当天的汇率估算
+    public var settlementMinor: Int64?
+    /// 转帐时转入的账户没有这个币种：实际入账多少它的主币种；nil 按汇率估算
+    public var toSettlementMinor: Int64?
 
     public init(
         type: EntryType, accountID: String, toAccountID: String? = nil, amountMinor: Int64, currency: CurrencyCode,
-        categoryID: String? = nil, isRefund: Bool = false, counterparty: String? = nil, note: String = "", time: Date
+        categoryID: String? = nil, isRefund: Bool = false, counterparty: String? = nil, note: String = "", time: Date,
+        settlementMinor: Int64? = nil, toSettlementMinor: Int64? = nil
     ) {
         self.type = type
         self.accountID = accountID
@@ -512,6 +517,8 @@ public struct ManualEntry: Hashable, Sendable {
         self.counterparty = counterparty
         self.note = note
         self.time = time
+        self.settlementMinor = settlementMinor
+        self.toSettlementMinor = toSettlementMinor
     }
 }
 

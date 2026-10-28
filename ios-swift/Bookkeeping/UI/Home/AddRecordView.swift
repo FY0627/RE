@@ -3,19 +3,25 @@ import BKModel
 import BKBackend
 
 /// 手动记一笔：现金、电子钱包，或者通知还没接上的消费。
-/// 顺序：金额 → 分类 → 备注（选填）→ 账户（默认上次用的）→ 保存。转帐选从哪个账户转到哪个账户，转进信用卡算还款。
-/// 币种只能选这个账户有的（转帐是两个账户都有的），不会在没有日元的卡上记一笔日元转帐。
+/// 顺序：金额和币种 → 账户（默认上次用的）→ 分类 → 备注（选填）→ 保存。转帐选从哪个账户转到哪个账户，转进信用卡算还款。
+/// 先选币种再选账户：币种可以选任何一种（默认「我的」里的主要币种）。账户没有这个币种时按账户的主币种扣款（入账），
+/// 默认按当天的汇率估算，银行实际扣了多少可以直接填。
 /// 保存前查一下同一个账户前后 3 小时有没有同样金额的记录（多半是自动记账已经记过了），有就先问一句。
 struct AddRecordView: View {
     @Environment(LedgerStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var type: EntryType = .expense
     @State private var amountText = ""
-    @State private var currency: CurrencyCode?
+    @State private var currency: CurrencyCode? = ExchangeRateStore.primaryCurrency
     @State private var categoryID: String?
     @State private var note = ""
     @State private var accountID: String?
     @State private var toAccountID: String?
+    /// 账户没有这个币种时，实际扣款（入账）多少账户主币种；空着按汇率估算
+    @State private var settlementText = ""
+    @State private var toSettlementText = ""
+    @State private var estimate: RecordCharge?
+    @State private var toEstimate: RecordCharge?
     @State private var counterparty = ""
     @State private var time = Date()
     @State private var saving = false
@@ -26,11 +32,15 @@ struct AddRecordView: View {
 
     private var accounts: [Account] { store.accounts }
 
-    /// 能选的币种：账户有的币种；转帐时两个账户都有的
-    private var currencyChoices: [CurrencyCode] {
-        guard let account = accounts.first(where: { $0.id == accountID }) else { return [] }
-        guard type == .transfer, let target = accounts.first(where: { $0.id == toAccountID }) else { return account.currencies }
-        return account.currencies.filter(target.currencies.contains)
+    /// 账户没有选的币种：按它的主币种记
+    private func chargeCurrency(_ id: String?) -> CurrencyCode? {
+        guard let currency, let account = accounts.first(where: { $0.id == id }), !account.currencies.contains(currency) else { return nil }
+        return account.currency
+    }
+
+    private var amount: Int64? {
+        guard let currency, case .valid(let minor) = MoneyInput.parse(amountText, negative: false, currency: currency), minor > 0 else { return nil }
+        return minor
     }
 
     var body: some View {
@@ -50,11 +60,26 @@ struct AddRecordView: View {
                         .keyboardType(currency?.minorUnitExponent == 0 ? .numberPad : .decimalPad)
                         .font(.system(.largeTitle, design: .rounded).weight(.bold).monospacedDigit())
                         .focused($amountFocused)
-                    CurrencyChoiceRow(choices: currencyChoices, currency: $currency)
-                } footer: {
-                    if type == .transfer, toAccountID != nil, currencyChoices.isEmpty {
-                        Text("这两个账户没有相同的币种，不能直接转帐。").foregroundStyle(.red)
+                    CurrencyLink(title: "币种", currency: $currency)
+                }
+                Section {
+                    Picker(type == .transfer ? "从" : "账户", selection: $accountID) {
+                        accountOptions(accounts)
                     }
+                    if let charge = chargeCurrency(accountID) {
+                        settlementRow(type == .income ? "实际入账" : "实际扣款", charge, text: $settlementText, estimate: estimate)
+                    }
+                    if type == .transfer {
+                        Picker("转到", selection: $toAccountID) {
+                            Text("请选择").tag(String?.none)
+                            accountOptions(accounts.filter { $0.id != accountID })
+                        }
+                        if let charge = chargeCurrency(toAccountID) {
+                            settlementRow("实际入账", charge, text: $toSettlementText, estimate: toEstimate)
+                        }
+                    }
+                } footer: {
+                    if let chargeNote { Text(chargeNote) }
                 }
                 if type != .transfer {
                     Section("分类") {
@@ -66,15 +91,7 @@ struct AddRecordView: View {
                         .lineLimit(1...5)
                 }
                 Section {
-                    Picker(type == .transfer ? "从" : "账户", selection: $accountID) {
-                        ForEach(accounts) { Text($0.displayTitle).tag(String?.some($0.id)) }
-                    }
-                    if type == .transfer {
-                        Picker("转到", selection: $toAccountID) {
-                            Text("请选择").tag(String?.none)
-                            ForEach(accounts.filter { $0.id != accountID }) { Text($0.displayTitle).tag(String?.some($0.id)) }
-                        }
-                    } else {
+                    if type != .transfer {
                         TextField("商户或对方（选填）", text: $counterparty)
                     }
                     DatePicker("时间", selection: $time)
@@ -100,13 +117,17 @@ struct AddRecordView: View {
             }
             .onChange(of: accountID) {
                 if toAccountID == accountID { toAccountID = nil }
-                keepCurrencyValid()
+                settlementText = ""
             }
-            .onChange(of: toAccountID) { keepCurrencyValid() }
+            .onChange(of: toAccountID) { toSettlementText = "" }
+            .onChange(of: currency) {
+                settlementText = ""
+                toSettlementText = ""
+            }
             .onChange(of: type) {
                 if let category = store.categoryTree.category(categoryID), category.type != CategoryType(type) { categoryID = nil }
-                keepCurrencyValid()
             }
+            .task(id: estimateKey) { await updateEstimates() }
             .task {
                 guard accountID == nil else { return }
                 let last = await store.lastManualAccountID()
@@ -116,11 +137,67 @@ struct AddRecordView: View {
         }
     }
 
-    /// 换了账户、类型：币种不在可选的里面了就换成第一个（账户的主币种）
-    private func keepCurrencyValid() {
-        let choices = currencyChoices
-        if let currency, choices.contains(currency) { return }
-        currency = choices.first
+    /// 账户选项：有这个币种的在前；没有的另起一组，写明按主币种记
+    @ViewBuilder
+    private func accountOptions(_ list: [Account]) -> some View {
+        let holding = list.filter { account in currency.map { account.currencies.contains($0) } ?? true }
+        let others = list.filter { account in !holding.contains(where: { $0.id == account.id }) }
+        if holding.isEmpty || others.isEmpty {
+            ForEach(list) { Text($0.displayTitle).tag(String?.some($0.id)) }
+        } else {
+            Section {
+                ForEach(holding) { Text($0.displayTitle).tag(String?.some($0.id)) }
+            }
+            Section("没有\(currency?.chineseName ?? "")，按账户的主币种记") {
+                ForEach(others) { Text("\($0.displayTitle)（\($0.currency.chineseName)）").tag(String?.some($0.id)) }
+            }
+        }
+    }
+
+    /// 实际扣款（入账）：空着时提示按汇率大概多少
+    private func settlementRow(_ title: String, _ charge: CurrencyCode, text: Binding<String>, estimate: RecordCharge?) -> some View {
+        HStack {
+            Text("\(title)（\(charge.chineseName)）")
+            TextField(estimate?.amountMinor.map { "约 " + Fmt.money($0, charge) } ?? "按汇率估算", text: text)
+                .keyboardType(charge.minorUnitExponent == 0 ? .numberPad : .decimalPad)
+                .multilineTextAlignment(.trailing)
+                .font(.body.monospacedDigit())
+        }
+    }
+
+    private var chargeNote: String? {
+        guard let currency, chargeCurrency(accountID) != nil || (type == .transfer && chargeCurrency(toAccountID) != nil) else { return nil }
+        let head = "账户里没有\(currency.chineseName)，按账户的主币种记。"
+        guard let day = (estimate ?? toEstimate)?.rateDay else {
+            return head + "还没有汇率：可以直接填银行实际扣了多少，不填就等导入汇率后估算。"
+        }
+        return head + "不填按 \(Fmt.rateDay(day)) 的汇率估算；银行实际扣了多少可以直接填。"
+    }
+
+    /// 金额、币种、账户、日期变了就重新估算
+    private var estimateKey: String {
+        let day = Calendar.current.startOfDay(for: time).timeIntervalSince1970
+        return "\(amount ?? 0)|\(currency?.rawValue ?? "")|\(chargeCurrency(accountID)?.rawValue ?? "")|"
+            + "\(type == .transfer ? chargeCurrency(toAccountID)?.rawValue ?? "" : "")|\(day)"
+    }
+
+    private func updateEstimates() async {
+        guard let currency, let amount else {
+            estimate = nil
+            toEstimate = nil
+            return
+        }
+        var from: RecordCharge?
+        var into: RecordCharge?
+        if let charge = chargeCurrency(accountID) {
+            from = await store.estimateCharge(amountMinor: amount, currency: currency, to: charge, at: time)
+        }
+        if type == .transfer, let charge = chargeCurrency(toAccountID) {
+            into = await store.estimateCharge(amountMinor: amount, currency: currency, to: charge, at: time)
+        }
+        guard !Task.isCancelled else { return }
+        estimate = from
+        toEstimate = into
     }
 
     private var similarMessage: String {
@@ -128,25 +205,35 @@ struct AddRecordView: View {
         return "\(Fmt.dateTime(row.record.effectiveAt))「\(row.title)」\(row.amountText(inAccount: true))，同一个账户、同样的金额。"
     }
 
+    /// 实际扣款（入账）：空着是 nil（按汇率估算）；格式不对时写错误提示并返回 false
+    private func settlement(_ text: String, for id: String?) -> (ok: Bool, minor: Int64?) {
+        guard let charge = chargeCurrency(id) else { return (true, nil) }
+        switch MoneyInput.parse(text, negative: false, currency: charge) {
+        case .empty: return (true, nil)
+        case .valid(let minor) where minor > 0: return (true, minor)
+        default:
+            errorText = "实际金额：" + MoneyInput.invalidAmountMessage(charge)
+            return (false, nil)
+        }
+    }
+
     private func entry() -> ManualEntry? {
         guard let accountID, let currency else { return nil }
-        guard case .valid(let amount) = MoneyInput.parse(amountText, negative: false, currency: currency), amount > 0 else {
+        guard let amount else {
             errorText = MoneyInput.invalidAmountMessage(currency)
             return nil
         }
-        if type == .transfer {
-            guard toAccountID != nil else {
-                errorText = "请选择转到哪个账户"
-                return nil
-            }
-            guard currencyChoices.contains(currency) else {
-                errorText = "这两个账户没有相同的币种，不能直接转帐。"
-                return nil
-            }
+        if type == .transfer, toAccountID == nil {
+            errorText = "请选择转到哪个账户"
+            return nil
         }
+        let from = settlement(settlementText, for: accountID)
+        let into: (ok: Bool, minor: Int64?) = type == .transfer ? settlement(toSettlementText, for: toAccountID) : (true, nil)
+        guard from.ok, into.ok else { return nil }
         return ManualEntry(
             type: type, accountID: accountID, toAccountID: type == .transfer ? toAccountID : nil, amountMinor: amount, currency: currency,
-            categoryID: type == .transfer ? nil : categoryID, counterparty: type == .transfer ? nil : counterparty, note: note, time: time
+            categoryID: type == .transfer ? nil : categoryID, counterparty: type == .transfer ? nil : counterparty, note: note, time: time,
+            settlementMinor: from.minor, toSettlementMinor: into.minor
         )
     }
 

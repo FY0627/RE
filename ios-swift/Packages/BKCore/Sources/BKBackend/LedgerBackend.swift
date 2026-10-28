@@ -557,13 +557,20 @@ public final class LedgerBackend: Sendable {
             let counterparty = entry.counterparty
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .flatMap { $0.isEmpty ? nil : String($0.prefix(200)) }
-            func record(_ account: Account, _ direction: FlowDirection, _ kind: TransactionKind, part: Int, category: String?) -> LedgerRecord {
-                LedgerRecord(
+            // 账户没有这个币种：按账户主币种扣款（入账），填了实际金额就存下来，否则按汇率估算
+            func record(
+                _ account: Account, _ direction: FlowDirection, _ kind: TransactionKind, part: Int, category: String?, settlement: Int64?
+            ) -> LedgerRecord {
+                var settled: Money?
+                if !account.currencies.contains(entry.currency), let settlement, settlement > 0 {
+                    settled = Money(minorUnits: settlement, currency: account.currency)
+                }
+                return LedgerRecord(
                     id: newID(), accountID: account.id, amountMinor: entry.amountMinor, currency: entry.currency, direction: direction,
                     kind: kind, status: .posted, counterparty: counterparty,
                     transactionTime: time, receivedAt: entry.time, processedAt: now, source: .manual, ingestID: ingestID, partIndex: part,
                     bankReference: nil, balanceAfterMinor: nil, includedFeeMinor: nil, note: String(entry.note.prefix(500)),
-                    transferGroupID: nil, relatedRecordID: nil, categoryID: category
+                    transferGroupID: nil, relatedRecordID: nil, settlement: settled, categoryID: category
                 )
             }
             let tree = CategoryTree(try CategoryDAO.all(db))
@@ -575,18 +582,20 @@ public final class LedgerBackend: Sendable {
             var records: [LedgerRecord]
             switch entry.type {
             case .expense:
-                records = [record(account, entry.isRefund ? .inflow : .outflow, entry.isRefund ? .refund : .purchase, part: 0, category: category)]
+                records = [record(
+                    account, entry.isRefund ? .inflow : .outflow, entry.isRefund ? .refund : .purchase, part: 0, category: category,
+                    settlement: entry.settlementMinor
+                )]
             case .income:
-                records = [record(account, .inflow, .income, part: 0, category: category)]
+                records = [record(account, .inflow, .income, part: 0, category: category, settlement: entry.settlementMinor)]
             case .transfer:
-                guard let toID = entry.toAccountID, toID != account.id, let target = try AccountDAO.find(db, id: toID),
-                      account.currencies.contains(entry.currency), target.currencies.contains(entry.currency) else {
+                guard let toID = entry.toAccountID, toID != account.id, let target = try AccountDAO.find(db, id: toID) else {
                     throw BackendError.invalidTransfer
                 }
                 let repayment = target.cardType == .credit
                 records = [
-                    record(account, .outflow, repayment ? .repayment : .transferOut, part: 0, category: nil),
-                    record(target, .inflow, repayment ? .repayment : .transferIn, part: 2, category: nil),
+                    record(account, .outflow, repayment ? .repayment : .transferOut, part: 0, category: nil, settlement: entry.settlementMinor),
+                    record(target, .inflow, repayment ? .repayment : .transferIn, part: 2, category: nil, settlement: entry.toSettlementMinor),
                 ]
                 let group = newID()
                 for index in records.indices { records[index].transferGroupID = group }
@@ -597,6 +606,15 @@ public final class LedgerBackend: Sendable {
             }
             try SettingsDAO.set(db, Self.lastManualAccountKey, account.id)
             return records.map(\.id)
+        }
+    }
+
+    /// 账户没有这个币种时，按它的主币种 `primary` 大概扣（入）多少：用 `time` 当天的汇率，那天没有就用日期最近的一天。
+    /// 手动记一笔时提示；还没有汇率时金额为 nil
+    public func estimateCharge(amountMinor: Int64, currency: CurrencyCode, to primary: CurrencyCode, at time: Date) async throws -> RecordCharge {
+        let calendar = calendar
+        return try await database.read { db in
+            try ChargeCalculator(db: db, calendar: calendar).estimate(amountMinor, currency, at: time, primary: primary)
         }
     }
 
@@ -893,9 +911,20 @@ public final class LedgerBackend: Sendable {
 
     /// 一个月的统计。`convertTo`：再把所有币种换算成这个币种合计（首页的本月支出、收入、结余）
     public func monthStats(year: Int, month: Int, convertTo primary: CurrencyCode? = nil) async throws -> MonthStats {
-        let calendar = calendar
         guard let start = calendar.date(from: DateComponents(year: year, month: month, day: 1)),
               let end = calendar.date(byAdding: .month, value: 1, to: start) else { throw BackendError.notFound }
+        return try await stats(from: start, to: end, year: year, month: month, convertTo: primary)
+    }
+
+    /// 一段时间的统计（统计页按选的时间段看）：含 `from`，不含 `to`；nil 表示不限。
+    /// 结果里的年、月是开始那天所在的月（不限时为 0），只作标识
+    public func stats(from: Date?, to: Date?, convertTo primary: CurrencyCode? = nil) async throws -> MonthStats {
+        let c = from.map { calendar.dateComponents([.year, .month], from: $0) }
+        return try await stats(from: from ?? .distantPast, to: to ?? .distantFuture, year: c?.year ?? 0, month: c?.month ?? 0, convertTo: primary)
+    }
+
+    private func stats(from start: Date, to end: Date, year: Int, month: Int, convertTo primary: CurrencyCode?) async throws -> MonthStats {
+        let calendar = calendar
         return try await database.read { db in
             let records = try RecordDAO.inRange(db, from: start, to: end)
             var stats = StatsCalculator.month(year: year, month: month, records: records, categories: try CategoryDAO.all(db))

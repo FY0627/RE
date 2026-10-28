@@ -410,16 +410,66 @@ final class LedgerTypeTests: XCTestCase {
         XCTAssertEqual(detail.transferPeer?.record.accountID, b.id)
     }
 
-    func testManualTransferNeedsTheCurrencyInBothAccounts() async throws {
+    func testManualEntryInACurrencyTheAccountLacksIsChargedInItsMainCurrency() async throws {
         let backend = try makeBackend()
         let cny = try await addAccount(backend, last4: "0427")
         let hkd = try await backend.addAccount(AccountDraft(
             name: "", bankID: "hangseng", bankName: "恒生银行", last4: "8482", cardType: .debit, currency: .hkd, paletteID: "jade"
         ))
-        do {
-            try await backend.addRecord(ManualEntry(type: .transfer, accountID: cny.id, toAccountID: hkd.id, amountMinor: 100_00, currency: .jpy, time: now))
-            XCTFail("两个账户都没有日元")
-        } catch BackendError.invalidTransfer {}
+        try await backend.saveExchangeRates(ExchangeRates(base: .usd, rates: ["USD": 1, "HKD": 7.8, "CNY": 7.2, "JPY": 150], updatedAt: now, fetchedAt: now))
+
+        // 先选币种再选账户：卡里没有日元也能记，不填实际扣款就按汇率估算
+        let estimate = try await backend.estimateCharge(amountMinor: 1_000, currency: .jpy, to: .cny, at: now)
+        XCTAssertEqual(estimate.amountMinor, 48_00, "1000 日元 = 6.67 美元 = 48 人民币")
+        XCTAssertEqual(estimate.rateDay, RateDay.key(now, calendar: calendar))
+        try await backend.addRecord(ManualEntry(type: .expense, accountID: cny.id, amountMinor: 1_000, currency: .jpy, time: now))
+        var rows = try await backend.records(accountID: cny.id)
+        XCTAssertEqual(rows.first?.record.currency, .jpy)
+        XCTAssertNil(rows.first?.record.settlement)
+        XCTAssertEqual(rows.first?.charge?.amountMinor, 48_00)
+        XCTAssertEqual(rows.first?.charge?.isActual, false)
+
+        // 填了实际扣款就用它
+        try await backend.addRecord(ManualEntry(
+            type: .expense, accountID: cny.id, amountMinor: 2_000, currency: .jpy, time: now.addingTimeInterval(60), settlementMinor: 95_10
+        ))
+        rows = try await backend.records(accountID: cny.id)
+        XCTAssertEqual(rows.first?.record.settlement, Money(minorUnits: 95_10, currency: .cny))
+        XCTAssertEqual(rows.first?.charge?.isActual, true)
+
+        // 转帐：两边都没有日元，各自按主币种扣款、入账
+        let ids = try await backend.addRecord(ManualEntry(
+            type: .transfer, accountID: cny.id, toAccountID: hkd.id, amountMinor: 10_000, currency: .jpy, time: now.addingTimeInterval(120),
+            settlementMinor: 480_00, toSettlementMinor: 520_00
+        ))
+        XCTAssertEqual(ids.count, 2)
+        let out = try await backend.records(accountID: cny.id).first { $0.record.amountMinor == 10_000 }
+        XCTAssertEqual(out?.record.settlement, Money(minorUnits: 480_00, currency: .cny))
+        let into = try await backend.records(accountID: hkd.id).first
+        XCTAssertEqual(into?.record.settlement, Money(minorUnits: 520_00, currency: .hkd))
+        XCTAssertEqual(into?.record.direction, .inflow)
+
+        // 账户有这个币种：不存实际扣款
+        try await backend.addRecord(ManualEntry(
+            type: .expense, accountID: hkd.id, amountMinor: 50_00, currency: .hkd, time: now.addingTimeInterval(180), settlementMinor: 1
+        ))
+        let plain = try await backend.records(accountID: hkd.id).first { $0.record.amountMinor == 50_00 }
+        XCTAssertNil(plain?.record.settlement)
+    }
+
+    func testStatsForAPeriodCoverEveryMonthInIt() async throws {
+        let backend = try makeBackend()
+        let cash = try await backend.addAccount(.pocket(name: "现金", type: .cash, currency: .cny, paletteID: "ocean"))
+        let lastMonth = try XCTUnwrap(calendar.date(byAdding: .month, value: -1, to: now))
+        try await backend.addRecord(ManualEntry(type: .expense, accountID: cash.id, amountMinor: 30_00, currency: .cny, time: now))
+        try await backend.addRecord(ManualEntry(type: .expense, accountID: cash.id, amountMinor: 20_00, currency: .cny, time: lastMonth))
+        let month = try await backend.monthStats(year: 2026, month: 10)
+        XCTAssertEqual(month.currencies.first?.expenseMinor, 30_00)
+        let all = try await backend.stats(from: nil, to: nil)
+        XCTAssertEqual(all.currencies.first?.expenseMinor, 50_00, "「全部」包括上个月的")
+        XCTAssertEqual(all.accounts.first?.outflowMinor, 50_00)
+        let since = try await backend.stats(from: lastMonth, to: nil)
+        XCTAssertEqual(since.currencies.first?.expenseMinor, 50_00)
     }
 
     // MARK: 换算成主要币种

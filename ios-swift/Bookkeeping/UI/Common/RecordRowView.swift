@@ -29,16 +29,20 @@ struct RecordRowView: View {
                     .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 8)
+            // 金额先占够宽度，左边的标题、时间放不下就省略；金额本身太长时缩小一点，不换行
             VStack(alignment: .trailing, spacing: 2) {
                 Text(row.amountText(inAccount: inAccount))
                     .font(.body.weight(.semibold))
                     .monospacedDigit()
                     .foregroundStyle(row.amountColor(inAccount: inAccount))
                     .strikethrough(r.status == .failed)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
                 if let detail = trailingDetail {
-                    Text(detail).font(.caption).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+                    Text(detail).font(.caption).monospacedDigit().foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
                 }
             }
+            .layoutPriority(1)
             .opacity(r.status == .posted ? 1 : 0.55)
         }
         .padding(.vertical, boxed ? 12 : 2)
@@ -118,7 +122,6 @@ struct RecordDetailView: View {
     @State private var showMore = false
     @State private var editing = false
     @State private var deleted = false
-    @State private var choosingCategory = false
     @State private var merging = false
     @State private var note = ""
     @FocusState private var noteFocused: Bool
@@ -142,13 +145,6 @@ struct RecordDetailView: View {
         .sheet(isPresented: $editing) {
             if let detail {
                 RecordEditor(detail: detail) { Task { await reload() } }
-            }
-        }
-        .sheet(isPresented: $choosingCategory) {
-            if let detail {
-                CategoryPickerSheet(type: CategoryType(detail.row.entryType), selected: detail.row.category?.id) { id in
-                    Task { await setCategory(id) }
-                }
             }
         }
         .sheet(isPresented: $merging, onDismiss: { Task { await reload() } }) {
@@ -183,12 +179,10 @@ struct RecordDetailView: View {
                     chargeRow(charge, record: r)
                 }
                 LabeledContent("类型", value: r.isRefund ? "支出（退款，从支出里减掉）" : row.entryType.displayName)
+                // 只显示；改分类在右上角「编辑」里
                 if row.entryType != .transfer {
-                    Button { choosingCategory = true } label: {
-                        LabeledContent("分类") {
-                            Text(row.categoryText).foregroundStyle(row.isUncategorized ? AppTheme.debt : Color.secondary)
-                        }
-                        .foregroundStyle(Color.primary)
+                    LabeledContent("分类") {
+                        Text(row.categoryText).foregroundStyle(row.isUncategorized ? AppTheme.debt : Color.secondary)
                     }
                 }
                 if (r.kind == .transferIn || r.kind == .transferOut), r.transferGroupID == nil, r.status == .posted {
@@ -279,8 +273,6 @@ struct RecordDetailView: View {
                 } label: {
                     ActionLabel(title: "删除", systemImage: "trash").foregroundStyle(Color.red)
                 }
-            } footer: {
-                Text("收到它的那条通知再来，也不会重新记上。")
             }
         }
     }
@@ -323,17 +315,6 @@ struct RecordDetailView: View {
             saveError = nil
         } catch {
             saveError = "备注保存失败：\(error.localizedDescription)"
-        }
-    }
-
-    private func setCategory(_ id: String) async {
-        await saveNote()
-        do {
-            try await store.setCategory(recordID: recordID, categoryID: id)
-            await reload()
-            saveError = nil
-        } catch {
-            saveError = "保存失败：\(error.localizedDescription)"
         }
     }
 

@@ -112,21 +112,3 @@ extension MoneyInput {
             : "请填写大于 0 的金额，例如 38.50"
     }
 }
-
-/// 记一笔、编辑流水里选币种：只列这个账户有的币种（转帐时两个账户都有的）。只有一个时直接写出来，不用选
-struct CurrencyChoiceRow: View {
-    let choices: [CurrencyCode]
-    @Binding var currency: CurrencyCode?
-
-    var body: some View {
-        if choices.count > 1 {
-            Picker("币种", selection: $currency) {
-                ForEach(choices, id: \.self) { code in
-                    Text("\(code.chineseName) \(code.rawValue)").tag(CurrencyCode?.some(code))
-                }
-            }
-        } else {
-            LabeledContent("币种", value: currency.map { "\($0.chineseName) \($0.rawValue)" } ?? "—")
-        }
-    }
-}
