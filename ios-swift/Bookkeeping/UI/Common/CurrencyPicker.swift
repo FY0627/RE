@@ -106,12 +106,15 @@ enum CurrencyCatalog {
 /// 选币种：全部 160 多种币种，带国旗，按拼音首字母分组，侧边的 A–Z 索引可以直接跳；
 /// 最下面的搜索框可以打中文、英文、代码或国家名，也可以直接往下翻着选。
 /// 单选（币种、主币种、主要币种）点一下就返回；多选（多币种账户的其他币种）勾好后点「完成」返回。
+/// 记一笔、编辑流水时最上面先列自己的账户里有的币种（`suggested`），其余和添加账户时一样。
 struct CurrencyPicker: View {
     let title: String
     @Binding var selection: [CurrencyCode]
     let multiple: Bool
     /// 多选其他币种时的主币种：排在已选的最前面，不能取消
     var fixed: CurrencyCode?
+    /// 排在最上面的币种（自己的账户里有的）
+    var suggested: [CurrencyCode] = []
 
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
@@ -119,8 +122,13 @@ struct CurrencyPicker: View {
     var body: some View {
         List {
             if query.trimmingCharacters(in: .whitespaces).isEmpty {
-                if !chosen.isEmpty {
-                    Section("已选") { ForEach(chosen) { row($0) } }
+                if !suggested.isEmpty {
+                    Section("我的账户里有的") { ForEach(suggested.map(CurrencyCatalog.entry)) { row($0) } }
+                }
+                // 单选时选着的已经在上面一组里打了勾，不再单列
+                let shownChosen = multiple ? chosen : chosen.filter { !suggested.contains($0.code) }
+                if !shownChosen.isEmpty {
+                    Section("已选") { ForEach(shownChosen) { row($0) } }
                 }
                 Section("常用") { ForEach(CurrencyCatalog.common) { row($0) } }
                 ForEach(CurrencyCatalog.sections) { section in
@@ -204,10 +212,15 @@ struct CurrencyPicker: View {
 struct CurrencyLink: View {
     let title: String
     @Binding var currency: CurrencyCode?
+    /// 排在最上面的币种（自己的账户里有的）
+    var suggested: [CurrencyCode] = []
 
     var body: some View {
         NavigationLink {
-            CurrencyPicker(title: title, selection: Binding { currency.map { [$0] } ?? [] } set: { currency = $0.first }, multiple: false)
+            CurrencyPicker(
+                title: title, selection: Binding { currency.map { [$0] } ?? [] } set: { currency = $0.first }, multiple: false,
+                suggested: suggested
+            )
         } label: {
             LabeledContent(title, value: currency.map { "\($0.chineseName) \($0.rawValue)" } ?? "请选择")
         }

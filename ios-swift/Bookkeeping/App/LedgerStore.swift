@@ -20,6 +20,15 @@ final class LedgerStore {
     private(set) var state: LoadState = .loading
     /// 使用中的卡（资产页上方的卡包、净资产、待处理账单的账户选择）
     private(set) var accounts: [Account] = []
+
+    /// 自己的账户里有的币种（按账户顺序，不重复）：记一笔、编辑流水选币种时排在最上面
+    var heldCurrencies: [CurrencyCode] {
+        var codes: [CurrencyCode] = []
+        for account in accounts {
+            for code in account.currencies where !codes.contains(code) { codes.append(code) }
+        }
+        return codes
+    }
     /// 已停用的卡：不参与自动记账和净资产，在资产页最下方以灰色卡包显示
     private(set) var archivedAccounts: [Account] = []
     /// 全部卡片，按添加顺序

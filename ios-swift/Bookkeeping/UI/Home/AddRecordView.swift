@@ -60,7 +60,7 @@ struct AddRecordView: View {
                         .keyboardType(currency?.minorUnitExponent == 0 ? .numberPad : .decimalPad)
                         .font(.system(.largeTitle, design: .rounded).weight(.bold).monospacedDigit())
                         .focused($amountFocused)
-                    CurrencyLink(title: "币种", currency: $currency)
+                    CurrencyLink(title: "币种", currency: $currency, suggested: store.heldCurrencies)
                 }
                 Section {
                     Picker(type == .transfer ? "从" : "账户", selection: $accountID) {

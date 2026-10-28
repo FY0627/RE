@@ -131,7 +131,7 @@ struct RecordEditor: View {
                             .multilineTextAlignment(.trailing)
                             .font(.title3.weight(.semibold).monospacedDigit())
                     }
-                    CurrencyLink(title: "币种", currency: $currency)
+                    CurrencyLink(title: "币种", currency: $currency, suggested: store.heldCurrencies)
                 }
                 // 先选币种再选账户：账户没有这个币种时，下面多一行实际扣款（入账）
                 Section {
