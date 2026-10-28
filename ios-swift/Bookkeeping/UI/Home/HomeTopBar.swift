@@ -35,11 +35,12 @@ struct HomeTopBar: UIViewRepresentable {
 /// 首页顶部一行（UIKit 液态玻璃，和资产页顶部按钮同一种做法，共用部分在 `GlassControls`）。
 ///
 /// 平时：左边大标题「日常记账」（和资产页的「资产」一样的位置和字号），右边「+」（记一笔）和搜索两个圆形按钮。
-/// 点搜索：右边的圆留在原地变成关闭按钮，「+」并进这个圆里，搜索框从圆里像水滴一样向左分出来，
-/// 最左边再分出「全部 / 支出 / 收入 / 转帐」的下拉按钮，代替标题。
-/// 点关闭：把展开动画倒过来播放，搜索框和下拉按钮沿原路缩回圆里，「+」从圆里分出来回到原处，标题回来。
+/// 点搜索：「+」先像水滴一样并进右边的圆，紧接着搜索框从圆里向左分出来，最左边再分出「全部 / 支出 / 收入 / 转帐」的下拉按钮，
+/// 代替标题；右边的圆留在原地变成关闭按钮。
+/// 点关闭：把展开动画倒过来播放，搜索框和下拉按钮沿原路缩回圆里；快缩完时「+」从圆里分出来，冲过一点再弹回原处，标题回来。
 ///
-/// 手指按住的那块玻璃（右边的圆）始终不动：按住时玻璃会鼓起来，这时让它移动，看不出和别的玻璃融合、分开。
+/// 右边的圆不用系统的交互玻璃：系统按住的效果会让它浮在上层、不和分出来的玻璃融合，
+/// 看起来像一个圆盖在水滴上面。按下的鼓起和松手的回弹由 `GlassControls.pressFeedback` 做。
 @MainActor
 final class HomeTopBarView: UIView, UITextFieldDelegate {
     var onQueryChange: (String) -> Void = { _ in }
@@ -51,6 +52,10 @@ final class HomeTopBarView: UIView, UITextFieldDelegate {
     var scopeMenu: () -> [UIMenuElement] = { [] }
 
     static let height = GlassControls.size
+    /// 「+」并进圆里之后搜索框才开始分出来
+    private static let splitDelay = 0.1
+    /// 合上时搜索框缩到差不多了，「+」再分出来
+    private static let addReturnDelay = 0.24
 
     private let titleLabel = UILabel()
     private let container = GlassControls.container()
@@ -58,7 +63,7 @@ final class HomeTopBarView: UIView, UITextFieldDelegate {
     private let scopeGlass = GlassControls.capsule(nil)
     private let fieldGlass = GlassControls.capsule(nil)
     /// 右边的圆：平时是搜索按钮，展开后是关闭按钮
-    private let circleGlass = GlassControls.capsule(GlassControls.glass())
+    private let circleGlass = GlassControls.capsule(GlassControls.glass(interactive: false))
     /// 搜索左边的「+」：搜索时并进右边的圆，停稳后去掉玻璃效果（叠在圆下面）
     private let addGlass = GlassControls.capsule(GlassControls.glass())
     private let addButton = GlassControls.iconButton("plus", label: "记一笔")
@@ -103,6 +108,7 @@ final class HomeTopBarView: UIView, UITextFieldDelegate {
         fieldGlass.contentView.addSubview(textField)
         circleGlass.contentView.addSubview(searchButton)
         circleGlass.contentView.addSubview(closeButton)
+        GlassControls.pressFeedback([searchButton, closeButton], glass: circleGlass)
 
         fieldIcon.tintColor = .secondaryLabel
         fieldIcon.contentMode = .center
@@ -163,15 +169,19 @@ final class HomeTopBarView: UIView, UITextFieldDelegate {
             if searching { textField.becomeFirstResponder() }
             return
         }
+        // 「+」可能还在上一次的半路上：从看到的位置出发
+        GlassControls.freeze(addGlass)
         if searching {
             setSplit(true)
             lastMorph = CACurrentMediaTime()
-            GlassControls.morph({ self.applyLayout() }, completion: { [weak self] finished in
-                // 「+」并进圆里停稳了：只留圆这一块玻璃
+            // 「+」像水滴一样并进圆里（不冲过头），停稳后只留圆这一块玻璃
+            GlassControls.merge({ self.placeAdd(self.circleFrame) }, completion: { [weak self] finished in
                 guard let self, finished, self.isSearching else { return }
                 GlassControls.setGlass([self.addGlass], false)
             })
-            GlassControls.swapContent(show: searchContent, hide: idleContent)
+            // 搜索框紧接着从圆里分出来，到位时冲过一点再弹回
+            GlassControls.morph({ self.placeSearch() }, delay: Self.splitDelay)
+            GlassControls.swapContent(show: searchContent, hide: idleContent, showDelay: 0.22 + Self.splitDelay)
             // 搜索框已经是展开后的大小：键盘和玻璃同时出来
             textField.becomeFirstResponder()
             return
@@ -181,23 +191,20 @@ final class HomeTopBarView: UIView, UITextFieldDelegate {
             guard let self, finished, !self.isSearching else { return }
             self.setSplit(false)
         }
-        // 「+」先和圆重叠着加回玻璃，再一起分开
+        // 「+」先和圆重叠着加回玻璃，等搜索框缩得差不多了再分出来
         GlassControls.setGlass([addGlass], true)
-        if CACurrentMediaTime() - lastMorph >= GlassControls.morphSettle {
+        if CACurrentMediaTime() - lastMorph >= GlassControls.morphSettle + Self.splitDelay {
             // 展开已经停稳：把展开动画倒过来播放
             let scopeFrom = GlassControls.frame(of: scopeGlass), fieldFrom = GlassControls.frame(of: fieldGlass)
-            let circle = circleFrame, add = addFrame
+            let circle = circleFrame
             GlassControls.reverseMorph({ progress in
-                self.placeMoving(
-                    scope: GlassControls.lerp(scopeFrom, circle, progress),
-                    field: GlassControls.lerp(fieldFrom, circle, progress),
-                    add: GlassControls.lerp(circle, add, progress)
-                )
+                self.placeSearch(scope: GlassControls.lerp(scopeFrom, circle, progress), field: GlassControls.lerp(fieldFrom, circle, progress))
             }, completion: finish)
         } else {
             // 还在展开的半路：从当前位置直接回去，不回弹
-            GlassControls.morph({ self.applyLayout() }, bounce: 0, completion: finish)
+            GlassControls.morph({ self.placeSearch(scope: self.circleFrame, field: self.circleFrame) }, bounce: 0, completion: finish)
         }
+        GlassControls.split({ self.placeAdd(self.addFrame) }, delay: Self.addReturnDelay)
         GlassControls.swapContent(show: idleContent, hide: searchContent)
     }
 
@@ -240,7 +247,7 @@ final class HomeTopBarView: UIView, UITextFieldDelegate {
         CGRect(x: bounds.width - 2 * GlassControls.size - GlassControls.gap, y: 0, width: GlassControls.size, height: GlassControls.size)
     }
 
-    /// 按当前状态摆放；在动画里调用时就是动画的终点
+    /// 按当前状态摆放全部（不带动画的布局）
     private func applyLayout() {
         let size = GlassControls.size, gap = GlassControls.gap
         titleLabel.frame = CGRect(x: 4, y: 0, width: max(0, bounds.width - 2 * size - 2 * gap - 4), height: size)
@@ -248,26 +255,35 @@ final class HomeTopBarView: UIView, UITextFieldDelegate {
         searchButton.frame = CGRect(x: 0, y: 0, width: size, height: size)
         closeButton.frame = CGRect(x: 0, y: 0, width: size, height: size)
         addButton.frame = CGRect(x: 0, y: 0, width: size, height: size)
+        placeAdd(isSearching ? circleFrame : addFrame)
+        placeSearch()
+    }
+
+    /// 下拉按钮和搜索框按当前状态摆放；在动画里调用时就是动画的终点
+    private func placeSearch() {
         guard isSearching else {
-            placeMoving(scope: circleFrame, field: circleFrame, add: addFrame)
+            placeSearch(scope: circleFrame, field: circleFrame)
             return
         }
+        let size = GlassControls.size, gap = GlassControls.gap
         let scope = CGRect(x: 0, y: 0, width: GlassControls.pillWidth(scopeButton), height: size)
         let left = scope.maxX + gap
         let field = CGRect(x: left, y: 0, width: max(size, bounds.width - size - gap - left), height: size)
-        placeMoving(scope: scope, field: field, add: circleFrame)
+        placeSearch(scope: scope, field: field)
     }
 
-    /// 会移动的三块：下拉按钮、搜索框和「+」
-    private func placeMoving(scope: CGRect, field: CGRect, add: CGRect) {
+    private func placeSearch(scope: CGRect, field: CGRect) {
         let size = GlassControls.size
-        GlassControls.place(addGlass, add)
         GlassControls.place(scopeGlass, scope)
         scopeButton.frame = CGRect(origin: .zero, size: scope.size)
         GlassControls.place(fieldGlass, field)
         fieldIcon.frame = CGRect(x: Self.iconInset, y: 0, width: 17, height: size)
         let textX = Self.iconInset + 17 + 8
         textField.frame = CGRect(x: textX, y: 0, width: max(0, field.width - textX - 10), height: size)
+    }
+
+    private func placeAdd(_ rect: CGRect) {
+        GlassControls.place(addGlass, rect)
     }
 
     private func applyContent() {

@@ -3,12 +3,13 @@ import BKModel
 
 /// 统计：按月看。先看支出、收入、结余，再按分类排（哪一类花得最多，点进去看小类和每一笔），最后按账户看。
 /// 转帐（自己的账户之间、还信用卡、存取现金）不算在收支里；退款从它所在的分类里减掉。
-/// 多个币种分开统计，不换算。系统导航栏 + 分组列表，切换月份在导航栏右侧。
+/// 多个币种分开统计，不换算。分组列表；顶部一行和首页、资产页一样：左边大标题「统计」，右边切换月份的玻璃胶囊。
 struct StatsView: View {
     @Environment(LedgerStore.self) private var store
     @State private var year = Calendar.current.component(.year, from: Date())
     @State private var month = Calendar.current.component(.month, from: Date())
     @State private var stats: MonthStats?
+    @State private var scrolledUnderBar = false
 
     var body: some View {
         NavigationStack {
@@ -31,12 +32,21 @@ struct StatsView: View {
                 }
             }
             .listStyle(.insetGrouped)
+            .trackingScrollUnderTopBar($scrolledUnderBar)
             .navigationTitle("统计")
-            .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button("上个月", systemImage: "chevron.left") { shift(-1) }
-                    Button("下个月", systemImage: "chevron.right") { shift(1) }
-                }
+            // 系统导航栏的大标题在按钮下面一行；藏起来，自己放一行（和资产页的标题行一样高、一样的位置）
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarVisibility(.hidden, for: .navigationBar)
+            .safeAreaBar(edge: .top) {
+                TitleBar(title: "统计", items: [
+                    .init(symbol: "chevron.left", label: "上个月") { shift(-1) },
+                    .init(symbol: "chevron.right", label: "下个月") { shift(1) },
+                ])
+                .frame(height: GlassControls.size)
+                .padding(.horizontal, AppLayout.cardInset)
+                .padding(.top, 2)
+                .padding(.bottom, 6)
+                .background { TopBarBackdrop(visible: scrolledUnderBar) }
             }
             .task(id: "\(year)-\(month)-\(store.revision)") { stats = await store.stats(year: year, month: month) }
         }

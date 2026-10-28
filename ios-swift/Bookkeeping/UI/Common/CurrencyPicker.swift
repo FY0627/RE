@@ -137,6 +137,10 @@ struct CurrencyPicker: View {
             }
         }
         .listSectionIndexVisibility(.visible)
+        // 收起键盘时列表跟着变高，变高之前露出的是页面底色（浅色模式是白色），看起来像一块白的在闪。
+        // 列表后面铺满和列表一样的底色（盖到键盘那块区域），就看不出来
+        .background { Color(.systemGroupedBackground).ignoresSafeArea() }
+        .scrollDismissesKeyboard(.immediately)
         .searchable(text: $query, prompt: "币种、代码或国家")
         .autocorrectionDisabled()
         .navigationTitle(title)

@@ -176,19 +176,24 @@ struct AutomationStatusView: View {
     @Environment(LedgerStore.self) private var store
     @State private var log: [IngestLogEntry] = []
 
+    /// 能自动记账的账户：银行卡，和选了是哪个钱包的电子钱包
+    private var automated: [Account] {
+        store.accounts.filter { $0.isCard || WalletDirectory.provider(of: $0) != nil }
+    }
+
     var body: some View {
         List {
-            Section("各卡最近一次成功接收") {
-                if !store.accounts.contains(where: \.isCard) { Text("还没有添加银行卡").foregroundStyle(.secondary) }
-                ForEach(store.accounts.filter(\.isCard)) { account in
+            Section("各账户最近一次成功接收") {
+                if automated.isEmpty { Text("还没有添加银行卡").foregroundStyle(.secondary) }
+                ForEach(automated) { account in
                     let status = store.automation[account.id]
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("\(account.bankName) ·\(account.last4)")
+                        Text(account.displayTitle)
                         if let last = status?.lastSuccessAt {
                             Text("已通过真实触发验证 · \(Fmt.dateTime(last))（\(status?.lastSuccessSource?.displayName ?? "")）· 累计 \(status?.receivedCount ?? 0) 次")
                                 .font(.subheadline).foregroundStyle(.secondary)
                         } else {
-                            Text("待验证 · 尚未收到这张卡的自动输入").font(.subheadline).foregroundStyle(.orange)
+                            Text("待验证 · 尚未收到这个账户的自动输入").font(.subheadline).foregroundStyle(.orange)
                         }
                     }
                 }

@@ -234,10 +234,12 @@ public struct EventDraft: Hashable, Sendable, Codable {
     public var isSplitFee: Bool
     public var partIndex: Int
     public var bankHint: String?
+    /// 发通知的电子钱包（`WalletDirectory`），只在认不出银行时才有
+    public var walletHint: String?
     /// 原文中这笔交易所在的句子（展示给用户核对，不会上传）
     public var evidenceSnippet: String
 
-    public init(amount: AmountText, direction: FlowDirection?, kind: TransactionKind, status: SettlementStatus, counterparty: String?, cardTail: String?, counterpartyTail: String?, transactionTime: WallClock?, bankReference: String?, balanceAfter: AmountText?, includedFee: AmountText?, isSplitFee: Bool, partIndex: Int, bankHint: String?, evidenceSnippet: String) {
+    public init(amount: AmountText, direction: FlowDirection?, kind: TransactionKind, status: SettlementStatus, counterparty: String?, cardTail: String?, counterpartyTail: String?, transactionTime: WallClock?, bankReference: String?, balanceAfter: AmountText?, includedFee: AmountText?, isSplitFee: Bool, partIndex: Int, bankHint: String?, walletHint: String? = nil, evidenceSnippet: String) {
         self.amount = amount
         self.direction = direction
         self.kind = kind
@@ -252,6 +254,7 @@ public struct EventDraft: Hashable, Sendable, Codable {
         self.isSplitFee = isSplitFee
         self.partIndex = partIndex
         self.bankHint = bankHint
+        self.walletHint = walletHint
         self.evidenceSnippet = evidenceSnippet
     }
 }
@@ -476,19 +479,41 @@ public struct MonthStats: Hashable, Sendable {
         }
     }
 
+    /// 所有币种换算成一个币种（首页的本月支出、收入、结余）。
+    /// 外币交易有实际扣款的用实际扣款，否则按交易当天的汇率换算；没有汇率的不计入，币种列在 `unconverted`
+    public struct ConvertedTotals: Hashable, Sendable {
+        public var currency: CurrencyCode
+        /// 支出减去退款
+        public var expenseMinor: Int64
+        public var incomeMinor: Int64
+        public var unconverted: [CurrencyCode]
+
+        public init(currency: CurrencyCode, expenseMinor: Int64, incomeMinor: Int64, unconverted: [CurrencyCode]) {
+            self.currency = currency
+            self.expenseMinor = expenseMinor
+            self.incomeMinor = incomeMinor
+            self.unconverted = unconverted
+        }
+
+        public var balanceMinor: Int64 { incomeMinor - expenseMinor }
+    }
+
     public var year: Int
     public var month: Int
     public var currencies: [CurrencyTotals]
     public var accounts: [AccountTotal]
     public var holdCount: Int
     public var failedCount: Int
+    /// 按要求换算成一个币种的合计；没要求时为 nil
+    public var converted: ConvertedTotals?
 
-    public init(year: Int, month: Int, currencies: [CurrencyTotals], accounts: [AccountTotal], holdCount: Int, failedCount: Int) {
+    public init(year: Int, month: Int, currencies: [CurrencyTotals], accounts: [AccountTotal], holdCount: Int, failedCount: Int, converted: ConvertedTotals? = nil) {
         self.year = year
         self.month = month
         self.currencies = currencies
         self.accounts = accounts
         self.holdCount = holdCount
         self.failedCount = failedCount
+        self.converted = converted
     }
 }

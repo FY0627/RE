@@ -27,6 +27,7 @@ struct BookkeepingApp: App {
     @State private var store = LedgerStore()
     @State private var rates = ExchangeRateStore()
     @AppStorage("appearance") private var appearance = AppearanceMode.system.rawValue
+    @AppStorage(ExchangeRateStore.primaryKey) private var primaryCurrency = "CNY"
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -43,6 +44,8 @@ struct BookkeepingApp: App {
                 .onReceive(NotificationCenter.default.publisher(for: .ledgerDidChange)) { _ in
                     store.scheduleRefresh()
                 }
+                // 换了主要币种：首页的本月合计重新换算
+                .onChange(of: primaryCurrency) { store.scheduleRefresh() }
         }
     }
 }

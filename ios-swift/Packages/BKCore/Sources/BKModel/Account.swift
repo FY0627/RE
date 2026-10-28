@@ -7,7 +7,7 @@ public enum CardType: String, Sendable, Codable, CaseIterable {
     case other
     /// 现金：没有卡号，只能手动记账
     case cash
-    /// 自己有余额的电子钱包（微信零钱、支付宝余额）：没有卡号，只能手动记账
+    /// 自己有余额的电子钱包（微信零钱、支付宝余额）：没有卡号；支付宝、微信支付发来的通知可以自动记到它（`WalletDirectory`）
     case wallet
 
     public var displayName: String {
@@ -230,12 +230,12 @@ public struct AccountDraft: Sendable, Hashable {
         self.extraOpeningBalances = extraOpeningBalances
     }
 
-    /// 现金或电子钱包：名称就是它在卡包里显示的名称，没有银行和卡号
+    /// 现金或电子钱包：名称就是它在卡包里显示的名称，没有银行和卡号。电子钱包的 `walletID` 是哪个钱包（`WalletDirectory`）
     public static func pocket(
-        name: String, type: CardType, currency: CurrencyCode, paletteID: String, openingBalanceMinor: Int64? = nil
+        name: String, type: CardType, currency: CurrencyCode, paletteID: String, openingBalanceMinor: Int64? = nil, walletID: String? = nil
     ) -> AccountDraft {
         AccountDraft(
-            name: name, bankID: nil, bankName: name, last4: Account.placeholderLast4, cardType: type, currency: currency,
+            name: name, bankID: type == .wallet ? walletID : nil, bankName: name, last4: Account.placeholderLast4, cardType: type, currency: currency,
             paletteID: paletteID, openingBalanceMinor: openingBalanceMinor
         )
     }

@@ -1,8 +1,9 @@
 import SwiftUI
 import BKModel
 
-/// 待处理：上面是「待分类」——已经入账、还没分类的支出和收入，点一下分类就行（可以顺手写备注）；
-/// 没确认对方的转账在这里选「转给自己」（不算收支）或直接选分类（算转给别人）。
+/// 待处理：上面是「待分类」——已经入账、还没分类的支出和收入。点一笔打开面板：写备注、选分类，点「确定」才保存，
+/// 选错了可以换；没确认对方的转账在面板里选「转给自己」（不算收支）或直接选分类（算转给别人）。
+/// 列表里每笔只是一行，不在每一行里放分类格子（旧流水升级后可能有几百笔待分类）。
 /// 下面是「通知待处理」：只能「确认系统给出的候选」或「忽略」，不能借此手动编辑金额、方向、时间。
 /// 认不准的写法可以用这条通知「做成识别模板」，之后同样写法的通知按模板识别。
 /// 从卡片详情进入时只列出与这张卡有关的项（候选里有这张卡，或通知尾号与它相同）。
@@ -16,6 +17,7 @@ struct PendingView: View {
     @State private var loaded = false
     @State private var errorText: String?
     @State private var templateSource: PendingItem?
+    @State private var categorizing: RecordRow?
 
     var body: some View {
         NavigationStack {
@@ -26,14 +28,12 @@ struct PendingView: View {
                 if !shownWaiting.isEmpty {
                     Section {
                         ForEach(shownWaiting) { row in
-                            UncategorizedCard(row: row) { categoryID, note in
-                                await run { try await store.setCategory(recordID: row.id, categoryID: categoryID, note: note) }
-                            } own: {
-                                await run { try await store.setTransferParty(recordID: row.id, party: .own) }
-                            }
+                            Button { categorizing = row } label: { UncategorizedRow(row: row) }
                         }
                     } header: {
                         Text("待分类")
+                    } footer: {
+                        Text(waitingFooter)
                     }
                 }
                 Section {
@@ -41,7 +41,7 @@ struct PendingView: View {
                         Text(account == nil ? "没有待处理的通知" : "这张卡没有待处理的账单").foregroundStyle(.secondary)
                     }
                     ForEach(shown) { item in
-                        PendingItemCard(item: item, accounts: store.accounts.filter(\.isCard)) { accountID in
+                        PendingItemCard(item: item, accounts: store.accounts.filter { $0.isCard || $0.cardType == .wallet }) { accountID in
                             await run { try await store.confirmPending(id: item.id, accountID: accountID) }
                         } ignore: {
                             await run { try await store.ignorePending(id: item.id) }
@@ -76,7 +76,17 @@ struct PendingView: View {
             .sheet(item: $templateSource, onDismiss: { Task { await reload() } }) { item in
                 TemplateEditorView(item: item)
             }
+            .sheet(item: $categorizing, onDismiss: { Task { await reload() } }) { row in
+                CategorizeSheet(row: row)
+            }
         }
+    }
+
+    /// 待分类的笔数；超过一次列出的数量时说明只列了最近的
+    private var waitingFooter: String {
+        let total = account == nil ? max(store.uncategorizedCount, shownWaiting.count) : shownWaiting.count
+        let listed = total > shownWaiting.count ? "，先列出最近 \(shownWaiting.count) 笔" : ""
+        return "共 \(total) 笔\(listed)。点一笔选分类，可以顺手写备注。"
     }
 
     private var shownWaiting: [RecordRow] {
@@ -112,54 +122,97 @@ struct PendingView: View {
     }
 }
 
-/// 一笔待分类：金额、对方、账户、时间；可以先写备注，再点分类。
-/// 没确认对方的转账多一个「转给自己的账户」：算转帐，不算收支（选了分类就是转给别人）
-private struct UncategorizedCard: View {
+/// 待分类列表里的一行：标题、时间和账户、金额
+private struct UncategorizedRow: View {
     let row: RecordRow
-    let choose: (String, String?) async -> Void
-    let own: () async -> Void
 
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.title).font(.headline).foregroundStyle(Color.primary).lineLimit(1)
+                Text("\(Fmt.dateTime(row.record.effectiveAt)) · \(row.account.text)").font(.subheadline).foregroundStyle(Color.secondary).lineLimit(1)
+            }
+            Spacer()
+            Text(row.amountText(inAccount: false))
+                .font(.headline).monospacedDigit()
+                .foregroundStyle(row.amountColor(inAccount: false))
+        }
+        .contentShape(Rectangle())
+    }
+}
+
+/// 给一笔待分类选分类：先写备注（选填），点分类选上（可以换），点「确定」才保存。
+/// 没确认对方的转账多一个「转给自己的账户」：算转帐，不算收支（选了分类就是转给别人）
+private struct CategorizeSheet: View {
+    let row: RecordRow
+
+    @Environment(LedgerStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
     @State private var note = ""
+    @State private var categoryID: String?
     @State private var busy = false
+    @State private var errorText: String?
 
     var body: some View {
         let r = row.record
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(row.title).font(.headline).lineLimit(1)
-                    Text("\(Fmt.dateTime(r.effectiveAt)) · \(row.account.text)").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Spacer()
-                Text(row.amountText(inAccount: false))
-                    .font(.headline).monospacedDigit()
-                    .foregroundStyle(row.amountColor(inAccount: false))
-            }
-            TextField("备注（选填），比如买了什么", text: $note)
-                .textFieldStyle(.roundedBorder)
-            if r.needsTransferConfirmation {
-                Button {
-                    Task {
-                        busy = true
-                        await own()
-                        busy = false
+        NavigationStack {
+            Form {
+                Section {
+                    UncategorizedRow(row: row)
+                    if let counterparty = r.counterparty, counterparty != row.title {
+                        LabeledContent("交易对方", value: counterparty)
                     }
-                } label: {
-                    Label(r.direction == .outflow ? "转给自己的账户（不算支出）" : "来自自己的账户（不算收入）", systemImage: "arrow.left.arrow.right.circle")
                 }
-                .buttonStyle(.borderless)
-            }
-            CategoryGrid(type: CategoryType(row.entryType)) { id in
-                Task {
-                    busy = true
-                    let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
-                    await choose(id, trimmed.isEmpty ? nil : trimmed)
-                    busy = false
+                Section("备注") {
+                    TextField("选填，比如买了什么", text: $note, axis: .vertical)
+                        .lineLimit(1...4)
+                }
+                if r.needsTransferConfirmation {
+                    Section {
+                        Button {
+                            Task { await save { try await store.setTransferParty(recordID: row.id, party: .own) } }
+                        } label: {
+                            Label(r.direction == .outflow ? "转给自己的账户（不算支出）" : "来自自己的账户（不算收入）", systemImage: "arrow.left.arrow.right.circle")
+                        }
+                    } footer: {
+                        Text("转给别人的话，直接在下面选分类。")
+                    }
+                }
+                Section("分类") {
+                    CategoryGrid(type: CategoryType(row.entryType), selected: categoryID) { categoryID = $0 }
+                        .padding(.vertical, 6)
+                }
+                if let errorText {
+                    Section { Text(errorText).foregroundStyle(.red) }
                 }
             }
+            .disabled(busy)
+            .navigationTitle("选分类")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消", systemImage: "xmark") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("确定", systemImage: "checkmark") {
+                        guard let categoryID else { return }
+                        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+                        Task { await save { try await store.setCategory(recordID: row.id, categoryID: categoryID, note: trimmed.isEmpty ? nil : trimmed) } }
+                    }
+                    .disabled(categoryID == nil || busy)
+                }
+            }
+            .onAppear { note = row.record.note }
         }
-        .disabled(busy)
-        .padding(.vertical, 6)
+    }
+
+    private func save(_ action: () async throws -> Void) async {
+        busy = true
+        defer { busy = false }
+        do {
+            try await action()
+            dismiss()
+        } catch {
+            errorText = "保存失败：\(error.localizedDescription)"
+        }
     }
 }
 

@@ -5,6 +5,9 @@ import BKModel
 
 /// 界面状态。只在 MainActor 上保存结果；所有查询和写入都由 `LedgerBackend`
 /// 在数据库队列上执行，主线程只负责接收结果。
+///
+/// 刷新时只改真正变了的数据：没变的不重新赋值，读它的页面就不用重新计算。
+/// 几次刷新同时进行时只用最后开始的那次的结果，先开始、后完成的旧结果不会盖掉新的。
 @MainActor
 @Observable
 final class LedgerStore {
@@ -38,6 +41,8 @@ final class LedgerStore {
     private var backend: LedgerBackend?
     private var loadingMore = false
     private var refreshTask: Task<Void, Never>?
+    /// 每次刷新 +1；结果回来时不是最新一次就丢掉
+    private var refreshGeneration = 0
     static let pageSize = 60
 
     func start() async {
@@ -73,6 +78,8 @@ final class LedgerStore {
 
     func refresh() async {
         guard let backend else { return }
+        refreshGeneration += 1
+        let generation = refreshGeneration
         let signpost = AppServices.signposter.beginInterval("StoreRefresh")
         defer { AppServices.signposter.endInterval("StoreRefresh", signpost) }
         do {
@@ -85,26 +92,33 @@ final class LedgerStore {
             async let pending = backend.pendingCount()
             async let waiting = backend.uncategorizedCount()
             async let rows = backend.records(filter: Self.feedFilter, limit: Self.pageSize)
-            async let stats = backend.monthStats(year: year, month: month)
+            async let stats = backend.monthStats(year: year, month: month, convertTo: ExchangeRateStore.primaryCurrency)
             async let categories = backend.categories()
             let (a, b, au, p, r, s, w, c) = try await (accounts, balances, automation, pending, rows, stats, waiting, categories)
-            self.allAccounts = a
-            self.accounts = a.filter { !$0.archived }
-            self.archivedAccounts = a.filter(\.archived)
-            self.balances = b
-            self.automation = au
-            self.pendingCount = p
-            self.uncategorizedCount = w
+            // 期间又开始了一次刷新：这份结果可能已经旧了，交给那一次
+            guard generation == refreshGeneration else { return }
+            if allAccounts != a {
+                allAccounts = a
+                self.accounts = a.filter { !$0.archived }
+                archivedAccounts = a.filter(\.archived)
+            }
+            if self.balances != b { self.balances = b }
+            if self.automation != au { self.automation = au }
+            if pendingCount != p { pendingCount = p }
+            if uncategorizedCount != w { uncategorizedCount = w }
             if self.categories != c {
                 self.categories = c
-                self.categoryTree = CategoryTree(c)
+                categoryTree = CategoryTree(c)
             }
-            self.homeRows = r
-            self.homeHasMore = r.count == Self.pageSize
-            self.monthStats = s
-            self.revision += 1
-            state = .ready
+            if homeRows != r {
+                homeRows = r
+                homeHasMore = r.count == Self.pageSize
+            }
+            if monthStats != s { monthStats = s }
+            revision += 1
+            if state != .ready { state = .ready }
         } catch {
+            guard generation == refreshGeneration else { return }
             state = .failed(String(describing: error))
         }
     }
@@ -116,11 +130,14 @@ final class LedgerStore {
         guard let backend, homeHasMore, !loadingMore, let last = homeRows.last else { return }
         loadingMore = true
         defer { loadingMore = false }
+        let generation = refreshGeneration
         let cursor = RecordCursor(effectiveAt: last.record.effectiveAt, id: last.id)
-        if let page = try? await backend.records(filter: Self.feedFilter, before: cursor, limit: Self.pageSize) {
-            homeRows += page
-            homeHasMore = page.count == Self.pageSize
-        }
+        guard let page = try? await backend.records(filter: Self.feedFilter, before: cursor, limit: Self.pageSize),
+              // 读下一页的时候首页刷新过了：接不上，等滚到底再读
+              generation == refreshGeneration, homeRows.last?.id == last.id else { return }
+        let known = Set(homeRows.map(\.id))
+        homeRows += page.filter { !known.contains($0.id) }
+        homeHasMore = page.count == Self.pageSize
     }
 
     /// 按条件查流水（卡片详情、首页搜索），接在 `last` 后面分页
@@ -207,9 +224,9 @@ final class LedgerStore {
         try await backend?.deleteTemplate(id: id)
     }
 
-    /// 确认转账的对方；对方是自己时记住这个交易对方
+    /// 确认转账的对方：自己的账户（不算收支）或别人
     func setTransferParty(recordID: String, party: TransferParty?) async throws {
-        try await backend?.setTransferParty(recordID: recordID, party: party, remember: true)
+        try await backend?.setTransferParty(recordID: recordID, party: party)
         await refresh()
     }
 

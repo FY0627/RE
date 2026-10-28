@@ -2,7 +2,7 @@ import Foundation
 import BKModel
 import BKDatabase
 
-/// 账户匹配：尾号 + 银行 + 快捷指令绑定的账户。冲突时不强行入账。
+/// 账户匹配：尾号 + 银行 + 快捷指令绑定的账户；电子钱包发的、没写尾号的通知记到那个钱包。冲突时不强行入账。
 enum AccountMatcher {
     enum Result: Equatable {
         case matched(Account)
@@ -12,8 +12,8 @@ enum AccountMatcher {
         case none
     }
 
-    static func match(tail: String?, bankHint: String?, boundAccountID: String?, accounts: [Account]) -> Result {
-        // 现金、电子钱包没有卡号，不参与匹配
+    static func match(tail: String?, bankHint: String?, walletHint: String? = nil, boundAccountID: String?, accounts: [Account]) -> Result {
+        // 现金、电子钱包没有卡号，不参与尾号匹配
         let active = accounts.filter { !$0.archived && $0.isCard }
         let bound = boundAccountID.flatMap { id in active.first { $0.id == id } }
         func bankCompatible(_ account: Account) -> Bool {
@@ -21,6 +21,17 @@ enum AccountMatcher {
             return bankID == bankHint
         }
         guard let tail else {
+            // 支付宝、微信支付发的、没写卡号的：是钱包余额的收支。一般只有一个钱包账户，直接记；有小号时让用户选。
+            // 写了卡号尾号的是用银行卡付的，按尾号记到卡上（银行自己的通知也会来，按重复合并）
+            if let walletHint {
+                let wallets = accounts.filter { !$0.archived && WalletDirectory.provider(of: $0) == walletHint }
+                if let bound = wallets.first(where: { $0.id == boundAccountID }) { return .matched(bound) }
+                switch wallets.count {
+                case 0: break
+                case 1: return .matched(wallets[0])
+                default: return .ambiguous(wallets)
+                }
+            }
             if let bound, bankCompatible(bound) { return .boundOnly(bound) }
             return .none
         }
@@ -92,14 +103,18 @@ struct IngestEngine {
         }
         let accounts = try AccountDAO.all(db)
         // 固定写法认不出尾号时，在正文里找已添加的卡的尾号；再找卡片信息里填的账号、完整卡号
-        let fallbackTail = Self.knownTail(in: parsed.cleanedText, accounts: accounts) ?? Self.identifierTail(in: parsed.cleanedText, accounts: accounts)
+        // 电子钱包发的不找：里面的四位数字（订单号、金额）不是卡号
+        let fallbackTail = parsed.walletHint != nil ? nil
+            : Self.knownTail(in: parsed.cleanedText, accounts: accounts) ?? Self.identifierTail(in: parsed.cleanedText, accounts: accounts)
 
         // 自动化可以对所有短信 / 邮件 / App 通知触发。没有任何尾号、看不出是银行发的、也没有绑定账户、
         // 而且认不出完整交易（方向或性质不明）的，不当作动账通知（例如朋友发来「转我100元」），不进待处理。
-        // 被截断的通知可能丢了银行名称，但「你已成功转账 … HKD527.28」这样能完整认出的交易仍进待处理
+        // 被截断的通知可能丢了银行名称，但「你已成功转账 … HKD527.28」这样能完整认出的交易仍进待处理。
+        // 电子钱包发的、认出了金额的也留下（支付宝、微信支付的其他通知很多，没有金额的照样过滤）
         var classification = parsed.classification
         if [MessageClassification.transaction, .unrecognized, .marketing].contains(classification),
            parsed.cardTails.isEmpty, fallbackTail == nil, parsed.bankHint == nil, request.boundAccountID == nil,
+           parsed.walletHint == nil || parsed.events.isEmpty,
            !Lexicon.bankish.test(parsed.cleanedText), !parsed.events.contains(where: { $0.issue == nil }) {
             classification = .noFinancialContent
         }
@@ -153,7 +168,9 @@ struct IngestEngine {
 
         // 只有余额、没有交易：不入账，也不保存余额（卡片余额只从初始余额推算）；能对上卡时记为这张卡收到过自动输入
         for balance in parsed.balances {
-            guard case let .matched(account) = AccountMatcher.match(tail: balance.cardTail, bankHint: parsed.bankHint, boundAccountID: request.boundAccountID, accounts: accounts) else { continue }
+            guard case let .matched(account) = AccountMatcher.match(
+                tail: balance.cardTail, bankHint: parsed.bankHint, walletHint: parsed.walletHint, boundAccountID: request.boundAccountID, accounts: accounts
+            ) else { continue }
             try AccountDAO.noteSuccess(db, id: account.id, at: now, source: request.source)
         }
 
@@ -259,7 +276,7 @@ struct IngestEngine {
             ))
             guard let hit = MessageTemplates.match(template, in: parsed.cleanedText) else { continue }
             var draft = MessageTemplates.draft(hit, template: template, parsed: parsed, partIndex: try PendingDAO.nextPartIndex(db, ingestID: ingestID))
-            if draft.cardTail == nil {
+            if draft.cardTail == nil, draft.walletHint == nil {
                 draft.cardTail = Self.knownTail(in: parsed.cleanedText, accounts: accounts) ?? Self.identifierTail(in: parsed.cleanedText, accounts: accounts)
             }
             for item in items { _ = try PendingDAO.resolve(db, id: item.id, status: .ignored, at: now) }
@@ -276,7 +293,7 @@ struct IngestEngine {
     }
 
     func candidateIDs(for draft: EventDraft, request: IngestRequest, accounts: [Account]) -> [String] {
-        switch AccountMatcher.match(tail: draft.cardTail, bankHint: draft.bankHint, boundAccountID: request.boundAccountID, accounts: accounts) {
+        switch AccountMatcher.match(tail: draft.cardTail, bankHint: draft.bankHint, walletHint: draft.walletHint, boundAccountID: request.boundAccountID, accounts: accounts) {
         case let .matched(a): [a.id]
         case let .ambiguous(list): list.map(\.id)
         case let .boundOnly(a): [a.id]
@@ -304,7 +321,7 @@ struct IngestEngine {
         if let forcedAccount {
             account = forcedAccount
         } else {
-            switch AccountMatcher.match(tail: draft.cardTail, bankHint: draft.bankHint, boundAccountID: boundAccountID, accounts: accounts) {
+            switch AccountMatcher.match(tail: draft.cardTail, bankHint: draft.bankHint, walletHint: draft.walletHint, boundAccountID: boundAccountID, accounts: accounts) {
             case let .matched(a): account = a
             case let .ambiguous(list): return .pending(.ambiguousAccount, candidates: list.map(\.id), duplicateOf: nil)
             case let .boundOnly(a): return .pending(.missingCardTail, candidates: [a.id], duplicateOf: nil)
@@ -374,7 +391,7 @@ struct IngestEngine {
         try AccountDAO.noteSuccess(db, id: account.id, at: now, source: meta.source)
         try linkTransfer(record, counterpartyTail: draft.counterpartyTail, accounts: accounts)
         try linkRefund(record)
-        try Categorizer(db: db, calendar: calendar, now: now).categorize(recordID: record.id)
+        try Categorizer(db: db).categorize(recordID: record.id)
         return .recorded(record.id)
     }
 

@@ -1,7 +1,8 @@
 import SwiftUI
 import BKModel
 
-/// 首页：本月概览 + 全部账户的流水（按日期分组，分页加载）。分组列表，不做下拉刷新（数据变了会自动更新）。
+/// 首页：本月概览（支出、收入、结余，换算成「我的」里选的主要币种）+ 全部账户的流水（按日期分组，分页加载）。
+/// 分组列表，不做下拉刷新（数据变了会自动更新）。
 /// 一笔钱只占一行：转帐两边合成一行，合成的一单只占一行，手续费写在那一笔下面；失败、冻结的不在首页（在卡片详情里）。
 ///
 /// 顶部一行（`HomeTopBar`）和资产页一样：左边大标题「日常记账」，右边「记一笔」和搜索两个圆形玻璃按钮（不用系统导航栏，系统的大标题和按钮不在同一行）。
@@ -18,6 +19,8 @@ struct HomeView: View {
     @State private var searched: SearchKey?
     @State private var loadingMore = false
     @State private var adding = false
+    /// 列表滚到了顶部那一行下面：显示磨砂背景
+    @State private var scrolledUnderBar = false
 
     enum SearchScope: Hashable, CaseIterable {
         case all, expense, income, transfer
@@ -54,12 +57,13 @@ struct HomeView: View {
             }
             .listStyle(.insetGrouped)
             .scrollDismissesKeyboard(.immediately)
+            .trackingScrollUnderTopBar($scrolledUnderBar)
             .navigationTitle("日常记账")
             // 系统导航栏藏起来了，但默认的大标题模式仍在：往下拉时列表先停在「大标题展开」的位置再弹回，
             // 点状态栏回到顶部时列表停在大标题展开的位置（多出一截空白）。改成小标题就没有这一截
             .navigationBarTitleDisplayMode(.inline)
             .toolbarVisibility(.hidden, for: .navigationBar)
-            // 顶部一行固定在上面，列表从它下面滚过时系统加上边缘的渐隐效果。
+            // 顶部一行固定在上面，列表从它下面滚过时垫一层磨砂背景（搜索展开时也一直在）。
             // 和资产页的标题行一样高、一样的位置：44pt 高，离状态栏 2pt
             .safeAreaBar(edge: .top) {
                 HomeTopBar(query: $query, scope: $scope, add: { adding = true })
@@ -67,6 +71,7 @@ struct HomeView: View {
                     .padding(.horizontal, AppLayout.cardInset)
                     .padding(.top, 2)
                     .padding(.bottom, 6)
+                    .background { TopBarBackdrop(visible: scrolledUnderBar) }
             }
             .navigationDestination(for: String.self) { id in RecordDetailView(recordID: id) }
             .sheet(isPresented: $adding) { AddRecordView() }
@@ -178,25 +183,25 @@ struct HomeView: View {
         return Fmt.monthTitle(year: c.year ?? 0, month: c.month ?? 0)
     }
 
+    /// 本月支出（减去退款）、本月收入、结余，所有币种换算成主要币种：外币交易有实际扣款的用实际扣款，否则按当天的汇率
     @ViewBuilder
     private var summary: some View {
-        let currencies = store.monthStats?.currencies ?? []
         VStack(alignment: .leading, spacing: 0) {
             Text("本月支出").font(.subheadline).foregroundStyle(.secondary)
-            if let main = currencies.first {
-                // 支出减去退款
-                Text(Fmt.money(main.netExpenseMinor, main.currency))
+            if let total = store.monthStats?.converted {
+                Text(Fmt.money(total.expenseMinor, total.currency))
                     .font(.system(.largeTitle, design: .rounded).weight(.bold))
                     .monospacedDigit()
                     .lineLimit(1).minimumScaleFactor(0.6)
                     .padding(.top, 2)
                 HStack(alignment: .top, spacing: 20) {
-                    stat("本月收入", Fmt.money(main.incomeMinor, main.currency))
-                    stat("结余", Fmt.money(main.balanceMinor, main.currency))
+                    stat("本月收入", Fmt.money(total.incomeMinor, total.currency))
+                    stat("结余", Fmt.money(total.balanceMinor, total.currency))
                 }
                 .padding(.top, 12)
-                if currencies.count > 1 {
-                    Text(currencies.dropFirst().map { "\($0.currency.rawValue) 支出 \(Fmt.money($0.netExpenseMinor, $0.currency))" }.joined(separator: " · "))
+                if !total.unconverted.isEmpty {
+                    // 还没导入这些币种的汇率：只有这时多一行小字
+                    Text("\(total.unconverted.map(\.chineseName).joined(separator: "、"))没有汇率，没算进去")
                         .font(.footnote).foregroundStyle(.secondary).padding(.top, 10)
                 }
             } else {

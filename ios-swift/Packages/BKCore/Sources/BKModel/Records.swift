@@ -400,6 +400,16 @@ public struct RecordCharge: Hashable, Sendable {
 }
 
 /// 用户修改一笔流水。
+/// 编辑转帐时选的另一边
+public enum TransferPeerChange: Hashable, Sendable {
+    /// 不改
+    case keep
+    /// 自己的另一个账户：那个账户里有对得上的流水就配成一对，没有就在那边补记一笔
+    case account(String)
+    /// 自己的、但没有添加到 App 的账户：不配对
+    case untracked
+}
+
 public struct RecordEdit: Hashable, Sendable {
     public var accountID: String
     /// 最小货币单位，必须大于 0
@@ -420,11 +430,13 @@ public struct RecordEdit: Hashable, Sendable {
     public var keepsCategory: Bool
     /// 没配对的转账：对方是自己还是别人；nil 时保持原样
     public var transferParty: TransferParty?
+    /// 转帐的另一边是哪个账户
+    public var peer: TransferPeerChange
 
     public init(
         accountID: String, amountMinor: Int64, currency: CurrencyCode, direction: FlowDirection, kind: TransactionKind,
         counterparty: String?, time: Date?, note: String, settlementMinor: Int64? = nil,
-        categoryID: String? = nil, keepsCategory: Bool = true, transferParty: TransferParty? = nil
+        categoryID: String? = nil, keepsCategory: Bool = true, transferParty: TransferParty? = nil, peer: TransferPeerChange = .keep
     ) {
         self.accountID = accountID
         self.amountMinor = amountMinor
@@ -438,6 +450,7 @@ public struct RecordEdit: Hashable, Sendable {
         self.categoryID = categoryID
         self.keepsCategory = keepsCategory
         self.transferParty = transferParty
+        self.peer = peer
     }
 
     /// 编辑页选了支出 / 收入 / 转帐：换成对应的方向和交易性质（尽量保留原来的性质）。

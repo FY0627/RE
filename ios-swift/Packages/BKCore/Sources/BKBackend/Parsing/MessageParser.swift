@@ -38,6 +38,8 @@ public struct ParsedMessage: Sendable {
     public var events: [ParsedEvent]
     public var balances: [ParsedBalance]
     public var bankHint: String?
+    /// 认不出银行、但认得出是电子钱包（支付宝、微信支付）发的
+    public var walletHint: String?
     public var cleanedText: String
     /// 按固定写法认出的全部尾号（含对方账户的尾号）
     public var cardTails: [String]
@@ -131,13 +133,14 @@ public enum MessageParser {
         let cleaned = MessageParser.cleaned(context.text, source: context.source)
         let subject = context.subject.map(TextNormalizer.normalize) ?? ""
         let bankHint = BankDirectory.identify(sender: context.sender, text: cleaned + "\n" + subject)
+        let walletHint = bankHint == nil ? WalletDirectory.identify(sender: context.sender, text: cleaned) : nil
 
         var foundTails: [String] = []
         var firstTime: WallClock?
         var references: [Mention<String>] = []
         func result(_ classification: MessageClassification, _ events: [ParsedEvent] = [], _ balances: [ParsedBalance] = []) -> ParsedMessage {
             ParsedMessage(
-                classification: classification, events: events, balances: balances, bankHint: bankHint, cleanedText: cleaned, cardTails: foundTails,
+                classification: classification, events: events, balances: balances, bankHint: bankHint, walletHint: walletHint, cleanedText: cleaned, cardTails: foundTails,
                 firstTime: firstTime, onlyReference: references.count == 1 ? references[0].value : nil
             )
         }
@@ -372,7 +375,7 @@ public enum MessageParser {
                 amount: amount.amount, direction: detection.direction, kind: detection.kind, status: detection.status,
                 counterparty: counterparty, cardTail: tail, counterpartyTail: otherTail, transactionTime: time,
                 bankReference: reference, balanceAfter: balance, includedFee: included, isSplitFee: false,
-                partIndex: part, bankHint: bankHint, evidenceSnippet: String(sentence.prefix(160))
+                partIndex: part, bankHint: bankHint, walletHint: walletHint, evidenceSnippet: String(sentence.prefix(160))
             )
             events.append(ParsedEvent(draft: draft, issue: issue))
             for fee in sentenceFees {
@@ -402,7 +405,7 @@ public enum MessageParser {
                     amount: fee.amount, direction: .outflow, kind: .fee, status: status, counterparty: nil, cardTail: tail,
                     counterpartyTail: nil, transactionTime: nearestTime(before: fee.range.location, sentence: fee.sentence),
                     bankReference: nil, balanceAfter: nil, includedFee: nil, isSplitFee: false, partIndex: nextPart,
-                    bankHint: bankHint, evidenceSnippet: String(sentence.prefix(160))
+                    bankHint: bankHint, walletHint: walletHint, evidenceSnippet: String(sentence.prefix(160))
                 )
                 nextPart += 2
                 events.append(ParsedEvent(draft: draft, issue: nil))

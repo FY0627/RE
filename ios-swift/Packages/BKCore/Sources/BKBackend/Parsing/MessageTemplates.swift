@@ -235,7 +235,7 @@ public enum MessageTemplates {
             amount: hit.amount, direction: template.direction, kind: template.kind, status: .posted,
             counterparty: hit.counterparty, cardTail: hit.cardTail, counterpartyTail: nil, transactionTime: parsed.firstTime,
             bankReference: parsed.onlyReference, balanceAfter: nil, includedFee: nil, isSplitFee: false, partIndex: partIndex,
-            bankHint: parsed.bankHint, evidenceSnippet: hit.snippet
+            bankHint: parsed.bankHint, walletHint: parsed.walletHint, evidenceSnippet: hit.snippet
         )
     }
 }

@@ -108,6 +108,7 @@ struct RecordDetailSheet: View {
 /// 单笔流水详情：类型、分类（点一下就能改）、账户、时间、备注（直接写）；
 /// 退款、手续费、同一单的其他几笔；方向、交易性质、状态、来源、原始通知收在「更多信息」里。
 /// 右上角「编辑」可以改类型、金额、币种、分类、账户、交易对方、时间、备注和实际扣款；最下面可以删除。
+/// 操作按钮文字在左、图标在右（和系统菜单一样）；删除点了先在按钮旁边弹出一个小菜单确认，不弹对话框。
 struct RecordDetailView: View {
     let recordID: String
     @Environment(LedgerStore.self) private var store
@@ -116,7 +117,7 @@ struct RecordDetailView: View {
     @State private var saveError: String?
     @State private var showMore = false
     @State private var editing = false
-    @State private var confirmDelete = false
+    @State private var deleted = false
     @State private var choosingCategory = false
     @State private var merging = false
     @State private var note = ""
@@ -153,15 +154,10 @@ struct RecordDetailView: View {
         .sheet(isPresented: $merging, onDismiss: { Task { await reload() } }) {
             if let detail { OrderMergeView(row: detail.row) }
         }
-        .confirmationDialog("删除这笔流水？", isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("删除", role: .destructive) { Task { await delete() } }
-        } message: {
-            Text("删除后不能恢复。收到它的那条通知再来，也不会重新记上。")
-        }
         .onChange(of: noteFocused) { _, focused in
             if !focused { Task { await saveNote() } }
         }
-        .onDisappear { Task { await saveNote() } }
+        .onDisappear { if !deleted { Task { await saveNote() } } }
         .task { await reload() }
     }
 
@@ -238,13 +234,13 @@ struct RecordDetailView: View {
                 Section {
                     LabeledContent("整单", value: Fmt.money(row.record.amountMinor + detail.orderMembers.map(\.record.amountMinor).reduce(0, +), r.currency))
                     ForEach(detail.orderMembers) { member in link(member) }
-                    Button("拆开这一单", systemImage: "square.split.2x1") { Task { await splitOrder() } }
+                    Button { Task { await splitOrder() } } label: { ActionLabel(title: "拆开", systemImage: "square.split.2x1") }
                 } header: {
                     Text("同一单")
                 }
             } else if row.entryType != .transfer, r.status == .posted {
                 Section {
-                    Button("和其他记录合成一单", systemImage: "square.stack") { merging = true }
+                    Button { merging = true } label: { ActionLabel(title: "和其他记录合成一单", systemImage: "square.stack") }
                 }
             }
 
@@ -275,7 +271,16 @@ struct RecordDetailView: View {
                 }
             }
             Section {
-                Button("删除这笔流水", systemImage: "trash", role: .destructive) { confirmDelete = true }
+                // 确认的小菜单就在这个按钮旁边弹出
+                Menu {
+                    Section("删除后不能恢复") {
+                        Button("删除这笔流水", systemImage: "trash", role: .destructive) { Task { await delete() } }
+                    }
+                } label: {
+                    ActionLabel(title: "删除", systemImage: "trash").foregroundStyle(Color.red)
+                }
+            } footer: {
+                Text("收到它的那条通知再来，也不会重新记上。")
             }
         }
     }
@@ -354,10 +359,26 @@ struct RecordDetailView: View {
     private func delete() async {
         do {
             try await store.deleteRecord(id: recordID)
+            deleted = true
             dismiss()
         } catch {
             saveError = "删除失败：\(error.localizedDescription)"
         }
+    }
+}
+
+/// 详情里的操作按钮：文字在左，图标在右
+struct ActionLabel: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Image(systemName: systemImage)
+        }
+        .contentShape(Rectangle())
     }
 }
 

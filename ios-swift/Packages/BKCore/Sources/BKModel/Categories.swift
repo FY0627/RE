@@ -74,7 +74,7 @@ public enum CategoryKey {
     public static let interestCharge = "interest"
     public static let salary = "salary"
     public static let interestIncome = "interestIncome"
-    /// 饮食大类和按时间猜的三餐
+    /// 默认分类里的饮食大类和三餐（迁移 8 写入的标识，现在不再按时间猜）
     public static let food = "food"
     public static let breakfast = "food.breakfast"
     public static let lunch = "food.lunch"
@@ -90,16 +90,6 @@ public enum CategoryKey {
         case .repayment: repayment
         case .deposit, .withdrawal: cash
         default: transferOwn
-        }
-    }
-
-    /// 按交易时间猜三餐：早上算早餐，中午算午餐，晚上算晚餐；其他时间不猜
-    public static func meal(hour: Int) -> String? {
-        switch hour {
-        case 5..<10: breakfast
-        case 10..<15: lunch
-        case 17..<22: dinner
-        default: nil
         }
     }
 }
@@ -166,33 +156,6 @@ public struct CategoryDraft: Hashable, Sendable {
         self.parentID = parentID
         self.name = name
         self.symbol = symbol
-    }
-}
-
-/// 交易对方的写法整理：按对方记住分类时用。
-/// 只写了支付渠道（「财付通」「支付宝」「银联」）、看不出商户的，不去记它，否则所有微信付款都会被归到同一类。
-public enum CounterpartyKey {
-    /// 支付渠道和公司名里的通用词；去掉它们之后什么都不剩，就是看不出商户
-    static let channelWords = [
-        "财付通", "支付宝", "微信支付", "微信", "银联", "云闪付", "京东支付", "美团支付", "快捷支付", "快捷", "网银", "在线支付",
-        "扫码", "支付", "科技", "网络", "技术", "信息", "有限", "责任", "股份", "公司", "中国", "消费", "转账", "转帐",
-        "tenpay", "alipay", "wechatpay", "wechat", "unionpay", "payment", "online", "pay", "co.", "ltd", "limited",
-    ]
-    static let separators: Set<Character> = ["-", "—", "－", "·", "•", "(", ")", "（", "）", "_", "/", "|", ".", ",", "，", "*", "&"]
-
-    /// 记住分类用的写法：去掉空白、统一小写。看不出商户时为 nil
-    public static func normalize(_ counterparty: String?) -> String? {
-        guard let counterparty else { return nil }
-        let key = String(counterparty.lowercased().filter { !$0.isWhitespace })
-        guard !key.isEmpty, !isGeneric(key) else { return nil }
-        return key
-    }
-
-    static func isGeneric(_ key: String) -> Bool {
-        var rest = key
-        for word in channelWords { rest = rest.replacingOccurrences(of: word, with: "") }
-        rest.removeAll { separators.contains($0) || $0.isNumber }
-        return rest.isEmpty
     }
 }
 

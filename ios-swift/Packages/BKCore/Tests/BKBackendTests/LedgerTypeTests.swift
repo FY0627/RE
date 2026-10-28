@@ -4,7 +4,8 @@ import XCTest
 import BKDatabase
 import BKModel
 
-/// 参考 MOZE 基础记账的部分：支出 / 收入 / 转帐、分类和自动归类、首页合并显示、手动记账、合成一单、按分类统计。
+/// 参考 MOZE 基础记账的部分：支出 / 收入 / 转帐、分类（只按通知写明的归类，不猜）、首页合并显示、手动记账、合成一单、
+/// 按分类统计、换算成主要币种的本月合计、电子钱包自动记账。
 final class LedgerTypeTests: XCTestCase {
     var calendar: Calendar { ParserSampleTests.calendar }
     let now = ParserSampleTests.reference
@@ -65,7 +66,7 @@ final class LedgerTypeTests: XCTestCase {
         XCTAssertNil(rows.first { $0.record.kind == .transferOut }?.category, "转给谁不知道：待分类")
     }
 
-    func testCategoryIsRememberedByCounterpartyAndMealGuessedByTime() async throws {
+    func testCategoriesAreNotGuessedFromCounterpartyOrTime() async throws {
         let backend = try makeBackend()
         try await addAccount(backend, bank: "boc", bankName: "中国银行", last4: "8810", type: .credit)
         try await ingest(backend, "您尾号8810的信用卡10月20日12:10消费人民币25.00元，商户：财付通-美团。【中国银行】")
@@ -76,34 +77,13 @@ final class LedgerTypeTests: XCTestCase {
         let lunch = try await category(backend, "午餐")
         try await backend.setCategory(recordID: try XCTUnwrap(waiting.first { $0.record.amountMinor == 25_00 }?.id), categoryID: lunch.id, note: "牛肉面")
         waiting = try await backend.uncategorized()
-        XCTAssertTrue(waiting.isEmpty, "同一个对方还没分类的一起归类")
-        var rows = try await backend.records()
+        XCTAssertEqual(waiting.map(\.record.amountMinor), [31_00], "同一个对方的其他几笔不跟着归类")
+        let rows = try await backend.records()
         XCTAssertEqual(rows.first { $0.record.amountMinor == 25_00 }?.record.note, "牛肉面")
-        XCTAssertEqual(rows.first { $0.record.amountMinor == 31_00 }?.category?.name, "晚餐", "按交易时间猜三餐")
 
         try await ingest(backend, "您尾号8810的信用卡10月24日08:10消费人民币12.00元，商户：财付通-美团。【中国银行】")
-        rows = try await backend.records()
-        XCTAssertEqual(rows.first { $0.record.amountMinor == 12_00 }?.category?.name, "早餐", "记住了对方，下次自动归类")
-        XCTAssertEqual(rows.first { $0.record.amountMinor == 12_00 }?.category?.parentName, "饮食")
-    }
-
-    func testPaymentChannelWithoutMerchantIsNotRemembered() async throws {
-        XCTAssertNil(CounterpartyKey.normalize("财付通"))
-        XCTAssertNil(CounterpartyKey.normalize("支付宝（中国）网络技术有限公司"))
-        XCTAssertNil(CounterpartyKey.normalize("Tenpay"))
-        XCTAssertEqual(CounterpartyKey.normalize("财付通-美团"), "财付通-美团")
-        XCTAssertEqual(CounterpartyKey.normalize(" Star Bucks "), "starbucks")
-
-        let backend = try makeBackend()
-        try await addAccount(backend, last4: "0427")
-        try await ingest(backend, "【招商银行】您尾号0427的储蓄卡于10月24日10:30在财付通消费人民币20.00元。")
-        try await ingest(backend, "【招商银行】您尾号0427的储蓄卡于10月24日11:30在财付通消费人民币60.00元。")
-        let waiting = try await backend.uncategorized()
-        XCTAssertEqual(waiting.count, 2)
-        let shopping = try await category(backend, "日用品")
-        try await backend.setCategory(recordID: waiting[0].id, categoryID: shopping.id)
-        let still = try await backend.uncategorizedCount()
-        XCTAssertEqual(still, 1, "看不出商户：不一起归类")
+        let count = try await backend.uncategorizedCount()
+        XCTAssertEqual(count, 2, "新来的也不猜，留在待分类")
     }
 
     func testRefundFollowsOriginalCategoryAndReducesIt() async throws {
@@ -130,7 +110,7 @@ final class LedgerTypeTests: XCTestCase {
         XCTAssertEqual(cny.expenseCategories.first { $0.categoryID == clothes.id }?.amountMinor, 59_00)
     }
 
-    func testUnconfirmedTransferIsCategorizedOrRememberedAsOwn() async throws {
+    func testUnconfirmedTransferIsCategorizedOrConfirmedAsOwn() async throws {
         let backend = try makeBackend()
         try await addAccount(backend, last4: "0427")
         try await ingest(backend, "您尾号0427账户10月20日10:00向张三转账500.00元【招商银行】")
@@ -142,21 +122,17 @@ final class LedgerTypeTests: XCTestCase {
         let li = try XCTUnwrap(waiting.first { $0.record.counterparty == "李四" })
         try await backend.setCategory(recordID: li.id, categoryID: gift.id)
         let zhang = try XCTUnwrap(waiting.first { $0.record.counterparty == "张三" })
-        try await backend.setTransferParty(recordID: zhang.id, party: .own, remember: true)
+        try await backend.setTransferParty(recordID: zhang.id, party: .own)
 
-        var rows = try await backend.records()
+        let rows = try await backend.records()
         XCTAssertEqual(rows.first { $0.id == li.id }?.record.transferParty, .other, "选了分类就是转给别人")
         XCTAssertEqual(rows.first { $0.id == zhang.id }?.record.entryType, .transfer)
+        var count = try await backend.uncategorizedCount()
+        XCTAssertEqual(count, 0)
 
         try await ingest(backend, "您尾号0427账户10月24日10:00向张三转账300.00元【招商银行】")
-        try await ingest(backend, "您尾号0427账户10月24日11:00向李四转账100.00元【招商银行】")
-        rows = try await backend.records()
-        XCTAssertEqual(rows.first { $0.record.amountMinor == 300_00 }?.record.entryType, .transfer, "记住了张三是自己的账户")
-        let second = try XCTUnwrap(rows.first { $0.record.amountMinor == 100_00 })
-        XCTAssertEqual(second.record.transferParty, .other)
-        XCTAssertEqual(second.category?.id, gift.id)
-        let count = try await backend.uncategorizedCount()
-        XCTAssertEqual(count, 0)
+        count = try await backend.uncategorizedCount()
+        XCTAssertEqual(count, 1, "不记住对方：下一笔还要确认")
     }
 
     // MARK: 首页合并显示
@@ -306,7 +282,7 @@ final class LedgerTypeTests: XCTestCase {
         try await backend.updateCategory(id: fee.id, name: "银行手续费", symbol: "doc.text")
     }
 
-    func testMergeCategoryMovesRecordsAndRules() async throws {
+    func testMergeCategoryMovesRecords() async throws {
         let backend = try makeBackend()
         try await addAccount(backend, last4: "0427")
         try await ingest(backend, "【招商银行】您尾号0427的储蓄卡于10月24日14:30在健身房消费人民币200.00元。")
@@ -318,10 +294,8 @@ final class LedgerTypeTests: XCTestCase {
         try await backend.mergeCategory(id: sport.id, into: fun.id)
         let row = try await backend.records().first
         XCTAssertEqual(row?.category?.id, fun.id)
-
-        try await ingest(backend, "【招商银行】您尾号0427的储蓄卡于10月24日15:30在健身房消费人民币50.00元。")
-        let rows = try await backend.records()
-        XCTAssertEqual(rows.first { $0.record.amountMinor == 50_00 }?.category?.id, fun.id, "记住的规则跟着合并")
+        let categories = try await backend.categories()
+        XCTAssertFalse(categories.contains { $0.id == sport.id })
     }
 
     func testStatsGroupByTopLevelCategory() async throws {
@@ -367,5 +341,145 @@ final class LedgerTypeTests: XCTestCase {
         let updated = try XCTUnwrap(after.first)
         XCTAssertEqual(updated.record.entryType, .transfer)
         XCTAssertNil(updated.record.categoryID, "转帐不保存分类")
+    }
+
+    // MARK: 编辑转帐的另一边
+
+    func testEditingTransferPeerMovesOrLinksTheOtherSide() async throws {
+        let backend = try makeBackend()
+        let debit = try await addAccount(backend, last4: "0427")
+        let cash = try await backend.addAccount(.pocket(name: "现金", type: .cash, currency: .cny, paletteID: "ocean", openingBalanceMinor: 0))
+        let wallet = try await backend.addAccount(.pocket(name: "零钱", type: .wallet, currency: .cny, paletteID: "jade", openingBalanceMinor: 0))
+        let ids = try await backend.addRecord(ManualEntry(
+            type: .transfer, accountID: debit.id, toAccountID: cash.id, amountMinor: 100_00, currency: .cny, time: now.addingTimeInterval(60)
+        ))
+        let outRows = try await backend.records(accountID: debit.id)
+        let out = try XCTUnwrap(outRows.first)
+        XCTAssertEqual(out.id, ids[0])
+
+        // 另一边换成电子钱包：现金那笔删掉，钱包补记一笔
+        try await backend.updateRecord(id: out.id, RecordEdit(
+            accountID: debit.id, amountMinor: 120_00, currency: .cny, direction: .outflow, kind: .transferOut,
+            counterparty: nil, time: nil, note: "", transferParty: .own, peer: .account(wallet.id)
+        ))
+        var balances = try await backend.balanceSummaries()
+        XCTAssertEqual(balances[cash.id]?.primary?.ledgerDerivedMinor, 0, "原来补记在现金的那笔删掉了")
+        XCTAssertEqual(balances[wallet.id]?.primary?.ledgerDerivedMinor, 120_00)
+        let detail = try await backend.recordDetail(id: out.id)
+        XCTAssertEqual(detail.transferPeer?.record.accountID, wallet.id)
+
+        // 只改金额：补记的另一边跟着改，仍是一对
+        try await backend.updateRecord(id: out.id, RecordEdit(
+            accountID: debit.id, amountMinor: 150_00, currency: .cny, direction: .outflow, kind: .transferOut,
+            counterparty: nil, time: nil, note: ""
+        ))
+        balances = try await backend.balanceSummaries()
+        XCTAssertEqual(balances[wallet.id]?.primary?.ledgerDerivedMinor, 150_00)
+        let feed = try await backend.records(filter: RecordFilter(feed: true))
+        XCTAssertEqual(feed.count, 1, "仍然合成一行")
+
+        // 对方是没添加到 App 的账户：不配对，钱包那笔删掉
+        try await backend.updateRecord(id: out.id, RecordEdit(
+            accountID: debit.id, amountMinor: 150_00, currency: .cny, direction: .outflow, kind: .transferOut,
+            counterparty: nil, time: nil, note: "", peer: .untracked
+        ))
+        balances = try await backend.balanceSummaries()
+        XCTAssertEqual(balances[wallet.id]?.primary?.ledgerDerivedMinor, 0)
+        let aloneRows = try await backend.records(accountID: debit.id)
+        let alone = try XCTUnwrap(aloneRows.first)
+        XCTAssertEqual(alone.record.entryType, .transfer)
+        XCTAssertNil(alone.record.transferGroupID)
+    }
+
+    func testEditingTransferPeerLinksExistingBankRecord() async throws {
+        let backend = try makeBackend()
+        let a = try await addAccount(backend, last4: "0427")
+        let b = try await addAccount(backend, bank: "icbc", bankName: "工商银行", last4: "6621")
+        try await ingest(backend, "您尾号0427账户10月24日10:00向张三转账500.00元【招商银行】", at: now.addingTimeInterval(-4 * 3600))
+        try await ingest(backend, "您尾号6621账户10月24日14:00转入500.00元【工商银行】", at: now)
+        let outRows = try await backend.records(accountID: a.id)
+        let out = try XCTUnwrap(outRows.first)
+        XCTAssertNil(out.record.transferGroupID, "隔了四个小时，自动配对不上")
+        try await backend.updateRecord(id: out.id, RecordEdit(
+            accountID: a.id, amountMinor: 500_00, currency: .cny, direction: .outflow, kind: .transferOut,
+            counterparty: out.record.counterparty, time: nil, note: "", transferParty: .own, peer: .account(b.id)
+        ))
+        let count = try await backend.recordCount()
+        XCTAssertEqual(count, 2, "那边已经有银行记的一笔：配成一对，不补记")
+        let detail = try await backend.recordDetail(id: out.id)
+        XCTAssertEqual(detail.transferPeer?.record.accountID, b.id)
+    }
+
+    func testManualTransferNeedsTheCurrencyInBothAccounts() async throws {
+        let backend = try makeBackend()
+        let cny = try await addAccount(backend, last4: "0427")
+        let hkd = try await backend.addAccount(AccountDraft(
+            name: "", bankID: "hangseng", bankName: "恒生银行", last4: "8482", cardType: .debit, currency: .hkd, paletteID: "jade"
+        ))
+        do {
+            try await backend.addRecord(ManualEntry(type: .transfer, accountID: cny.id, toAccountID: hkd.id, amountMinor: 100_00, currency: .jpy, time: now))
+            XCTFail("两个账户都没有日元")
+        } catch BackendError.invalidTransfer {}
+    }
+
+    // MARK: 换算成主要币种
+
+    func testMonthTotalsConvertedToPrimaryCurrency() async throws {
+        let backend = try makeBackend()
+        let cash = try await backend.addAccount(.pocket(name: "现金", type: .cash, currency: .cny, paletteID: "ocean"))
+        let hk = try await backend.addAccount(.pocket(name: "港币现金", type: .cash, currency: .hkd, paletteID: "ocean"))
+        let yen = try await backend.addAccount(.pocket(name: "日元现金", type: .cash, currency: .jpy, paletteID: "ocean"))
+        try await backend.saveExchangeRates(ExchangeRates(base: .usd, rates: ["USD": 1, "HKD": 7.8, "CNY": 7.2], updatedAt: now, fetchedAt: now))
+        try await backend.addRecord(ManualEntry(type: .expense, accountID: cash.id, amountMinor: 100_00, currency: .cny, time: now))
+        try await backend.addRecord(ManualEntry(type: .expense, accountID: hk.id, amountMinor: 78_00, currency: .hkd, time: now))
+        try await backend.addRecord(ManualEntry(type: .expense, accountID: hk.id, amountMinor: 7_80, currency: .hkd, isRefund: true, time: now))
+        try await backend.addRecord(ManualEntry(type: .income, accountID: cash.id, amountMinor: 1_000_00, currency: .cny, time: now))
+        try await backend.addRecord(ManualEntry(type: .expense, accountID: yen.id, amountMinor: 500, currency: .jpy, time: now))
+        let stats = try await backend.monthStats(year: 2026, month: 10, convertTo: .cny)
+        let total = try XCTUnwrap(stats.converted)
+        XCTAssertEqual(total.expenseMinor, 100_00 + 72_00 - 7_20, "港币按汇率换算，退款减掉")
+        XCTAssertEqual(total.incomeMinor, 1_000_00)
+        XCTAssertEqual(total.balanceMinor, 1_000_00 - 164_80)
+        XCTAssertEqual(total.unconverted, [.jpy], "没有日元汇率：不计入，单独列出")
+    }
+
+    // MARK: 电子钱包自动记账
+
+    func testWalletNotificationIsRecordedToTheWalletAccount() async throws {
+        let backend = try makeBackend()
+        let alipay = try await backend.addAccount(.pocket(name: "支付宝余额", type: .wallet, currency: .cny, paletteID: "ocean", walletID: "alipay"))
+        let card = try await addAccount(backend, last4: "0427")
+        _ = try await backend.ingest(IngestRequest(text: "【支付宝】你于10月24日12:30在瑞幸咖啡消费25.00元。", source: .notification))
+        var rows = try await backend.records(accountID: alipay.id)
+        XCTAssertEqual(rows.map(\.record.amountMinor), [25_00], "没写卡号：记到唯一的支付宝账户")
+
+        // 写了卡号尾号的是用银行卡付的，记到卡上
+        _ = try await backend.ingest(IngestRequest(text: "【支付宝】你尾号0427的储蓄卡于10月24日13:30在瑞幸咖啡消费18.00元。", source: .notification))
+        rows = try await backend.records(accountID: card.id)
+        XCTAssertEqual(rows.map(\.record.amountMinor), [18_00])
+
+        // 有小号：让用户选
+        let second = try await backend.addAccount(.pocket(name: "支付宝小号", type: .wallet, currency: .cny, paletteID: "ocean", walletID: "alipay"))
+        _ = try await backend.ingest(IngestRequest(text: "【支付宝】你于10月24日14:30在全家消费9.90元。", source: .notification))
+        let pending = try await backend.openPendingItems()
+        XCTAssertEqual(pending.first?.reason, .ambiguousAccount)
+        XCTAssertEqual(Set(pending.first?.candidateAccountIDs ?? []), [alipay.id, second.id])
+        try await backend.confirmPending(id: try XCTUnwrap(pending.first?.id), accountID: second.id)
+        rows = try await backend.records(accountID: second.id)
+        XCTAssertEqual(rows.map(\.record.amountMinor), [9_90])
+    }
+
+    func testWalletIsGuessedFromAccountNameAndBankMessagesMentioningWalletsStayOnCards() async throws {
+        let backend = try makeBackend()
+        // 以前添加的电子钱包没有选是哪个钱包：按名称认
+        let wechat = try await backend.addAccount(.pocket(name: "微信零钱", type: .wallet, currency: .cny, paletteID: "jade"))
+        XCTAssertEqual(WalletDirectory.provider(of: wechat), "wechatpay")
+        _ = try await backend.ingest(IngestRequest(text: "微信支付 你于10月24日12:30在美团消费25.00元", source: .notification))
+        let rows = try await backend.records(accountID: wechat.id)
+        XCTAssertEqual(rows.count, 1)
+
+        // 银行短信里提到财付通：不是钱包发的
+        XCTAssertNil(WalletDirectory.identify(sender: "95555", text: "【招商银行】您尾号0427的储蓄卡于10月24日在财付通-美团消费人民币20.00元。"))
+        XCTAssertEqual(WalletDirectory.identify(sender: "95188", text: "你有一笔支出"), "alipay")
     }
 }

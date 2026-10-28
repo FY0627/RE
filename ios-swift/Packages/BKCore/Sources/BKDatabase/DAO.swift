@@ -291,19 +291,6 @@ public enum RecordDAO {
         Int(try db.scalarInt("SELECT COUNT(*) FROM records r WHERE \(uncategorizedFilter)"))
     }
 
-    /// 还没分类、写了交易对方的流水：给一个对方选了分类后，同一个对方的这些也一起归类
-    public static func uncategorizedWithCounterparty(_ db: SQLiteConnection) throws -> [LedgerRecord] {
-        try db.query(
-            "SELECT \(columns) FROM records r WHERE r.status = 'posted' AND r.category_id IS NULL AND r.counterparty IS NOT NULL",
-            [], map
-        )
-    }
-
-    /// 没确认对方、写了交易对方的转账：确认一个对方是自己后，同一个对方的这些也一起确认
-    public static func unconfirmedTransferRecords(_ db: SQLiteConnection) throws -> [LedgerRecord] {
-        try db.query("SELECT \(columns) FROM records r WHERE \(unconfirmedTransferFilter) AND r.counterparty IS NOT NULL", [], map)
-    }
-
     public static func setOrderGroup(_ db: SQLiteConnection, ids: [String], group: String) throws {
         for id in ids { try db.run("UPDATE records SET order_group = ? WHERE id = ?", [group, id]) }
     }
@@ -921,35 +908,6 @@ public enum CategoryDAO {
 
     public static func delete(_ db: SQLiteConnection, id: String) throws {
         try db.run("DELETE FROM categories WHERE id = ?", [id])
-    }
-}
-
-/// 按交易对方记住的分类。键是「类型|对方」：类型为 expense / income，或 own（对方是自己的账户，转账不算收支）。
-public enum CounterpartyRuleDAO {
-    public static func categoryID(_ db: SQLiteConnection, key: String) throws -> String?? {
-        try db.queryOne("SELECT category_id FROM counterparty_rules WHERE key = ?", [key]) { $0.optionalString(0) }
-    }
-
-    public static func set(_ db: SQLiteConnection, key: String, categoryID: String?, at date: Date) throws {
-        try db.run(
-            "INSERT INTO counterparty_rules (key, category_id, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET category_id = excluded.category_id, updated_at = excluded.updated_at",
-            [key, categoryID, date]
-        )
-    }
-
-    public static func delete(_ db: SQLiteConnection, key: String) throws {
-        try db.run("DELETE FROM counterparty_rules WHERE key = ?", [key])
-    }
-
-    /// 分类删除或合并：记住这些分类的规则改成 `to`；`to` 为 nil 时删除这些规则
-    public static func reassign(_ db: SQLiteConnection, from ids: [String], to: String?) throws {
-        guard !ids.isEmpty else { return }
-        let placeholders = ids.map { _ in "?" }.joined(separator: ", ")
-        if let to {
-            try db.run("UPDATE counterparty_rules SET category_id = ? WHERE category_id IN (\(placeholders))", ([to] as [SQLBindable]) + ids.map { $0 as SQLBindable })
-        } else {
-            try db.run("DELETE FROM counterparty_rules WHERE category_id IN (\(placeholders))", ids.map { $0 as SQLBindable })
-        }
     }
 }
 

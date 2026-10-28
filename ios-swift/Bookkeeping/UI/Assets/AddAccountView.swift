@@ -5,7 +5,8 @@ import BKBackend
 /// 添加账户：银行卡、现金或电子钱包（微信零钱、支付宝余额这种自己有余额的）。
 /// 银行卡：银行（直接输入，下面列出对得上的银行全称，什么语言都能搜）、后四位、卡类型、
 /// 币种（可设为多币种账户）和每个币种的初始余额（选填，紧跟在选好的币种下面）。不收集完整卡号、密码或邮箱凭据。
-/// 现金、电子钱包：名称、币种和初始余额；没有卡号，不参与自动记账，用「记一笔」手动记。
+/// 现金、电子钱包：名称、币种和初始余额；没有卡号。现金用「记一笔」手动记；
+/// 电子钱包选了是哪个钱包（支付宝、微信支付……），它发来的、没写银行卡号的通知自动记到这里（`WalletDirectory`）。
 struct AddAccountView: View {
     enum Kind: Hashable, CaseIterable {
         case card, cash, wallet
@@ -35,6 +36,8 @@ struct AddAccountView: View {
     @State private var bank: BankEntry?
     @FocusState private var bankFocused: Bool
     @State private var name = ""
+    /// 电子钱包是哪个钱包；nil 是「其他」（按名称猜，猜不出就只能手动记）
+    @State private var walletID: String?
     @State private var last4 = ""
     @State private var cardType: CardType = .debit
     @State private var currency: CurrencyCode?
@@ -55,11 +58,19 @@ struct AddAccountView: View {
         return [currency] + (multiCurrency ? extraCurrencies.filter { $0 != currency } : [])
     }
 
-    /// 现金、电子钱包的名称；现金没填时就叫「现金」
+    /// 现金、电子钱包的名称；没填时现金叫「现金」，电子钱包叫钱包的名称
     private var pocketName: String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty && kind == .cash ? "现金" : trimmed
+        guard trimmed.isEmpty else { return trimmed }
+        switch kind {
+        case .cash: return "现金"
+        case .wallet: return WalletDirectory.profile(id: walletID)?.name ?? ""
+        case .card: return ""
+        }
     }
+
+    /// 选钱包时列出的顺序
+    private static let wallets = ["alipay", "wechatpay", "alipayhk", "wechatpayhk"].compactMap(WalletDirectory.profile)
 
     private var isValid: Bool {
         let named = kind == .card ? !bankName.isEmpty && Account.isValidLast4(last4) : !pocketName.isEmpty
@@ -110,8 +121,22 @@ struct AddAccountView: View {
                         TextField("账户名称（可选）", text: $name)
                     }
                 } else {
-                    Section("名称") {
-                        TextField(kind == .cash ? "现金" : "例如 微信零钱、支付宝余额", text: $name)
+                    Section {
+                        if kind == .wallet {
+                            Picker("钱包", selection: $walletID) {
+                                ForEach(Self.wallets) { Text($0.name).tag(String?.some($0.id)) }
+                                Text("其他").tag(String?.none)
+                            }
+                        }
+                        TextField(kind == .cash ? "现金" : (WalletDirectory.profile(id: walletID)?.name ?? "例如 微信零钱、支付宝余额"), text: $name)
+                    } header: {
+                        Text("名称")
+                    } footer: {
+                        if kind == .wallet {
+                            Text(walletID == nil
+                                 ? "选了是哪个钱包，它发来的通知可以自动记到这里。"
+                                 : "这个钱包发来的、没写银行卡号的通知会自动记到这里；同一个钱包有几个账户时，会让你选记到哪个。")
+                        }
                     }
                 }
                 Section("币种与初始余额") {
@@ -201,7 +226,10 @@ struct AddAccountView: View {
             var opening: Int64?
             if case .valid(let minor) = balance(currency).wrappedValue.value(currency) { opening = minor }
             do {
-                _ = try await store.addAccount(.pocket(name: pocketName, type: pocketType, currency: currency, paletteID: paletteID, openingBalanceMinor: opening))
+                _ = try await store.addAccount(.pocket(
+                    name: pocketName, type: pocketType, currency: currency, paletteID: paletteID, openingBalanceMinor: opening,
+                    walletID: kind == .wallet ? walletID : nil
+                ))
                 dismiss()
             } catch BackendError.invalidAccount(.duplicateAccount) {
                 errorText = "已经有一个叫「\(pocketName)」的\(pocketType.displayName)账户。"

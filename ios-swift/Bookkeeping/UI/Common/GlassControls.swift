@@ -10,6 +10,9 @@ import UIKit
 /// - 停下时还在融合距离以内（更早一版间距 10pt、融合距离 16pt）：中间一直连着一道带尖角的细颈。
 ///
 /// 位置和大小用 UIKit 的弹簧动画，交给 Core Animation，由系统渲染进程播放，主线程忙也不掉帧。
+///
+/// 弹一下：分出来停到空处时冲过一点再弹回（`split`）；并进另一块时不冲过头（冲过头会从另一边飞出去），
+/// 停稳后整块横向鼓一下再弹回（`settle`），像两滴水并成一滴。
 @MainActor
 enum GlassControls {
     /// 和系统导航栏按钮一样：44pt 高
@@ -23,10 +26,34 @@ enum GlassControls {
         return UIVisualEffectView(effect: effect)
     }
 
-    static func glass() -> UIGlassEffect {
+    /// `interactive`：按住时系统让玻璃鼓起来、发亮。被按住的这块玻璃画在上层，不和同一容器里的其他玻璃融合：
+    /// 一边按着它一边从它下面分出别的玻璃，看起来像一个圆盖在水滴上面。要和别的玻璃分合的按钮用 `false`，
+    /// 按下的反馈自己做（`pressFeedback`）
+    static func glass(interactive: Bool = true) -> UIGlassEffect {
         let effect = UIGlassEffect()
-        effect.isInteractive = true
+        effect.isInteractive = interactive
         return effect
+    }
+
+    /// 不用系统交互效果的玻璃按下时：整块稍微鼓起来，松手弹回（带回弹）。只改缩放，和位置动画互不影响
+    static func pressFeedback(_ controls: [UIControl], glass: UIView) {
+        for control in controls {
+            control.addAction(UIAction { [weak glass] _ in if let glass { press(glass, down: true) } }, for: [.touchDown, .touchDragEnter])
+            control.addAction(
+                UIAction { [weak glass] _ in if let glass { press(glass, down: false) } },
+                for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit]
+            )
+        }
+    }
+
+    private static func press(_ glass: UIView, down: Bool) {
+        let scale: CGFloat = down ? 1.12 : 1
+        UIView.animate(
+            springDuration: down ? 0.25 : 0.5, bounce: down ? 0 : 0.45, initialSpringVelocity: 0, delay: 0,
+            options: [.beginFromCurrentState, .allowUserInteraction]
+        ) {
+            glass.transform = CGAffineTransform(scaleX: scale, y: scale)
+        }
     }
 
     /// 胶囊形状的一块玻璃；`effect` 为 nil 时先不显示，之后设成玻璃时系统播放「凝结」动画
@@ -83,16 +110,66 @@ enum GlassControls {
 
     /// 分开（展开）：弹簧动画，带一点回弹。`bounce` 为 0 时不回弹（中途转向用）。
     /// `completion` 收到 false 表示被新的动画打断
-    static func morph(_ changes: @escaping () -> Void, bounce: Double = morphBounce, completion: ((Bool) -> Void)? = nil) {
+    static func morph(
+        _ changes: @escaping () -> Void, bounce: Double = morphBounce, delay: Double = 0, completion: ((Bool) -> Void)? = nil
+    ) {
         let options: UIView.AnimationOptions = [.beginFromCurrentState, .allowUserInteraction]
         if UIAccessibility.isReduceMotionEnabled {
-            UIView.animate(withDuration: 0.25, delay: 0, options: options, animations: changes, completion: completion)
+            UIView.animate(withDuration: 0.25, delay: delay, options: options, animations: changes, completion: completion)
         } else {
             UIView.animate(
-                springDuration: morphDuration, bounce: bounce, initialSpringVelocity: 0, delay: 0, options: options,
+                springDuration: morphDuration, bounce: bounce, initialSpringVelocity: 0, delay: delay, options: options,
                 animations: changes, completion: completion
             )
         }
+    }
+
+    /// 短距离分出来的回弹：移动的距离只有一个按钮宽，`morphBounce` 冲过的那一点看不出来，加大一些
+    static let splitBounce = 0.42
+
+    /// 分出来、停到空处：冲过一点再弹回
+    static func split(_ changes: @escaping () -> Void, delay: Double = 0, completion: ((Bool) -> Void)? = nil) {
+        morph(changes, bounce: splitBounce, delay: delay, completion: completion)
+    }
+
+    /// 并进另一块玻璃：不冲过头，停稳后由 `settle` 弹一下
+    static func merge(_ changes: @escaping () -> Void, completion: ((Bool) -> Void)? = nil) {
+        let options: UIView.AnimationOptions = [.beginFromCurrentState, .allowUserInteraction]
+        if UIAccessibility.isReduceMotionEnabled {
+            UIView.animate(withDuration: 0.2, delay: 0, options: options, animations: changes, completion: completion)
+        } else {
+            UIView.animate(springDuration: 0.34, bounce: 0, initialSpringVelocity: 0, delay: 0, options: options, animations: changes, completion: completion)
+        }
+    }
+
+    /// 并好停稳后弹一下：整块先横向鼓起、竖向压扁一点，再回弹到原样。只改缩放
+    static func settle(_ view: UIView) {
+        guard !UIAccessibility.isReduceMotionEnabled else { return }
+        UIView.animateKeyframes(
+            withDuration: 0.45, delay: 0, options: [.calculationModeCubic, .beginFromCurrentState, .allowUserInteraction],
+            animations: {
+                UIView.addKeyframe(withRelativeStartTime: 0, relativeDuration: 0.28) {
+                    view.transform = CGAffineTransform(scaleX: 1.07, y: 0.93)
+                }
+                UIView.addKeyframe(withRelativeStartTime: 0.28, relativeDuration: 0.3) {
+                    view.transform = CGAffineTransform(scaleX: 0.98, y: 1.02)
+                }
+                UIView.addKeyframe(withRelativeStartTime: 0.58, relativeDuration: 0.42) {
+                    view.transform = .identity
+                }
+            }
+        )
+    }
+
+    /// 停在动画当前显示的位置：去掉还在进行（或还没开始）的位置动画，模型值改成看到的样子。
+    /// 之后再加的动画从这里出发，不会先跳到旧动画的终点
+    static func freeze(_ view: UIView) {
+        guard let shown = view.layer.presentation() else { return }
+        let bounds = shown.bounds, position = shown.position
+        // UIKit 的叠加动画各有各的键，按键删不干净
+        view.layer.removeAllAnimations()
+        view.bounds = CGRect(origin: .zero, size: bounds.size)
+        view.center = position
     }
 
     /// 合上用的时间，和卡片转场的节奏差不多
@@ -175,12 +252,12 @@ enum GlassControls {
 
     /// 玻璃里的文字和图标：要消失的马上淡出；要出现的等玻璃差不多分开了再淡入，
     /// 不会在别的玻璃上面滑过去（那样看起来像两个按钮叠在一起）
-    static func swapContent(show: [UIView], hide: [UIView]) {
+    static func swapContent(show: [UIView], hide: [UIView], showDelay: Double = 0.22) {
         let options: UIView.AnimationOptions = [.beginFromCurrentState, .allowUserInteraction]
         UIView.animate(withDuration: 0.12, delay: 0, options: options) {
             for view in hide { view.alpha = 0 }
         }
-        UIView.animate(withDuration: 0.2, delay: 0.22, options: options) {
+        UIView.animate(withDuration: 0.2, delay: showDelay, options: options) {
             for view in show { view.alpha = 1 }
         }
     }

@@ -269,12 +269,14 @@ public final class LedgerBackend: Sendable {
     }
 
     /// 修改一笔流水。改了时间：交易时间和接收时间都改成它（影响排序和余额推算）；没改时间则保持原样。
-    /// 配对的内部转账改了账户、金额、币种、方向，或不再是转账类，就不再配对。
-    /// 改了分类：记住这个交易对方，同一单的几笔一起改。转帐不保存分类
+    /// 配对的内部转账：另一边是手动补记的就跟着改（金额、币种、时间），仍是一对；
+    /// 另一边是银行通知记的，改了账户、金额、币种、方向，或不再是转账类，就不再配对。
+    /// 转帐可以换另一边的账户（`edit.peer`）。改了分类：同一单的几笔一起改。转帐不保存分类
     public func updateRecord(id: String, _ edit: RecordEdit) async throws {
         guard edit.amountMinor > 0 else { throw BackendError.invalidAmount }
         let calendar = calendar
         let now = clock()
+        let newID = newID
         try await database.write { db in
             guard var record = try RecordDAO.find(db, id: id) else { throw BackendError.notFound }
             guard let account = try AccountDAO.find(db, id: edit.accountID) else { throw BackendError.notFound }
@@ -300,11 +302,28 @@ public final class LedgerBackend: Sendable {
             }
             if let party = edit.transferParty { record.transferParty = party }
             if record.kind != .transferIn, record.kind != .transferOut { record.transferParty = nil }
-            if let group = original.transferGroupID,
-               original.accountID != record.accountID || original.amountMinor != record.amountMinor || original.currency != record.currency
-                   || original.direction != record.direction || !record.kind.isTransferLike || record.transferParty == .other {
-                try RecordDAO.clearTransferGroup(db, group: group)
-                record.transferGroupID = nil
+            if let group = original.transferGroupID {
+                let peer = try RecordDAO.inGroup(db, group: group).first { $0.id != id }
+                let stillTransfer = record.kind.isTransferLike && record.transferParty != .other
+                if let peer, peer.source == .manual, stillTransfer, peer.accountID != record.accountID {
+                    // 手动补记的另一边跟着改
+                    var synced = peer
+                    synced.amountMinor = record.amountMinor
+                    synced.currency = record.currency
+                    synced.direction = record.direction.opposite
+                    synced.transactionTime = record.transactionTime
+                    synced.receivedAt = record.receivedAt
+                    _ = try RecordDAO.update(db, synced)
+                } else if !stillTransfer || original.accountID != record.accountID || original.amountMinor != record.amountMinor
+                            || original.currency != record.currency || original.direction != record.direction {
+                    // 不再是一对：手动补记的另一边没有意义了，删掉；银行通知记的留着
+                    if let peer, peer.source == .manual { _ = try RecordDAO.delete(db, id: peer.id) }
+                    try RecordDAO.clearTransferGroup(db, group: group)
+                    record.transferGroupID = nil
+                }
+            }
+            if record.entryType == .transfer, edit.peer != .keep {
+                try Self.changePeer(edit.peer, of: &record, account: account, db: db, now: now, newID: newID)
             }
             if !edit.keepsCategory { record.categoryID = edit.categoryID }
             let tree = CategoryTree(try CategoryDAO.all(db))
@@ -315,15 +334,61 @@ public final class LedgerBackend: Sendable {
                 record.categoryID = nil
             }
             try RecordDAO.update(db, record)
-            let categorizer = Categorizer(db: db, calendar: calendar, now: now)
-            if record.transferParty == .own, original.transferParty != .own { try categorizer.rememberOwn(record) }
-            if let categoryID = record.categoryID, categoryID != original.categoryID {
-                if let group = record.orderGroupID {
-                    try RecordDAO.setCategory(db, ids: try RecordDAO.inOrderGroup(db, groups: [group]).map(\.id), categoryID: categoryID)
-                }
-                try categorizer.remember(record, categoryID: categoryID)
+            if let categoryID = record.categoryID, categoryID != original.categoryID, let group = record.orderGroupID {
+                try RecordDAO.setCategory(db, ids: try RecordDAO.inOrderGroup(db, groups: [group]).map(\.id), categoryID: categoryID)
             }
         }
+    }
+
+    /// 编辑转帐时换了另一边的账户。先拆开现在的另一边（手动补记的删掉，银行通知记的留着、不再配对），
+    /// 再和新账户配对：那个账户前后 3 天里有对得上、还没配对的一笔（银行通知记的）就配成一对，没有就在那边补记一笔。
+    /// 转进信用卡算还款。`untracked`：对方是自己没添加到 App 的账户，不配对
+    static func changePeer(
+        _ change: TransferPeerChange, of record: inout LedgerRecord, account: Account, db: SQLiteConnection, now: Date, newID: () -> String
+    ) throws {
+        let recordID = record.id
+        let current = try record.transferGroupID.map { group in try RecordDAO.inGroup(db, group: group).filter { $0.id != recordID } } ?? []
+        if case .account(let peerID) = change, current.count == 1, current[0].accountID == peerID { return }
+        for peer in current where peer.source == .manual { _ = try RecordDAO.delete(db, id: peer.id) }
+        if let group = record.transferGroupID { try RecordDAO.clearTransferGroup(db, group: group) }
+        record.transferGroupID = nil
+        guard case .account(let peerID) = change else {
+            if record.kind == .transferIn || record.kind == .transferOut { record.transferParty = .own }
+            return
+        }
+        guard peerID != record.accountID, let target = try AccountDAO.find(db, id: peerID) else { throw BackendError.invalidTransfer }
+        let repayment = (record.direction == .outflow && target.cardType == .credit) || (record.direction == .inflow && account.cardType == .credit)
+        if repayment {
+            record.kind = .repayment
+            record.transferParty = nil
+        } else if record.kind == .repayment {
+            record.kind = record.direction == .outflow ? .transferOut : .transferIn
+        }
+        if record.kind == .transferIn || record.kind == .transferOut { record.transferParty = .own }
+        let group = newID()
+        let at = record.effectiveAt
+        let window: TimeInterval = 3 * 86_400
+        let existing = try RecordDAO.candidates(
+            db, amountMinor: record.amountMinor, currency: record.currency, direction: record.direction.opposite,
+            effectiveFrom: at.addingTimeInterval(-window), effectiveTo: at.addingTimeInterval(window), excludingIngest: record.ingestID
+        )
+        .filter { $0.accountID == peerID && $0.id != recordID && $0.status == .posted && $0.kind.isTransferLike && $0.transferGroupID == nil }
+        .min { abs($0.effectiveAt.timeIntervalSince(at)) < abs($1.effectiveAt.timeIntervalSince(at)) }
+        if let existing {
+            try RecordDAO.setTransferGroup(db, ids: [existing.id], group: group)
+        } else {
+            let ingestID = newID()
+            try IngestDAO.insertManual(db, id: ingestID, receivedAt: at, processedAt: now)
+            let peer = LedgerRecord(
+                id: newID(), accountID: peerID, amountMinor: record.amountMinor, currency: record.currency, direction: record.direction.opposite,
+                kind: repayment ? .repayment : (record.direction == .outflow ? .transferIn : .transferOut), status: .posted, counterparty: nil,
+                transactionTime: record.transactionTime, receivedAt: at, processedAt: now, source: .manual, ingestID: ingestID, partIndex: 0,
+                bankReference: nil, balanceAfterMinor: nil, includedFeeMinor: nil, note: "", transferGroupID: group, relatedRecordID: nil
+            )
+            _ = try RecordDAO.insertIfAbsent(db, peer, dedupeKey: "m|" + peer.id, now: now)
+            try RecordDAO.addEvidence(db, recordID: peer.id, ingestID: ingestID, source: .manual, at: now)
+        }
+        record.transferGroupID = group
     }
 
     // MARK: 分类
@@ -334,10 +399,8 @@ public final class LedgerBackend: Sendable {
     }
 
     /// 给一笔选分类（待分类、详情里改分类），可以顺手写备注。
-    /// 没确认对方的转账选了分类就是转给别人。记住这个交易对方，同一个对方还没分类的也一起归类；同一单的几笔一起改
+    /// 没确认对方的转账选了分类就是转给别人。同一单的几笔一起改
     public func setCategory(recordID: String, categoryID: String, note: String? = nil) async throws {
-        let calendar = calendar
-        let now = clock()
         try await database.write { db in
             guard var record = try RecordDAO.find(db, id: recordID) else { throw BackendError.notFound }
             guard let category = try CategoryDAO.find(db, id: categoryID), category.type != .transfer else { throw BackendError.invalidCategory }
@@ -350,7 +413,6 @@ public final class LedgerBackend: Sendable {
             if let group = record.orderGroupID { ids = try RecordDAO.inOrderGroup(db, groups: [group]).map(\.id) }
             try RecordDAO.setCategory(db, ids: ids, categoryID: categoryID)
             if let note { _ = try RecordDAO.updateNote(db, id: record.id, note: String(note.prefix(500))) }
-            try Categorizer(db: db, calendar: calendar, now: now).remember(record, categoryID: categoryID)
         }
     }
 
@@ -440,12 +502,10 @@ public final class LedgerBackend: Sendable {
                     try CategoryDAO.setParent(db, id: child.id, parentID: target.id, sortOrder: try CategoryDAO.nextSortOrder(db, type: target.type, parentID: target.id))
                 } else {
                     try RecordDAO.reassignCategory(db, from: [child.id], to: target.id)
-                    try CounterpartyRuleDAO.reassign(db, from: [child.id], to: target.id)
                     try CategoryDAO.delete(db, id: child.id)
                 }
             }
             try RecordDAO.reassignCategory(db, from: [id], to: target.id)
-            try CounterpartyRuleDAO.reassign(db, from: [id], to: target.id)
             try CategoryDAO.delete(db, id: id)
             // 自动归类用的标识（例如「工资」）交给目标分类
             if let key = source.autoKey, target.autoKey == nil { try CategoryDAO.setAutoKey(db, id: target.id, autoKey: key) }
@@ -464,7 +524,6 @@ public final class LedgerBackend: Sendable {
                 }
             }
             try RecordDAO.reassignCategory(db, from: removed, to: targetID)
-            try CounterpartyRuleDAO.reassign(db, from: removed, to: targetID)
             for child in removed.dropFirst() { try CategoryDAO.delete(db, id: child) }
             try CategoryDAO.delete(db, id: id)
         }
@@ -482,7 +541,7 @@ public final class LedgerBackend: Sendable {
         }
     }
 
-    /// 手动记一笔。支出、收入记一条；转帐记两条（转出、转入）并配成一对，转入信用卡算还款。返回新流水的标识
+    /// 手动记一笔。支出、收入记一条；转帐记两条（转出、转入）并配成一对，转入信用卡算还款，两个账户都要有这个币种。返回新流水的标识
     @discardableResult
     public func addRecord(_ entry: ManualEntry) async throws -> [String] {
         guard entry.amountMinor > 0 else { throw BackendError.invalidAmount }
@@ -520,7 +579,8 @@ public final class LedgerBackend: Sendable {
             case .income:
                 records = [record(account, .inflow, .income, part: 0, category: category)]
             case .transfer:
-                guard let toID = entry.toAccountID, toID != account.id, let target = try AccountDAO.find(db, id: toID) else {
+                guard let toID = entry.toAccountID, toID != account.id, let target = try AccountDAO.find(db, id: toID),
+                      account.currencies.contains(entry.currency), target.currencies.contains(entry.currency) else {
                     throw BackendError.invalidTransfer
                 }
                 let repayment = target.cardType == .credit
@@ -534,9 +594,6 @@ public final class LedgerBackend: Sendable {
             for r in records {
                 _ = try RecordDAO.insertIfAbsent(db, r, dedupeKey: "m|" + r.id, now: now)
                 try RecordDAO.addEvidence(db, recordID: r.id, ingestID: ingestID, source: .manual, at: now)
-            }
-            if let category, let first = records.first {
-                try Categorizer(db: db, calendar: calendar, now: now).remember(first, categoryID: category)
             }
             try SettingsDAO.set(db, Self.lastManualAccountKey, account.id)
             return records.map(\.id)
@@ -667,18 +724,11 @@ public final class LedgerBackend: Sendable {
     }
 
     /// 确认转账的对方：自己的账户（内部转账，不计入收支）或别人。传 nil 恢复为未确认。
-    /// `remember`：对方是自己时记住这个交易对方，同一个对方没确认的转账也一起算转帐
-    public func setTransferParty(recordID: String, party: TransferParty?, remember: Bool = false) async throws {
-        let calendar = calendar
-        let now = clock()
+    public func setTransferParty(recordID: String, party: TransferParty?) async throws {
         try await database.write { db in
-            guard try RecordDAO.setTransferParty(db, id: recordID, party: party), let record = try RecordDAO.find(db, id: recordID) else {
-                throw BackendError.notFound
-            }
-            guard party == .own else { return }
+            guard try RecordDAO.setTransferParty(db, id: recordID, party: party) else { throw BackendError.notFound }
             // 自己的账户之间是转帐，不用分类
-            try RecordDAO.setCategory(db, ids: [recordID], categoryID: nil)
-            if remember { try Categorizer(db: db, calendar: calendar, now: now).rememberOwn(record) }
+            if party == .own { try RecordDAO.setCategory(db, ids: [recordID], categoryID: nil) }
         }
     }
 
@@ -754,11 +804,15 @@ public final class LedgerBackend: Sendable {
         if !deleted { throw BackendError.notFound }
     }
 
+    /// 新添加了账户：因为「没有匹配账户」（电子钱包发的是「没写尾号」）待处理的通知，现在能唯一匹配就入账
     static func rematchOpenPending(_ db: SQLiteConnection, engine: IngestEngine) throws {
         let accounts = try AccountDAO.all(db)
-        for item in try PendingDAO.open(db) where item.reason == .noMatchingAccount {
-            guard let draft = item.draft, let meta = try IngestDAO.meta(db, id: item.ingestID) else { continue }
-            guard case .matched = AccountMatcher.match(tail: draft.cardTail, bankHint: draft.bankHint, boundAccountID: nil, accounts: accounts) else { continue }
+        for item in try PendingDAO.open(db) {
+            guard let draft = item.draft, item.reason == .noMatchingAccount || (item.reason == .missingCardTail && draft.walletHint != nil),
+                  let meta = try IngestDAO.meta(db, id: item.ingestID) else { continue }
+            guard case .matched = AccountMatcher.match(
+                tail: draft.cardTail, bankHint: draft.bankHint, walletHint: draft.walletHint, boundAccountID: nil, accounts: accounts
+            ) else { continue }
             let outcome = try engine.commit(
                 draft, meta: .init(ingestID: item.ingestID, source: meta.source, receivedAt: meta.receivedAt, processedAt: meta.processedAt),
                 boundAccountID: nil, accounts: accounts, forcedAccount: nil, duplicateCheck: true
@@ -837,12 +891,18 @@ public final class LedgerBackend: Sendable {
 
     // MARK: 统计
 
-    public func monthStats(year: Int, month: Int) async throws -> MonthStats {
+    /// 一个月的统计。`convertTo`：再把所有币种换算成这个币种合计（首页的本月支出、收入、结余）
+    public func monthStats(year: Int, month: Int, convertTo primary: CurrencyCode? = nil) async throws -> MonthStats {
         let calendar = calendar
         guard let start = calendar.date(from: DateComponents(year: year, month: month, day: 1)),
               let end = calendar.date(byAdding: .month, value: 1, to: start) else { throw BackendError.notFound }
         return try await database.read { db in
-            StatsCalculator.month(year: year, month: month, records: try RecordDAO.inRange(db, from: start, to: end), categories: try CategoryDAO.all(db))
+            let records = try RecordDAO.inRange(db, from: start, to: end)
+            var stats = StatsCalculator.month(year: year, month: month, records: records, categories: try CategoryDAO.all(db))
+            if let primary {
+                stats.converted = try StatsCalculator.converted(records, to: primary, charges: ChargeCalculator(db: db, calendar: calendar))
+            }
+            return stats
         }
     }
 
@@ -926,6 +986,30 @@ enum StatsCalculator {
             return t
         }.sorted { $0.recordCount > $1.recordCount }
         return MonthStats(year: year, month: month, currencies: currencies, accounts: byAccount.values.sorted { $0.outflowMinor + $0.inflowMinor > $1.outflowMinor + $1.inflowMinor }, holdCount: holds, failedCount: failed)
+    }
+
+    /// 所有币种换算成 `primary` 的本月支出（减去退款）和收入。转帐不算。
+    /// 外币交易填了实际扣款（正好是 `primary`）就用它，否则按交易当天的汇率；没有汇率的不计入
+    static func converted(_ records: [LedgerRecord], to primary: CurrencyCode, charges: ChargeCalculator) throws -> MonthStats.ConvertedTotals {
+        var expense: Int64 = 0, income: Int64 = 0
+        var unconverted: Set<CurrencyCode> = []
+        for r in records where r.status == .posted && r.entryType != .transfer {
+            let amount: Int64
+            if r.currency == primary {
+                amount = r.amountMinor
+            } else if let value = try charges.charge(r, primary: primary).amountMinor {
+                amount = value
+            } else {
+                unconverted.insert(r.currency)
+                continue
+            }
+            switch r.entryType {
+            case .expense: expense += r.isRefund ? -amount : amount
+            case .income: income += amount
+            case .transfer: break
+            }
+        }
+        return MonthStats.ConvertedTotals(currency: primary, expenseMinor: expense, incomeMinor: income, unconverted: unconverted.sorted())
     }
 
     /// 按大类汇总，大类下面是小类（直接记在大类上的那部分也作为一项）；找不到的分类算待分类。都按金额从大到小

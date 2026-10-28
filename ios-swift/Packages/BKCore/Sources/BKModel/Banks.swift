@@ -74,3 +74,67 @@ public enum BankDirectory {
         return best?.id
     }
 }
+
+/// 电子钱包（支付宝、微信支付……）发的通知：认得出是哪个钱包时，没写卡号尾号的那笔记到这个钱包账户。
+/// 标识和添加账户时选的「银行」（`BankCatalog`）相同。只看发件人和正文开头的署名，
+/// 不看正文里提到的「财付通」「支付宝」：银行短信里常写着「在财付通-美团消费」，那是银行卡的交易。
+public struct WalletProfile: Hashable, Sendable, Identifiable {
+    public var id: String
+    public var name: String
+    /// 短信号码
+    public var smsNumbers: [String]
+    /// 发件人（App 通知的 App 名称、邮件发件人）里出现这些名称就是它；小写比较
+    public var senderNames: [String]
+    /// 正文开头的署名（「【支付宝】」「微信支付」）
+    public var signatures: [String]
+    /// 用户没选钱包时，按账户名称猜：名称里有这些字的电子钱包账户算它
+    public var accountNames: [String]
+}
+
+public enum WalletDirectory {
+    /// 名称长的在前：「支付宝香港」先于「支付宝」
+    public static let all: [WalletProfile] = [
+        WalletProfile(id: "alipayhk", name: "AlipayHK", smsNumbers: [], senderNames: ["alipayhk", "支付宝香港", "支付寶香港"],
+                      signatures: ["AlipayHK", "支付宝香港", "支付寶香港"], accountNames: ["alipayhk", "支付宝香港", "支付寶香港"]),
+        WalletProfile(id: "wechatpayhk", name: "WeChat Pay HK", smsNumbers: [], senderNames: ["wechat pay hk", "微信支付香港"],
+                      signatures: ["WeChat Pay HK", "微信支付香港"], accountNames: ["wechat pay hk", "微信支付香港", "微信香港"]),
+        WalletProfile(id: "alipay", name: "支付宝", smsNumbers: ["95188"], senderNames: ["支付宝", "支付寶", "alipay"],
+                      signatures: ["支付宝", "支付寶", "Alipay"], accountNames: ["支付宝", "支付寶", "alipay", "余额宝"]),
+        WalletProfile(id: "wechatpay", name: "微信支付", smsNumbers: [], senderNames: ["微信支付", "wechat pay"],
+                      signatures: ["微信支付", "WeChat Pay"], accountNames: ["微信", "wechat", "零钱"]),
+    ]
+
+    public static func profile(id: String?) -> WalletProfile? {
+        guard let id else { return nil }
+        return all.first { $0.id == id }
+    }
+
+    /// 发件人或正文开头认出的钱包；认不出返回 nil，不猜
+    public static func identify(sender: String?, text: String) -> String? {
+        if let sender, !sender.isEmpty {
+            let digits = String(sender.unicodeScalars.filter { $0.value >= 48 && $0.value <= 57 }.map(Character.init))
+            if !digits.isEmpty, digits.count <= 16, let found = all.first(where: { $0.smsNumbers.contains { digits.hasSuffix($0) } }) {
+                return found.id
+            }
+            let lowered = sender.lowercased()
+            if let found = all.first(where: { $0.senderNames.contains { lowered.contains($0) } }) { return found.id }
+        }
+        let head = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(24))
+        for wallet in all {
+            for signature in wallet.signatures {
+                let wrapped = ["【\(signature)】", "[\(signature)]", "［\(signature)］"]
+                if wrapped.contains(where: { head.hasPrefix($0) || text.contains($0) }) { return wallet.id }
+                if head.hasPrefix(signature) { return wallet.id }
+            }
+        }
+        return nil
+    }
+
+    /// 电子钱包账户是哪个钱包：添加时选的，没选就按名称猜（以前添加的账户没有选）
+    public static func provider(of account: Account) -> String? {
+        guard account.cardType == .wallet else { return nil }
+        if let id = account.bankID, profile(id: id) != nil { return id }
+        let names = [account.name, account.bankName].map { $0.lowercased() }
+        return all.first { wallet in wallet.accountNames.contains { key in names.contains { $0.contains(key) } } }?.id
+    }
+}

@@ -66,7 +66,9 @@ struct WalletPage: UIViewControllerRepresentable {
 ///   主线程读流水、生成列表行都不影响动画。动画途中滚动或再次点按，新的位移叠加上去，卡片从当前位置平滑转向；
 /// - 卡片不接收触摸。点按由下面的滚动区识别，再按卡片显示的位置（动画途中也是）找到点中的卡；
 ///   拖动卡片就是拖动下面的滚动区，所以点开马上能滑，返回一开始卡包就能滑、能点；
-/// - 顶部按钮（`WalletTopBar`）也是 UIKit 的液态玻璃，和卡片同时开始动画。
+/// - 顶部按钮（`WalletTopBar`）也是 UIKit 的液态玻璃，和卡片同时开始动画；
+/// - 屏幕外的卡不画（隐藏，不参与合成）。打开 / 关闭时只有起点或终点在屏幕上的卡做动画，
+///   卡包滚到很下面时，上面滚出屏幕的卡不跟着飞进来，下面看不见的卡也不用落下去。
 final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     var actions = WalletActions()
 
@@ -105,6 +107,10 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
     private var dropDistance: CGFloat = 0
     /// 每次打开 / 关闭 +1；延迟执行的收尾据此判断自己是否已经过时
     private var motionToken = 0
+    /// 正在打开 / 关闭的动画里要显示的卡：动画停稳之前，模型位置在屏幕外也不隐藏
+    private var transitionCards: Set<ObjectIdentifier> = []
+    /// 转场停稳的时间：之后只显示屏幕上的卡
+    private static let transitionSettle: Duration = .milliseconds(900)
 
     init(store: LedgerStore, rates: ExchangeRateStore, detail: WalletDetailModel) {
         self.store = store
@@ -276,6 +282,7 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
             CardMotion.setTransform(card.layer, transform, timing: nil)
             CardMotion.setOpacity(card.layer, behind ? 0 : 1, timing: nil)
         }
+        transitionCards = []
     }
 
     // MARK: 布局
@@ -395,6 +402,30 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
                 card.center = CGPoint(x: x, y: cardTop(index, layout) + card.bounds.height / 2)
             }
         }
+        cullCards()
+    }
+
+    /// 卡片上边缘在 `top` 时，有没有一部分在屏幕上（多算一点阴影）
+    private func isOnScreen(top: CGFloat, _ layout: StackLayout) -> Bool {
+        let margin: CGFloat = 16
+        return top < view.bounds.height + margin && top + layout.cardHeight > -margin
+    }
+
+    /// 屏幕外的卡、透明的卡隐藏起来，不参与绘制；转场途中要显示的卡除外
+    private func cullCards() {
+        let layout = stackLayout
+        for card in cards {
+            let shown = transitionCards.contains(ObjectIdentifier(card))
+                || (card.layer.opacity > 0 && isOnScreen(top: card.center.y - card.bounds.height / 2, layout))
+            if card.isHidden == shown { card.isHidden = !shown }
+        }
+    }
+
+    /// 转场停稳后：不再特别保留哪张卡，只显示屏幕上的
+    private func finishTransition(_ token: Int) {
+        guard token == motionToken else { return }
+        transitionCards = []
+        cullCards()
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
@@ -422,18 +453,30 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
         stackScroll.accessibilityElementsHidden = true
 
         let before = cards.map(\.center.y)
+        let wasShown = cards.map { !$0.isHidden }
         selectedIndex = index
         behindFollowsScroll = true
         dropDistance = view.bounds.height + max(0, -pileTop)
         detailList.open(account)
         topBar.setPeriodTitle(detailModel.period.title, animated: false)
         topBar.setDetail(true, animated: true)
+        // 只有看得见的卡做动画：选中的卡，和本来就在屏幕上的上面、下面的卡。
+        // 滚出屏幕的上面的卡直接收起来，看不见的下面的卡直接落到屏幕外
+        let moving = Set(cards.indices.filter { role($0) == .selected || wasShown[$0] })
+        transitionCards = Set(moving.map { ObjectIdentifier(cards[$0]) })
         placeCards()
 
         let transition = CardMotion.transition(reduceMotion: reduceMotion)
         for (i, card) in cards.enumerated() {
             let layer = card.layer
             let delta = before[i] - card.center.y
+            guard moving.contains(i) else {
+                if role(i) == .behind {
+                    CardMotion.setTransform(layer, reduceMotion ? CATransform3DIdentity : CardMotion.behindTransform, timing: nil)
+                    CardMotion.setOpacity(layer, 0, timing: nil)
+                }
+                continue
+            }
             switch role(i) {
             case .selected:
                 CardMotion.addMove(layer, deltaY: delta, timing: transition)
@@ -459,6 +502,8 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
             // 收在后面的卡这时已经透明，滚动详情时不再移动它们
             guard let self, token == self.motionToken else { return }
             self.behindFollowsScroll = false
+            try? await Task.sleep(for: Self.transitionSettle - .milliseconds(500))
+            self.finishTransition(token)
         }
     }
 
@@ -507,12 +552,23 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
         let before = cards.map(\.center.y)
         selectedIndex = nil
         behindFollowsScroll = false
+        // 只有回到屏幕上的卡做动画；回到屏幕外的直接放回卡包
+        let layout = stackLayout
+        let moving = Set(cards.indices.filter { roles[$0] == .selected || isOnScreen(top: cardTop($0, layout), layout) })
+        transitionCards = Set(moving.map { ObjectIdentifier(cards[$0]) })
         placeCards()
 
         let transition = CardMotion.transition(reduceMotion: reduceMotion)
         for (i, card) in cards.enumerated() {
             let layer = card.layer
             let delta = before[i] - card.center.y
+            guard moving.contains(i) else {
+                if roles[i] == .behind {
+                    CardMotion.setTransform(layer, CATransform3DIdentity, timing: nil)
+                    CardMotion.setOpacity(layer, 1, timing: nil)
+                }
+                continue
+            }
             switch roles[i] {
             case .selected:
                 CardMotion.addMove(layer, deltaY: delta, timing: transition)
@@ -542,6 +598,8 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
             AppServices.signposter.endInterval("DetailClose", signpost)
             guard let self, token == self.motionToken else { return }
             self.detailList.finishClose()
+            try? await Task.sleep(for: Self.transitionSettle - .milliseconds(500))
+            self.finishTransition(token)
         }
     }
 
@@ -550,6 +608,7 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
         motionToken += 1
         selectedIndex = nil
         behindFollowsScroll = false
+        transitionCards = []
         for view in cards.map({ $0 as UIView }) + [headerHost.view, archivedTitleHost.view].compactMap({ $0 }) {
             view.layer.removeAllAnimations()
             view.layer.transform = CATransform3DIdentity

@@ -12,6 +12,11 @@ final class ExchangeRateStore {
     nonisolated static let primaryKey = "fx.primaryCurrency"
     nonisolated private static let cacheKey = "fx.cache"
 
+    /// 「我的」里选的主要币种：净资产和首页的本月合计都换算成它
+    nonisolated static var primaryCurrency: CurrencyCode {
+        UserDefaults.standard.string(forKey: primaryKey).map { CurrencyCode($0) } ?? .cny
+    }
+
     private(set) var rates: ExchangeRates?
 
     init() {

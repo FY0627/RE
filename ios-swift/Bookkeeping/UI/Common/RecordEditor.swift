@@ -3,8 +3,11 @@ import BKModel
 import BKBackend
 
 /// 修改一笔流水：支出 / 收入 / 转帐、金额、币种、分类、账户、交易对方、时间、备注。
-/// 支出可以标成退款（从支出里减掉）；转帐选这张卡是转出还是转入。交易性质和方向按选的类型换，尽量保留原来的。
-/// 卡里没有这笔流水的币种时（银行按主币种结汇扣款），还可以填实际扣了多少主币种；不填就按交易当天的汇率估算。
+/// 支出可以标成退款（从支出里减掉）；转帐选这张卡是转出还是转入，以及另一边是哪个账户（转到 / 来自）。
+/// 交易性质和方向按选的类型换，尽量保留原来的。
+/// 币种只列这个账户有的（加上这笔原来的币种）；卡里没有这笔流水的币种时（银行按主币种结汇扣款），
+/// 还可以填实际扣了多少主币种，不填就按交易当天的汇率估算。
+/// 余额从「校准余额」那一刻算起：比它早的流水换账户、改金额，卡上的余额不变，这时在账户下面写明。
 struct RecordEditor: View {
     let detail: RecordDetail
     let onSaved: () -> Void
@@ -23,8 +26,18 @@ struct RecordEditor: View {
     @State private var timeChanged = false
     @State private var note: String
     @State private var settlementText: String
+    @State private var peer: PeerChoice
     @State private var saving = false
     @State private var errorText: String?
+
+    /// 转帐的另一边
+    enum PeerChoice: Hashable {
+        /// 自己的、没添加到 App 的账户
+        case untracked
+        case account(String)
+    }
+
+    private let initialPeer: PeerChoice
 
     init(detail: RecordDetail, onSaved: @escaping () -> Void) {
         self.detail = detail
@@ -41,6 +54,9 @@ struct RecordEditor: View {
         _time = State(initialValue: Self.initialTime(r))
         _note = State(initialValue: r.note)
         _settlementText = State(initialValue: r.settlement.map { MoneyInput.editingText($0.minorUnits, currency: $0.currency) } ?? "")
+        let peer = detail.transferPeer.map { PeerChoice.account($0.record.accountID) } ?? PeerChoice.untracked
+        _peer = State(initialValue: peer)
+        initialPeer = peer
     }
 
     /// 通知里写了完整的日期和时间就用它（按手机所在时区），否则用收到通知的时间
@@ -61,6 +77,48 @@ struct RecordEditor: View {
             list.append(current)
         }
         return list
+    }
+
+    /// 账户能用的币种：账户有的币种，加上这笔原来的币种（在原来的账户上时，外币消费保持原样）
+    private var allowedCurrencies: [CurrencyCode] {
+        guard let account else { return [] }
+        let r = detail.row.record
+        var codes = account.currencies
+        if account.id == r.accountID, !codes.contains(r.currency) { codes.append(r.currency) }
+        return codes
+    }
+
+    /// 列出来的币种：再加上现在选着的（换账户的那一刻还没换过来时，选择框里也有它）
+    private var currencyChoices: [CurrencyCode] {
+        var codes = allowedCurrencies
+        if let currency, !codes.contains(currency) { codes.append(currency) }
+        return codes
+    }
+
+    /// 转帐另一边可选的账户：除了这一笔的账户；原来的另一边已停用也列出来
+    private var peerOptions: [Account] {
+        var list = accounts.filter { $0.id != accountID }
+        if case .account(let id) = initialPeer, id != accountID, !list.contains(where: { $0.id == id }), let old = store.account(id: id) {
+            list.append(old)
+        }
+        return list
+    }
+
+    private var peerAccount: Account? {
+        guard case .account(let id) = peer else { return nil }
+        return store.account(id: id)
+    }
+
+    /// 比账户的校准余额早、不影响余额的账户（换了账户时才提示）
+    private var balanceNote: String? {
+        let r = detail.row.record
+        guard accountID != r.accountID else { return nil }
+        let unaffected = [store.account(id: r.accountID), account].compactMap { $0 }.filter { a in
+            guard let opening = a.openingBalance(a.currencies.contains(r.currency) ? r.currency : a.currency) else { return false }
+            return (timeChanged ? time : r.effectiveAt) <= opening.at
+        }
+        guard !unaffected.isEmpty else { return nil }
+        return "这笔比「\(unaffected.map(\.displayTitle).joined(separator: "」「"))」的校准余额早，换账户不会改变它的余额（余额从校准那一刻算起）。"
     }
 
     /// 卡里没有这个币种：要按主币种扣款
@@ -85,15 +143,19 @@ struct RecordEditor: View {
                             Text("转出").tag(FlowDirection.outflow)
                             Text("转入").tag(FlowDirection.inflow)
                         }
+                        Picker(transferDirection == .outflow ? "转到" : "来自", selection: $peer) {
+                            ForEach(peerOptions) { Text($0.displayTitle).tag(PeerChoice.account($0.id)) }
+                            Text("没添加到 App 的账户").tag(PeerChoice.untracked)
+                        }
                     }
                     HStack {
                         Text("金额")
-                        TextField("0.00", text: $amountText)
-                            .keyboardType(.decimalPad)
+                        TextField(MoneyInput.placeholder(currency), text: $amountText)
+                            .keyboardType(currency?.minorUnitExponent == 0 ? .numberPad : .decimalPad)
                             .multilineTextAlignment(.trailing)
                             .font(.title3.weight(.semibold).monospacedDigit())
                     }
-                    CurrencyLink(title: "币种", currency: $currency)
+                    CurrencyChoiceRow(choices: currencyChoices, currency: $currency)
                     if let settlementCurrency {
                         HStack {
                             Text("实际扣款（\(settlementCurrency.chineseName)）")
@@ -121,6 +183,8 @@ struct RecordEditor: View {
                     TextField("交易对方（选填）", text: $counterparty)
                     DatePicker("时间", selection: $time)
                         .onChange(of: time) { timeChanged = true }
+                } footer: {
+                    if let balanceNote { Text(balanceNote) }
                 }
                 if let errorText {
                     Section { Text(errorText).foregroundStyle(.red) }
@@ -139,6 +203,12 @@ struct RecordEditor: View {
                 // 支出换成收入（或反过来）：原来的分类对不上了
                 if let category = store.categoryTree.category(categoryID), category.type != CategoryType(type) { categoryID = nil }
             }
+            .onChange(of: accountID) {
+                // 换了账户：另一边不能是它自己；币种换成新账户有的
+                if peer == .account(accountID) { peer = .untracked }
+                if let currency, allowedCurrencies.contains(currency) { return }
+                currency = account?.currency
+            }
         }
     }
 
@@ -155,8 +225,14 @@ struct RecordEditor: View {
     private func save() async {
         guard let currency else { return }
         guard case .valid(let amount) = MoneyInput.parse(amountText, negative: false, currency: currency), amount > 0 else {
-            errorText = "请填写大于 0 的金额，例如 38.50"
+            errorText = MoneyInput.invalidAmountMessage(currency)
             return
+        }
+        if type == .transfer, let peerAccount {
+            guard account?.currencies.contains(currency) == true, peerAccount.currencies.contains(currency) else {
+                errorText = "「\(peerAccount.displayTitle)」或这个账户没有\(currency.chineseName)，不能这样转帐。"
+                return
+            }
         }
         var settlement: Int64?
         if let settlementCurrency {
@@ -173,10 +249,19 @@ struct RecordEditor: View {
             accountIsCredit: account?.cardType == .credit
         )
         let trimmed = counterparty.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 转帐的另一边：改了才传（没改时保持原来的配对，手动补记的那边跟着改金额）
+        var peerChange = TransferPeerChange.keep
+        if type == .transfer, peer != initialPeer || detail.row.entryType != .transfer {
+            switch peer {
+            case .untracked: peerChange = .untracked
+            case .account(let id): peerChange = .account(id)
+            }
+        }
         let edit = RecordEdit(
             accountID: accountID, amountMinor: amount, currency: currency, direction: fields.direction, kind: fields.kind,
             counterparty: trimmed.isEmpty ? nil : trimmed, time: timeChanged ? time : nil, note: note,
-            settlementMinor: settlement, categoryID: type == .transfer ? nil : categoryID, keepsCategory: false, transferParty: fields.party
+            settlementMinor: settlement, categoryID: type == .transfer ? nil : categoryID, keepsCategory: false, transferParty: fields.party,
+            peer: peerChange
         )
         saving = true
         defer { saving = false }

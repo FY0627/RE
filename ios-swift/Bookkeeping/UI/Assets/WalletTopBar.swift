@@ -2,8 +2,9 @@ import UIKit
 
 /// 资产页顶部的玻璃按钮（UIKit 液态玻璃，共用部分在 `GlassControls`）。
 ///
-/// 卡包：右边「+」和「更多」合成一个胶囊。打开详情：「+」那一半像水滴一样从胶囊里分出来、弹一下，
-/// 变成选时间段的胶囊按钮（写着「全部」「本月」……）；左边出现返回按钮。返回时时间段胶囊并回去，变回「+」。
+/// 卡包：右边「+」和「更多」合成一个胶囊。打开详情：「+」那一半像水滴一样从胶囊里分出来，冲过一点再弹回，
+/// 变成选时间段的胶囊按钮（写着「全部」「本月」……）；左边出现返回按钮。返回时时间段胶囊沿原路并回去，
+/// 并好后整个胶囊鼓一下再弹回（`GlassControls.settle`），变回「+」。
 ///
 /// 卡包里静止时胶囊是真正的一块玻璃（「+」和「更多」都在它里面，按住时整个胶囊一起变化）；
 /// 只有分开 / 合上的途中，「更多」才是单独的一块玻璃。
@@ -93,7 +94,7 @@ final class WalletTopBar: UIView {
         if detail {
             setSplit(true)
             lastMorph = CACurrentMediaTime()
-            GlassControls.morph {
+            GlassControls.split {
                 self.applyLayout()
                 self.applyGlass()
             }
@@ -101,9 +102,10 @@ final class WalletTopBar: UIView {
             return
         }
         let finish: (Bool) -> Void = { [weak self] finished in
-            // 并回去停稳了：又变回一整块玻璃（中途又打开了就不动）
+            // 并回去停稳了：又变回一整块玻璃，弹一下（中途又打开了就不动）
             guard let self, finished, !self.isDetail else { return }
             self.setSplit(false)
+            GlassControls.settle(self.leadGlass)
         }
         if CACurrentMediaTime() - lastMorph >= GlassControls.morphSettle {
             // 展开已经停稳：把展开动画倒过来播放，时间段胶囊沿原路缩回「更多」旁边

@@ -1,8 +1,11 @@
 import SwiftUI
 import BKModel
 
-/// 选分类：大类排成格子，点一下就选上；有小类的大类点开后下面列出它的小类（第一格是「不细分」，就记在大类上）。
-/// 待分类、编辑流水、手动记一笔共用。隐藏的分类不出现。
+/// 选分类：大类排成格子，点一下就选上；有小类的大类名称旁有个小箭头，点它在下面展开小类
+/// （横线隔开，放在一个框里，第一格是「不细分」，就记在大类上）。待分类、编辑流水、手动记一笔共用。隐藏的分类不出现。
+///
+/// 只有选中的分类（或选中的小类所在的大类）是选中的样子；展开着、没选的大类只描一圈边，不会看起来像两个都选了。
+/// 格子不用懒加载的网格：放在列表的一行里时，懒加载会在行高变化时重新摆放，图标上下跳一下。
 struct CategoryGrid: View {
     let type: CategoryType
     var selected: String?
@@ -11,33 +14,58 @@ struct CategoryGrid: View {
     @Environment(LedgerStore.self) private var store
     @State private var expanded: String?
 
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 6), count: 4)
+    private static let columns = 4
+
+    private enum CellState {
+        case normal
+        /// 展开了小类，但没选它
+        case open
+        case selected
+    }
+
+    private struct Cell: Identifiable {
+        let id: String
+        let name: String
+        let symbol: String
+        var hasChildren = false
+    }
 
     var body: some View {
         let tree = store.categoryTree
         let nodes = tree.nodes(type)
         let selectedTop = tree.topLevel(selected)?.id
         VStack(alignment: .leading, spacing: 12) {
-            LazyVGrid(columns: columns, spacing: 12) {
-                ForEach(nodes) { node in
-                    cell(node.category.name, symbol: node.category.symbol, on: selectedTop == node.id || expanded == node.id) {
-                        if node.children.isEmpty {
-                            expanded = nil
-                            pick(node.id)
-                        } else {
-                            expanded = expanded == node.id ? nil : node.id
-                        }
+            rows(nodes.map { Cell(id: $0.id, name: $0.category.name, symbol: $0.category.symbol, hasChildren: !$0.children.isEmpty) }) { cell in
+                let state: CellState = selectedTop == cell.id ? .selected : expanded == cell.id ? .open : .normal
+                return button(cell, state: state) {
+                    if cell.hasChildren {
+                        withAnimation(.snappy(duration: 0.3)) { expanded = expanded == cell.id ? nil : cell.id }
+                    } else {
+                        withAnimation(.snappy(duration: 0.3)) { expanded = nil }
+                        pick(cell.id)
                     }
                 }
             }
             if let node = nodes.first(where: { $0.id == expanded }) {
-                Divider()
-                LazyVGrid(columns: columns, spacing: 12) {
-                    cell("不细分", symbol: node.category.symbol, on: selected == node.id) { pick(node.id) }
-                    ForEach(node.children) { child in
-                        cell(child.name, symbol: child.symbol, on: selected == child.id) { pick(child.id) }
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("\(node.category.name)的小类").font(.footnote).foregroundStyle(.secondary)
+                    let cells = [Cell(id: node.id, name: "不细分", symbol: node.category.symbol)]
+                        + node.children.map { Cell(id: $0.id, name: $0.name, symbol: $0.symbol) }
+                    rows(cells) { cell in
+                        button(cell, state: selected == cell.id ? .selected : .normal) { pick(cell.id) }
                     }
                 }
+                .padding(12)
+                .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(alignment: .top) {
+                    // 和上面的大类隔开的横线
+                    Divider().offset(y: -7)
+                }
+                .padding(.top, 2)
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .top)),
+                    removal: .opacity
+                ))
             }
         }
         .onAppear {
@@ -46,26 +74,53 @@ struct CategoryGrid: View {
         }
     }
 
-    private func cell(_ name: String, symbol: String, on: Bool, action: @escaping () -> Void) -> some View {
+    /// 每行 4 格；最后一行不满时用空白补齐，格子宽度不变
+    private func rows<Content: View>(_ cells: [Cell], content: @escaping (Cell) -> Content) -> some View {
+        let lines = stride(from: 0, to: cells.count, by: Self.columns).map { Array(cells[$0..<min($0 + Self.columns, cells.count)]) }
+        return VStack(spacing: 12) {
+            ForEach(lines.indices, id: \.self) { index in
+                HStack(alignment: .top, spacing: 6) {
+                    ForEach(lines[index]) { cell in content(cell) }
+                    ForEach(0..<(Self.columns - lines[index].count), id: \.self) { _ in
+                        Color.clear.frame(maxWidth: .infinity, maxHeight: 1)
+                    }
+                }
+            }
+        }
+    }
+
+    private func button(_ cell: Cell, state: CellState, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 6) {
-                Image(systemName: symbol)
+                Image(systemName: cell.symbol)
                     .font(.title3)
-                    .foregroundStyle(on ? Color.accentColor : Color.primary)
+                    .foregroundStyle(state == .selected ? Color.accentColor : Color.primary)
                     .frame(width: 48, height: 48)
-                    .background(on ? Color.accentColor.opacity(0.15) : Color.primary.opacity(0.06), in: Circle())
-                Text(name)
-                    .font(.caption)
-                    .foregroundStyle(Color.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .background(state == .selected ? Color.accentColor.opacity(0.15) : Color.primary.opacity(0.06), in: Circle())
+                    .overlay {
+                        if state == .open { Circle().strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 1.5) }
+                    }
+                HStack(spacing: 2) {
+                    Text(cell.name)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    if cell.hasChildren {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(Color.secondary)
+                            .rotationEffect(.degrees(state == .open || expanded == cell.id ? 180 : 0))
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(Color.primary)
             }
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(name)
-        .accessibilityAddTraits(on ? [.isSelected] : [])
+        .accessibilityLabel(cell.name)
+        .accessibilityHint(Text(cell.hasChildren ? "展开小类" : ""))
+        .accessibilityAddTraits(state == .selected ? [.isSelected] : [])
     }
 }
 

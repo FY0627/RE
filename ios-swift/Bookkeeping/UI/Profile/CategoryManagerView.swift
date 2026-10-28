@@ -90,7 +90,6 @@ private struct CategoryDetailView: View {
     @State private var symbol = "tag"
     @State private var loaded = false
     @State private var addingChild = false
-    @State private var deleting = false
     @State private var errorText: String?
 
     var body: some View {
@@ -155,7 +154,7 @@ private struct CategoryDetailView: View {
                             }
                         }
                     }
-                    Button("删除这个分类", systemImage: "trash", role: .destructive) { deleting = true }
+                    deleteMenu(category)
                 }
             }
             if let errorText {
@@ -181,8 +180,41 @@ private struct CategoryDetailView: View {
         .sheet(isPresented: $addingChild) {
             NewCategorySheet(type: category.type, parentID: category.id)
         }
-        .sheet(isPresented: $deleting) {
-            DeleteCategorySheet(category: category) { dismiss() }
+    }
+
+    /// 删除：在按钮旁边弹出小菜单，选原来的记录改记到哪（或回到待分类），选了就删。记录不删
+    private func deleteMenu(_ category: LedgerCategory) -> some View {
+        Menu {
+            Section(category.isTopLevel ? "连小类一起删除，原来的记录改记到" : "删除后，原来的记录改记到") {
+                Button("回到待分类", systemImage: "tray", role: .destructive) { Task { await delete(category, moveTo: nil) } }
+                ForEach(deleteTargets(category)) { target in
+                    Button(target.name) { Task { await delete(category, moveTo: target.id) } }
+                }
+            }
+        } label: {
+            ActionLabel(title: "删除这个分类", systemImage: "trash").foregroundStyle(Color.red)
+        }
+    }
+
+    /// 可以改记到的分类：同一类型，除了它自己和它的小类；小类名称前写上大类
+    private func deleteTargets(_ category: LedgerCategory) -> [DeleteTarget] {
+        store.categoryTree.nodes(category.type).filter { $0.id != category.id }.flatMap { node in
+            [DeleteTarget(id: node.id, name: node.category.name)]
+                + node.children.filter { $0.id != category.id }.map { DeleteTarget(id: $0.id, name: "\(node.category.name) · \($0.name)") }
+        }
+    }
+
+    private struct DeleteTarget: Identifiable {
+        let id: String
+        let name: String
+    }
+
+    private func delete(_ category: LedgerCategory, moveTo target: String?) async {
+        do {
+            try await store.deleteCategory(id: category.id, moveRecordsTo: target)
+            dismiss()
+        } catch {
+            errorText = "删除失败：\(error.localizedDescription)"
         }
     }
 
@@ -288,65 +320,3 @@ struct NewCategorySheet: View {
     }
 }
 
-/// 删除分类：原来记在上面的记录改记到哪（不选就回到待分类），记录不删
-private struct DeleteCategorySheet: View {
-    let category: LedgerCategory
-    let deleted: () -> Void
-
-    @Environment(LedgerStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
-    @State private var target: String?
-    @State private var errorText: String?
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    Picker("原来的记录", selection: $target) {
-                        Text("回到待分类").tag(String?.none)
-                        ForEach(targets) { option in
-                            Text(option.name).tag(String?.some(option.id))
-                        }
-                    }
-                } footer: {
-                    Text(category.isTopLevel ? "它下面的小类也一起删除。记录不会删除。" : "记录不会删除。")
-                }
-                if let errorText {
-                    Section { Text(errorText).foregroundStyle(.red) }
-                }
-            }
-            .navigationTitle("删除「\(category.name)」")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消", systemImage: "xmark") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("删除", systemImage: "trash", role: .destructive) { Task { await delete() } }
-                }
-            }
-        }
-        .presentationDetents([.medium])
-    }
-
-    struct Target: Identifiable {
-        let id: String
-        let name: String
-    }
-
-    /// 可以改记到的分类：同一类型，除了它自己和它的小类；小类名称前写上大类
-    private var targets: [Target] {
-        store.categoryTree.nodes(category.type).filter { $0.id != category.id }.flatMap { node in
-            [Target(id: node.id, name: node.category.name)]
-                + node.children.filter { $0.id != category.id }.map { Target(id: $0.id, name: "\(node.category.name) · \($0.name)") }
-        }
-    }
-
-    private func delete() async {
-        do {
-            try await store.deleteCategory(id: category.id, moveRecordsTo: target)
-            dismiss()
-            deleted()
-        } catch {
-            errorText = "删除失败：\(error.localizedDescription)"
-        }
-    }
-}
