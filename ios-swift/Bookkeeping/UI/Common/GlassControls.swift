@@ -75,17 +75,78 @@ enum GlassControls {
         ])
     }
 
-    /// 分开 / 合上：带一点回弹，分出来时弹一下。`completion` 收到 false 表示被新的动画打断
-    static func morph(_ changes: @escaping () -> Void, completion: ((Bool) -> Void)? = nil) {
+    /// 展开的弹簧：带一点回弹，分出来时弹一下
+    static let morphDuration = 0.55
+    static let morphBounce = 0.3
+    /// 展开动画基本停稳的时间；这之前合上要从半路接着走（见 `reverseMorph`）
+    static let morphSettle = 0.65
+
+    /// 分开（展开）：弹簧动画，带一点回弹。`bounce` 为 0 时不回弹（中途转向用）。
+    /// `completion` 收到 false 表示被新的动画打断
+    static func morph(_ changes: @escaping () -> Void, bounce: Double = morphBounce, completion: ((Bool) -> Void)? = nil) {
         let options: UIView.AnimationOptions = [.beginFromCurrentState, .allowUserInteraction]
         if UIAccessibility.isReduceMotionEnabled {
             UIView.animate(withDuration: 0.25, delay: 0, options: options, animations: changes, completion: completion)
         } else {
             UIView.animate(
-                springDuration: 0.55, bounce: 0.3, initialSpringVelocity: 0, delay: 0, options: options,
+                springDuration: morphDuration, bounce: bounce, initialSpringVelocity: 0, delay: 0, options: options,
                 animations: changes, completion: completion
             )
         }
+    }
+
+    /// 合上：把展开动画倒过来播放，玻璃沿原路退回去。
+    ///
+    /// `apply(progress)` 按进度摆好位置：0 是展开的样子，1 是合上的样子。展开的弹簧从静止出发，
+    /// 倒过来正好在合上的位置停稳，不会像另起一个弹簧那样冲过头（飞出去）再弹回来。
+    /// 用 UIKit 的关键帧动画（Core Animation 播放）逐段跟着弹簧的轨迹走，玻璃内部跟着一起变化。
+    static func reverseMorph(_ apply: @escaping (CGFloat) -> Void, completion: @escaping (Bool) -> Void) {
+        if UIAccessibility.isReduceMotionEnabled {
+            UIView.animate(withDuration: 0.25, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction],
+                           animations: { apply(1) }, completion: completion)
+            return
+        }
+        let steps = 30
+        UIView.animateKeyframes(
+            withDuration: morphSettle, delay: 0,
+            options: [.calculationModeCubic, .beginFromCurrentState, .allowUserInteraction],
+            animations: {
+                for step in 1...steps {
+                    let time = morphSettle * Double(step) / Double(steps)
+                    let progress = 1 - springProgress(morphSettle - time)
+                    UIView.addKeyframe(withRelativeStartTime: Double(step - 1) / Double(steps), relativeDuration: 1 / Double(steps)) {
+                        apply(CGFloat(progress))
+                    }
+                }
+            },
+            completion: completion
+        )
+    }
+
+    /// 展开弹簧在 `time` 秒时走了多少（0 → 1，中途会略超过 1 再回来）。
+    /// 和 UIKit 的 `springDuration` / `bounce` 换算一致：固有频率 2π / duration，阻尼比 1 - bounce
+    static func springProgress(_ time: Double) -> Double {
+        guard time > 0 else { return 0 }
+        let omega = 2 * Double.pi / morphDuration
+        let zeta = 1 - morphBounce
+        let omegaD = omega * (1 - zeta * zeta).squareRoot()
+        let decay = exp(-zeta * omega * time)
+        return 1 - decay * (cos(omegaD * time) + zeta * omega / omegaD * sin(omegaD * time))
+    }
+
+    static func lerp(_ a: CGRect, _ b: CGRect, _ t: CGFloat) -> CGRect {
+        CGRect(
+            x: a.minX + (b.minX - a.minX) * t,
+            y: a.minY + (b.minY - a.minY) * t,
+            width: a.width + (b.width - a.width) * t,
+            height: a.height + (b.height - a.height) * t
+        )
+    }
+
+    /// 视图现在的位置（用 bounds 和 center 算，视图可能带着缩放）
+    static func frame(of view: UIView) -> CGRect {
+        CGRect(x: view.center.x - view.bounds.width / 2, y: view.center.y - view.bounds.height / 2,
+               width: view.bounds.width, height: view.bounds.height)
     }
 
     /// 合在一起静止时只留一块玻璃：叠在下面的几块去掉玻璃效果（不播放消散动画）。

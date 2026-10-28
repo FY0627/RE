@@ -58,6 +58,9 @@ struct HomeView: View {
             .listStyle(.insetGrouped)
             .scrollDismissesKeyboard(.immediately)
             .navigationTitle("日常记账")
+            // 系统导航栏藏起来了，但默认的大标题模式仍在：往下拉时列表先停在「大标题展开」的位置再弹回，
+            // 点状态栏回到顶部时列表停在大标题展开的位置（多出一截空白）。改成小标题就没有这一截
+            .navigationBarTitleDisplayMode(.inline)
             .toolbarVisibility(.hidden, for: .navigationBar)
             // 顶部一行固定在上面，列表从它下面滚过时系统加上边缘的渐隐效果。
             // 和资产页的标题行一样高、一样的位置：44pt 高，离状态栏 2pt

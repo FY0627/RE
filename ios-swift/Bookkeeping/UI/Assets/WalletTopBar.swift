@@ -36,6 +36,8 @@ final class WalletTopBar: UIView {
 
     private(set) var isDetail = false
     private var periodTitle = ""
+    /// 上一次展开（或时间段胶囊变宽变窄）开始的时间：还没停稳时合上要从半路接着走
+    private var lastMorph: CFTimeInterval = 0
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -87,17 +89,36 @@ final class WalletTopBar: UIView {
             applyContent()
             return
         }
-        if detail { setSplit(true) }
-        GlassControls.morph({
-            self.applyLayout()
-            self.applyGlass()
-        }, completion: { [weak self] finished in
+        let detailContent: [UIView] = [backButton, periodButton]
+        if detail {
+            setSplit(true)
+            lastMorph = CACurrentMediaTime()
+            GlassControls.morph {
+                self.applyLayout()
+                self.applyGlass()
+            }
+            GlassControls.swapContent(show: detailContent, hide: [addButton])
+            return
+        }
+        let finish: (Bool) -> Void = { [weak self] finished in
             // 并回去停稳了：又变回一整块玻璃（中途又打开了就不动）
             guard let self, finished, !self.isDetail else { return }
             self.setSplit(false)
-        })
-        let detailContent: [UIView] = [backButton, periodButton]
-        GlassControls.swapContent(show: detail ? detailContent : [addButton], hide: detail ? [addButton] : detailContent)
+        }
+        if CACurrentMediaTime() - lastMorph >= GlassControls.morphSettle {
+            // 展开已经停稳：把展开动画倒过来播放，时间段胶囊沿原路缩回「更多」旁边
+            let from = GlassControls.frame(of: leadGlass), to = leadFrame(detail: false)
+            GlassControls.reverseMorph({ progress in
+                self.placeLead(GlassControls.lerp(from, to, progress))
+            }, completion: finish)
+        } else {
+            // 还在展开的半路：从当前位置直接回去，不回弹
+            GlassControls.morph({ self.applyLayout() }, bounce: 0, completion: finish)
+        }
+        UIView.animate(withDuration: 0.3, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+            self.applyGlass()
+        }
+        GlassControls.swapContent(show: [addButton], hide: detailContent)
     }
 
     /// 「更多」是不是单独的一块玻璃。不分开时它没有玻璃效果，图标换成胶囊里右半边的那个（位置完全一样）
@@ -122,6 +143,7 @@ final class WalletTopBar: UIView {
         }
         guard isDetail else { return }
         if animated, window != nil {
+            lastMorph = CACurrentMediaTime()
             GlassControls.morph { self.applyLayout() }
         } else {
             applyLayout()
@@ -140,18 +162,25 @@ final class WalletTopBar: UIView {
         let width = bounds.width, size = GlassControls.size
         GlassControls.place(backGlass, CGRect(x: 0, y: 0, width: size, height: size))
         GlassControls.place(moreGlass, CGRect(x: width - size, y: 0, width: size, height: size))
-        if isDetail {
-            let pill = GlassControls.pillWidth(periodButton)
-            GlassControls.place(leadGlass, CGRect(x: width - size - GlassControls.gap - pill, y: 0, width: pill, height: size))
-        } else {
-            // 一直伸到「更多」的右边：重叠的部分合成一块玻璃，看起来是一整个胶囊
-            GlassControls.place(leadGlass, CGRect(x: width - 2 * size, y: 0, width: 2 * size, height: size))
-        }
         backButton.frame = CGRect(x: 0, y: 0, width: size, height: size)
         moreButton.frame = CGRect(x: 0, y: 0, width: size, height: size)
         addButton.frame = CGRect(x: 0, y: 0, width: size, height: size)
-        stackMoreButton.frame = CGRect(x: leadGlass.bounds.width - size, y: 0, width: size, height: size)
-        periodButton.frame = CGRect(origin: .zero, size: leadGlass.bounds.size)
+        placeLead(leadFrame(detail: isDetail))
+    }
+
+    /// 卡包里一直伸到「更多」的右边（重叠的部分合成一块玻璃，看起来是一整个胶囊）；详情里是「更多」左边的时间段胶囊
+    private func leadFrame(detail: Bool) -> CGRect {
+        let width = bounds.width, size = GlassControls.size
+        guard detail else { return CGRect(x: width - 2 * size, y: 0, width: 2 * size, height: size) }
+        let pill = GlassControls.pillWidth(periodButton)
+        return CGRect(x: width - size - GlassControls.gap - pill, y: 0, width: pill, height: size)
+    }
+
+    private func placeLead(_ rect: CGRect) {
+        let size = GlassControls.size
+        GlassControls.place(leadGlass, rect)
+        stackMoreButton.frame = CGRect(x: rect.width - size, y: 0, width: size, height: size)
+        periodButton.frame = CGRect(origin: .zero, size: rect.size)
     }
 
     /// 返回按钮的玻璃：设成玻璃效果时系统播放「凝结」动画，设成 nil 时「消散」；同时从小放大
