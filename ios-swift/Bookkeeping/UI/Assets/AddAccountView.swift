@@ -96,7 +96,6 @@ struct AddAccountView: View {
                     Section { Text(errorText).foregroundStyle(.red) }
                 }
             }
-            .keyboardDismissible()
             .navigationTitle("添加银行卡")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

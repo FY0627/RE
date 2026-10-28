@@ -87,6 +87,7 @@ struct RootView: View {
             }
         }
         .environment(detail)
+        .dismissesKeyboardOnTapOutside()
         .overlay(alignment: .topTrailing) {
             if PerfFlags.shared.showMetrics {
                 MetricsOverlay().padding(.trailing, 8)

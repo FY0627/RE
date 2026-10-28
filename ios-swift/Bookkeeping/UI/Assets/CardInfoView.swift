@@ -87,7 +87,6 @@ struct CardInfoView: View {
                 }
             }
         }
-        .keyboardDismissible()
         .navigationTitle(account.displayTitle)
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: cardType) { old, new in

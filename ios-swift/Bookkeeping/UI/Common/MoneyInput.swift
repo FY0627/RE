@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 import BKBackend
 import BKModel
 
@@ -95,20 +94,5 @@ struct OpeningBalanceRow: View {
         if case .invalid = input.value(currency) {
             Text("金额格式不对，例如 1234.56").font(.footnote).foregroundStyle(.red)
         }
-    }
-}
-
-extension View {
-    /// 数字键盘没有收起键：键盘上方右边放一个收起按钮，往下拖动表单也会收起
-    func keyboardDismissible() -> some View {
-        scrollDismissesKeyboard(.interactively)
-            .toolbar {
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("收起键盘", systemImage: "keyboard.chevron.compact.down") {
-                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                    }
-                }
-            }
     }
 }

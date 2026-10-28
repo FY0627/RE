@@ -124,7 +124,6 @@ struct RecordEditor: View {
                     Section { Text(errorText).foregroundStyle(.red) }
                 }
             }
-            .keyboardDismissible()
             .navigationTitle("编辑流水")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

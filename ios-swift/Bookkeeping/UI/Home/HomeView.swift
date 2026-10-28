@@ -1,18 +1,14 @@
 import SwiftUI
 import BKModel
 
-/// 首页：本月概览 + 全部账户的资金流水（按日期分组，分页加载）。分组列表。
+/// 首页：本月概览 + 全部账户的资金流水（按日期分组，分页加载）。分组列表，不做下拉刷新（数据变了会自动更新）。
 ///
-/// 顶部一行和资产页一样：左边大标题「日常记账」，右边圆形的玻璃搜索按钮（不用系统导航栏，系统的大标题和按钮不在同一行）。
-/// 点搜索按钮，按钮像液态玻璃一样展开成搜索框，右边分出圆形的关闭按钮；可以按交易对方、备注、金额、卡号尾号、银行查流水，
-/// 还能只看支出或收入。删除流水在流水详情里。
+/// 顶部一行（`HomeTopBar`）和资产页一样：左边大标题「日常记账」，右边圆形的玻璃搜索按钮（不用系统导航栏，系统的大标题和按钮不在同一行）。
+/// 点搜索按钮展开搜索框，标题的位置变成「全部 / 支出 / 收入」的下拉按钮；可以按交易对方、备注、金额、卡号尾号、银行查流水。
+/// 删除流水在流水详情里。
 struct HomeView: View {
     let openPending: () -> Void
     @Environment(LedgerStore.self) private var store
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var searching = false
-    @FocusState private var searchFocused: Bool
-    @Namespace private var glass
     @State private var query = ""
     @State private var scope: SearchScope = .all
     @State private var results: [RecordRow] = []
@@ -63,97 +59,20 @@ struct HomeView: View {
             .scrollDismissesKeyboard(.immediately)
             .navigationTitle("日常记账")
             .toolbarVisibility(.hidden, for: .navigationBar)
-            // 顶部一行固定在上面，列表从它下面滚过时系统加上边缘的渐隐效果
-            .safeAreaBar(edge: .top) { topBar }
+            // 顶部一行固定在上面，列表从它下面滚过时系统加上边缘的渐隐效果。
+            // 和资产页的标题行一样高、一样的位置：44pt 高，离状态栏 2pt
+            .safeAreaBar(edge: .top) {
+                HomeTopBar(query: $query, scope: $scope)
+                    .frame(height: HomeTopBarView.height)
+                    .padding(.horizontal, AppLayout.cardInset)
+                    .padding(.top, 2)
+                    .padding(.bottom, 6)
+            }
             .navigationDestination(for: String.self) { id in RecordDetailView(recordID: id) }
-            .refreshable { await store.refresh() }
             .task(id: SearchKey(text: trimmedQuery, scope: scope, revision: store.revision)) {
                 await search(SearchKey(text: trimmedQuery, scope: scope, revision: store.revision))
             }
         }
-    }
-
-    // MARK: 顶部
-
-    /// 和资产页的标题行一样高、一样的位置：44pt 高，离状态栏 2pt
-    private var topBar: some View {
-        VStack(spacing: 10) {
-            GlassEffectContainer(spacing: 16) {
-                HStack(spacing: 10) {
-                    if searching {
-                        searchField
-                            .glassEffect(.regular.interactive(), in: Capsule())
-                            .glassEffectID("search", in: glass)
-                        Button(action: closeSearch) { ToolbarIcon("xmark") }
-                            .buttonStyle(.plain)
-                            .glassEffect(.regular.interactive(), in: Circle())
-                            .glassEffectID("close", in: glass)
-                            .accessibilityLabel("关闭搜索")
-                    } else {
-                        Text("日常记账")
-                            .font(.largeTitle.weight(.bold))
-                            .lineLimit(1)
-                            .padding(.horizontal, 4)
-                            .accessibilityAddTraits(.isHeader)
-                            .transition(.opacity)
-                        Spacer(minLength: 0)
-                        Button(action: openSearch) { ToolbarIcon("magnifyingglass") }
-                            .buttonStyle(.plain)
-                            .glassEffect(.regular.interactive(), in: Circle())
-                            .glassEffectID("search", in: glass)
-                            .accessibilityLabel("搜索流水")
-                    }
-                }
-                .frame(height: 44)
-            }
-            if searching {
-                Picker("范围", selection: $scope) {
-                    ForEach(SearchScope.allCases, id: \.self) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .transition(.opacity)
-            }
-        }
-        .padding(.horizontal, AppLayout.cardInset)
-        .padding(.top, 2)
-        .padding(.bottom, 6)
-    }
-
-    private var searchField: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").foregroundStyle(Color.secondary)
-            TextField("商户、备注、金额、尾号", text: $query)
-                .focused($searchFocused)
-                .submitLabel(.search)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-            if !query.isEmpty {
-                Button { query = "" } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(Color.secondary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("清除")
-            }
-        }
-        .padding(.horizontal, 14)
-        .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)
-    }
-
-    private var searchAnimation: Animation {
-        reduceMotion ? .easeInOut(duration: 0.2) : .spring(response: 0.42, dampingFraction: 0.72)
-    }
-
-    private func openSearch() {
-        withAnimation(searchAnimation) { searching = true }
-        // 搜索框出现后再弹出键盘
-        Task { @MainActor in searchFocused = true }
-    }
-
-    private func closeSearch() {
-        searchFocused = false
-        query = ""
-        scope = .all
-        withAnimation(searchAnimation) { searching = false }
     }
 
     // MARK: 流水
