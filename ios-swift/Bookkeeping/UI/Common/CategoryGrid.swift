@@ -1,27 +1,24 @@
 import SwiftUI
 import BKModel
 
-/// 选分类：大类排成格子，点一下就选上；有小类的大类名称旁有个小箭头，点它在下面展开小类
-/// （横线隔开，放在一个框里，第一格是「不细分」，就记在大类上）。待分类、编辑流水、手动记一笔共用。隐藏的分类不出现。
+/// 选分类：大类排成格子，点一下就选上；有小类的大类名称旁有个小箭头，点它也先选上大类，同时在下面展开小类
+/// （第一格是「不细分」，就记在大类上）。待分类、编辑流水、手动记一笔、流水详情里改分类共用。隐藏的分类不出现。
 ///
-/// 只有选中的分类（或选中的小类所在的大类）是选中的样子；展开着、没选的大类只描一圈边，不会看起来像两个都选了。
+/// 放在列表的一个分组里：大类格子是一行，展开的小类是下一行（中间是列表的分隔线）。
+/// 展开时是分组的框往下变大、多出一行，大类那一行不变，图标不会重新排一遍。
+/// 任何时候只有一个分类是选中的样子（选中的是小类时，它所在的大类也是选中的样子）。
 /// 格子不用懒加载的网格：放在列表的一行里时，懒加载会在行高变化时重新摆放，图标上下跳一下。
 struct CategoryGrid: View {
     let type: CategoryType
     var selected: String?
     let pick: (String) -> Void
+    /// 选定了不再细分的分类（没有小类的大类、小类或「不细分」）。点有小类的大类只是先选上它，不算
+    var done: ((String) -> Void)?
 
     @Environment(LedgerStore.self) private var store
     @State private var expanded: String?
 
     private static let columns = 4
-
-    private enum CellState {
-        case normal
-        /// 展开了小类，但没选它
-        case open
-        case selected
-    }
 
     private struct Cell: Identifiable {
         let id: String
@@ -34,44 +31,48 @@ struct CategoryGrid: View {
         let tree = store.categoryTree
         let nodes = tree.nodes(type)
         let selectedTop = tree.topLevel(selected)?.id
-        VStack(alignment: .leading, spacing: 12) {
-            rows(nodes.map { Cell(id: $0.id, name: $0.category.name, symbol: $0.category.symbol, hasChildren: !$0.children.isEmpty) }) { cell in
-                let state: CellState = selectedTop == cell.id ? .selected : expanded == cell.id ? .open : .normal
-                return button(cell, state: state) {
-                    if cell.hasChildren {
-                        withAnimation(.snappy(duration: 0.3)) { expanded = expanded == cell.id ? nil : cell.id }
-                    } else {
-                        withAnimation(.snappy(duration: 0.3)) { expanded = nil }
-                        pick(cell.id)
-                    }
-                }
-            }
-            if let node = nodes.first(where: { $0.id == expanded }) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("\(node.category.name)的小类").font(.footnote).foregroundStyle(.secondary)
-                    let cells = [Cell(id: node.id, name: "不细分", symbol: node.category.symbol)]
-                        + node.children.map { Cell(id: $0.id, name: $0.name, symbol: $0.symbol) }
-                    rows(cells) { cell in
-                        button(cell, state: selected == cell.id ? .selected : .normal) { pick(cell.id) }
-                    }
-                }
-                .padding(12)
-                .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay(alignment: .top) {
-                    // 和上面的大类隔开的横线
-                    Divider().offset(y: -7)
-                }
-                .padding(.top, 2)
-                .transition(.asymmetric(
-                    insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .top)),
-                    removal: .opacity
-                ))
-            }
+        rows(nodes.map { Cell(id: $0.id, name: $0.category.name, symbol: $0.category.symbol, hasChildren: !$0.children.isEmpty) }) { cell in
+            button(cell, isSelected: selectedTop == cell.id) { tap(cell, selectedTop: selectedTop) }
         }
+        .padding(.vertical, 6)
+        // 和下面小类那一行之间的分隔线从格子的左边开始
+        .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
         .onAppear {
             // 选中的是小类：把它所在的大类展开
             if let category = tree.category(selected), let parent = category.parentID { expanded = parent }
         }
+        if let node = nodes.first(where: { $0.id == expanded }) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("\(node.category.name)的小类").font(.footnote).foregroundStyle(.secondary)
+                let cells = [Cell(id: node.id, name: "不细分", symbol: node.category.symbol)]
+                    + node.children.map { Cell(id: $0.id, name: $0.name, symbol: $0.symbol) }
+                rows(cells) { cell in
+                    button(cell, isSelected: selected == cell.id) {
+                        withAnimation(.snappy(duration: 0.25)) { pick(cell.id) }
+                        done?(cell.id)
+                    }
+                }
+            }
+            .padding(.vertical, 6)
+            // 换一个大类展开时，整行换掉（列表的删除 / 插入动画），不是在同一行里改内容
+            .id(node.id)
+        }
+    }
+
+    private func tap(_ cell: Cell, selectedTop: String?) {
+        withAnimation(.snappy(duration: 0.3)) {
+            if !cell.hasChildren {
+                expanded = nil
+                pick(cell.id)
+            } else if expanded == cell.id {
+                expanded = nil
+            } else {
+                expanded = cell.id
+                // 先记在大类上；已经选了它的小类就不动
+                if selectedTop != cell.id { pick(cell.id) }
+            }
+        }
+        if !cell.hasChildren { done?(cell.id) }
     }
 
     /// 每行 4 格；最后一行不满时用空白补齐，格子宽度不变
@@ -89,17 +90,14 @@ struct CategoryGrid: View {
         }
     }
 
-    private func button(_ cell: Cell, state: CellState, action: @escaping () -> Void) -> some View {
+    private func button(_ cell: Cell, isSelected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 6) {
                 Image(systemName: cell.symbol)
                     .font(.title3)
-                    .foregroundStyle(state == .selected ? Color.accentColor : Color.primary)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
                     .frame(width: 48, height: 48)
-                    .background(state == .selected ? Color.accentColor.opacity(0.15) : Color.primary.opacity(0.06), in: Circle())
-                    .overlay {
-                        if state == .open { Circle().strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 1.5) }
-                    }
+                    .background(isSelected ? Color.accentColor.opacity(0.15) : Color.primary.opacity(0.06), in: Circle())
                 HStack(spacing: 2) {
                     Text(cell.name)
                         .lineLimit(1)
@@ -108,7 +106,7 @@ struct CategoryGrid: View {
                         Image(systemName: "chevron.down")
                             .font(.system(size: 8, weight: .bold))
                             .foregroundStyle(Color.secondary)
-                            .rotationEffect(.degrees(state == .open || expanded == cell.id ? 180 : 0))
+                            .rotationEffect(.degrees(expanded == cell.id ? 180 : 0))
                     }
                 }
                 .font(.caption)
@@ -120,25 +118,33 @@ struct CategoryGrid: View {
         .buttonStyle(.plain)
         .accessibilityLabel(cell.name)
         .accessibilityHint(Text(cell.hasChildren ? "展开小类" : ""))
-        .accessibilityAddTraits(state == .selected ? [.isSelected] : [])
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 }
 
-/// 面板里选一个分类，选好就关上
+/// 面板里选一个分类：选定了（没有小类的大类、小类或「不细分」）就关上
 struct CategoryPickerSheet: View {
     let type: CategoryType
-    var selected: String?
     let pick: (String) -> Void
     @Environment(\.dismiss) private var dismiss
+    /// 点了有小类的大类：先选上它，等选小类或「不细分」
+    @State private var current: String?
+
+    init(type: CategoryType, selected: String?, pick: @escaping (String) -> Void) {
+        self.type = type
+        self.pick = pick
+        _current = State(initialValue: selected)
+    }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                CategoryGrid(type: type, selected: selected) { id in
-                    pick(id)
-                    dismiss()
+            List {
+                Section {
+                    CategoryGrid(type: type, selected: current, pick: { current = $0 }) { id in
+                        pick(id)
+                        dismiss()
+                    }
                 }
-                .padding()
             }
             .navigationTitle("选择分类")
             .navigationBarTitleDisplayMode(.inline)

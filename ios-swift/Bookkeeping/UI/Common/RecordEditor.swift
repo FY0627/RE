@@ -169,7 +169,6 @@ struct RecordEditor: View {
                 if type != .transfer {
                     Section("分类") {
                         CategoryGrid(type: CategoryType(type), selected: categoryID) { categoryID = $0 }
-                            .padding(.vertical, 6)
                     }
                 }
                 Section("备注") {

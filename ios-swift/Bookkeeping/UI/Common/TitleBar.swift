@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-/// 页面顶部一行的磨砂背景：列表滚到这一行下面时出现，往下渐渐变淡。首页、统计页用。
+/// 页面顶部一行的磨砂背景：列表滚到这一行下面时出现，往下渐渐变淡。首页、统计页、「我的」用。
 ///
 /// 不用系统的滚动边缘效果：系统的效果按这一行里的文字决定画在哪，首页搜索展开、标题淡出时它会突然消失。
 /// 这里只看列表有没有滚到下面，搜索展开、收起都不变。
@@ -40,7 +40,7 @@ extension View {
 }
 
 /// 页面顶部一行：左边大标题，右边一个玻璃胶囊，里面几个图标按钮。和首页、资产页的标题行一样高、一样的字号。
-/// 统计页用它放「上个月 / 下个月」。
+/// 统计页用它放「上个月 / 下个月」；「我的」没有按钮，只有标题。
 struct TitleBar: UIViewRepresentable {
     struct Item {
         let symbol: String
@@ -86,6 +86,7 @@ final class TitleBarView: UIView {
 
         container.frame = bounds
         container.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        container.isHidden = items.isEmpty
         addSubview(container)
         container.contentView.addSubview(capsule)
         for (index, item) in items.enumerated() {
@@ -108,11 +109,14 @@ final class TitleBarView: UIView {
         super.layoutSubviews()
         let size = GlassControls.size
         let width = size * CGFloat(buttons.count)
-        GlassControls.place(capsule, CGRect(x: bounds.width - width, y: 0, width: width, height: size))
+        if !buttons.isEmpty {
+            GlassControls.place(capsule, CGRect(x: bounds.width - width, y: 0, width: width, height: size))
+        }
         for (index, button) in buttons.enumerated() {
             button.frame = CGRect(x: CGFloat(index) * size, y: 0, width: size, height: size)
         }
-        titleLabel.frame = CGRect(x: 4, y: 0, width: max(0, bounds.width - width - GlassControls.gap - 4), height: size)
+        let trailing = buttons.isEmpty ? 0 : width + GlassControls.gap
+        titleLabel.frame = CGRect(x: 4, y: 0, width: max(0, bounds.width - trailing - 4), height: size)
     }
 
     /// 只有玻璃接收触摸，标题和空白处不挡住下面的列表

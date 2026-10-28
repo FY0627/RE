@@ -82,11 +82,16 @@ struct CardInfoView: View {
 
             if !editing {
                 // 停用后详情页保持打开，卡片变灰并移到资产页最下方的「已停用」
+                // 只有文字，靠右
                 Section {
                     if account.archived {
-                        Button("启用这张卡", systemImage: "checkmark.circle") { setArchived(account, false) }
+                        Button { setArchived(account, false) } label: {
+                            Text("启用").frame(maxWidth: .infinity, alignment: .trailing)
+                        }
                     } else {
-                        Button("停用这张卡", systemImage: "pause.circle", role: .destructive) { setArchived(account, true) }
+                        Button(role: .destructive) { setArchived(account, true) } label: {
+                            Text("停用").frame(maxWidth: .infinity, alignment: .trailing)
+                        }
                     }
                 }
             }

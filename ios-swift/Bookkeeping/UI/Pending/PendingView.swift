@@ -180,7 +180,6 @@ private struct CategorizeSheet: View {
                 }
                 Section("分类") {
                     CategoryGrid(type: CategoryType(row.entryType), selected: categoryID) { categoryID = $0 }
-                        .padding(.vertical, 6)
                 }
                 if let errorText {
                     Section { Text(errorText).foregroundStyle(.red) }

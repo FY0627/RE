@@ -4,6 +4,7 @@ import BKModel
 import BKBackend
 
 /// 「我的」：系统设置风格的分组列表，二级页面用导航推入。
+/// 顶部一行和首页、资产页一样高、一样的位置；列表滚到它下面时垫一层磨砂背景（和首页一样）。
 struct ProfileView: View {
     @Environment(LedgerStore.self) private var store
     @Environment(ExchangeRateStore.self) private var rates
@@ -12,6 +13,7 @@ struct ProfileView: View {
     @AppStorage(IngestNotifier.modeKey) private var notifyMode = IngestNotifier.Mode.off.rawValue
     @State private var retention = 30
     @State private var notifyDenied = false
+    @State private var scrolledUnderBar = false
     @Environment(\.openURL) private var openURL
 
     var body: some View {
@@ -140,7 +142,19 @@ struct ProfileView: View {
             } message: {
                 Text("在系统设置里允许日常记账发送通知。")
             }
+            .trackingScrollUnderTopBar($scrolledUnderBar)
             .navigationTitle("我的")
+            // 系统导航栏的大标题比资产页的标题行低；藏起来，自己放一行
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarVisibility(.hidden, for: .navigationBar)
+            .safeAreaBar(edge: .top) {
+                TitleBar(title: "我的", items: [])
+                    .frame(height: GlassControls.size)
+                    .padding(.horizontal, AppLayout.cardInset)
+                    .padding(.top, 2)
+                    .padding(.bottom, 6)
+                    .background { TopBarBackdrop(visible: scrolledUnderBar) }
+            }
             .task { retention = await store.retentionDays() }
             .onChange(of: retention) { _, days in Task { await store.setRetentionDays(days) } }
         }

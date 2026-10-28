@@ -240,7 +240,7 @@ struct RecordDetailView: View {
                 }
             } else if row.entryType != .transfer, r.status == .posted {
                 Section {
-                    Button { merging = true } label: { ActionLabel(title: "和其他记录合成一单", systemImage: "square.stack") }
+                    Button { merging = true } label: { ActionLabel(title: "合并", systemImage: "square.stack") }
                 }
             }
 
@@ -367,16 +367,16 @@ struct RecordDetailView: View {
     }
 }
 
-/// 详情里的操作按钮：文字在左，图标在右
+/// 详情里的操作按钮：图标在左，文字在右
 struct ActionLabel: View {
     let title: String
     let systemImage: String
 
     var body: some View {
         HStack {
-            Text(title)
-            Spacer()
             Image(systemName: systemImage)
+            Spacer()
+            Text(title)
         }
         .contentShape(Rectangle())
     }
