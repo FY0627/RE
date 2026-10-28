@@ -95,10 +95,15 @@ enum GlassControls {
         }
     }
 
+    /// 合上用的时间，和卡片转场的节奏差不多
+    static let reverseDuration = 0.4
+
     /// 合上：把展开动画倒过来播放，玻璃沿原路退回去。
     ///
     /// `apply(progress)` 按进度摆好位置：0 是展开的样子，1 是合上的样子。展开的弹簧从静止出发，
     /// 倒过来正好在合上的位置停稳，不会像另起一个弹簧那样冲过头（飞出去）再弹回来。
+    /// 只倒放弹簧第一次走到终点之前的那一段：之后只是轻轻回弹、慢慢停稳，倒过来就是开头一大段几乎不动，
+    /// 要等页面的动画快结束了才开始缩回。
     /// 用 UIKit 的关键帧动画（Core Animation 播放）逐段跟着弹簧的轨迹走，玻璃内部跟着一起变化。
     static func reverseMorph(_ apply: @escaping (CGFloat) -> Void, completion: @escaping (Bool) -> Void) {
         if UIAccessibility.isReduceMotionEnabled {
@@ -106,14 +111,15 @@ enum GlassControls {
                            animations: { apply(1) }, completion: completion)
             return
         }
-        let steps = 30
+        let steps = 24
+        let arrival = firstArrival
         UIView.animateKeyframes(
-            withDuration: morphSettle, delay: 0,
+            withDuration: reverseDuration, delay: 0,
             options: [.calculationModeCubic, .beginFromCurrentState, .allowUserInteraction],
             animations: {
                 for step in 1...steps {
-                    let time = morphSettle * Double(step) / Double(steps)
-                    let progress = 1 - springProgress(morphSettle - time)
+                    let fraction = Double(step) / Double(steps)
+                    let progress = 1 - springProgress(arrival * (1 - fraction))
                     UIView.addKeyframe(withRelativeStartTime: Double(step - 1) / Double(steps), relativeDuration: 1 / Double(steps)) {
                         apply(CGFloat(progress))
                     }
@@ -121,6 +127,15 @@ enum GlassControls {
             },
             completion: completion
         )
+    }
+
+    /// 展开弹簧第一次走到终点的时间（约 0.29 秒）。之后冲过一点再回来、慢慢停稳
+    private static var firstArrival: Double {
+        let omega = 2 * Double.pi / morphDuration
+        let zeta = 1 - morphBounce
+        let root = (1 - zeta * zeta).squareRoot()
+        guard root > 0.01 else { return morphDuration }
+        return (Double.pi - atan(root / zeta)) / (omega * root)
     }
 
     /// 展开弹簧在 `time` 秒时走了多少（0 → 1，中途会略超过 1 再回来）。
