@@ -4,6 +4,9 @@ import UIKit
 ///
 /// 卡包：右边「+」和「更多」合成一个胶囊。打开详情：「+」那一半像水滴一样从胶囊里分出来、弹一下，
 /// 变成选时间段的胶囊按钮（写着「全部」「本月」……）；左边出现返回按钮。返回时时间段胶囊并回去，变回「+」。
+///
+/// 卡包里静止时胶囊是真正的一块玻璃（「+」和「更多」都在它里面，按住时整个胶囊一起变化）；
+/// 只有分开 / 合上的途中，「更多」才是单独的一块玻璃。
 @MainActor
 final class WalletTopBar: UIView {
     var onBack: () -> Void = {}
@@ -20,11 +23,14 @@ final class WalletTopBar: UIView {
     private let container = GlassControls.container()
     /// 卡包里没有，打开详情时「凝结」出来
     private let backGlass = GlassControls.capsule(nil)
-    /// 卡包里是「+」，详情里是时间段
+    /// 卡包里是整个「+」「更多」胶囊，详情里是时间段
     private let leadGlass = GlassControls.capsule(GlassControls.glass())
-    private let moreGlass = GlassControls.capsule(GlassControls.glass())
+    /// 详情里的「更多」；卡包里静止时没有玻璃效果（见 `setSplit`）
+    private let moreGlass = GlassControls.capsule(nil)
     private let backButton = GlassControls.iconButton("chevron.left", label: "返回卡包")
     private let addButton = GlassControls.iconButton("plus", label: "添加银行卡")
+    /// 卡包里胶囊右半边的「更多」：管理银行卡
+    private let stackMoreButton = GlassControls.iconButton("ellipsis", label: "管理银行卡")
     private let moreButton = GlassControls.iconButton("ellipsis", label: "管理银行卡")
     private let periodButton = UIButton(configuration: GlassControls.pillConfiguration(""))
 
@@ -41,11 +47,13 @@ final class WalletTopBar: UIView {
         }
         backGlass.contentView.addSubview(backButton)
         leadGlass.contentView.addSubview(addButton)
+        leadGlass.contentView.addSubview(stackMoreButton)
         leadGlass.contentView.addSubview(periodButton)
         moreGlass.contentView.addSubview(moreButton)
 
         backButton.addAction(UIAction { [weak self] _ in self?.onBack() }, for: .primaryActionTriggered)
         addButton.addAction(UIAction { [weak self] _ in self?.onAdd() }, for: .primaryActionTriggered)
+        stackMoreButton.addAction(UIAction { [weak self] _ in self?.onManage() }, for: .primaryActionTriggered)
         moreButton.addAction(UIAction { [weak self] _ in
             // 详情里「更多」直接弹出菜单，不走这里
             guard let self, !self.isDetail else { return }
@@ -54,6 +62,7 @@ final class WalletTopBar: UIView {
         periodButton.showsMenuAsPrimaryAction = true
         periodButton.menu = GlassControls.deferredMenu { [weak self] in self?.periodMenu() ?? [] }
 
+        setSplit(false)
         applyLayout()
         applyGlass()
         applyContent()
@@ -72,17 +81,35 @@ final class WalletTopBar: UIView {
         isDetail = detail
         applyInteraction()
         guard animated, window != nil else {
+            setSplit(detail)
             applyLayout()
             applyGlass()
             applyContent()
             return
         }
-        GlassControls.morph {
+        if detail { setSplit(true) }
+        GlassControls.morph({
             self.applyLayout()
             self.applyGlass()
-        }
+        }, completion: { [weak self] finished in
+            // 并回去停稳了：又变回一整块玻璃（中途又打开了就不动）
+            guard let self, finished, !self.isDetail else { return }
+            self.setSplit(false)
+        })
         let detailContent: [UIView] = [backButton, periodButton]
         GlassControls.swapContent(show: detail ? detailContent : [addButton], hide: detail ? [addButton] : detailContent)
+    }
+
+    /// 「更多」是不是单独的一块玻璃。不分开时它没有玻璃效果，图标换成胶囊里右半边的那个（位置完全一样）
+    private func setSplit(_ split: Bool) {
+        GlassControls.setGlass([moreGlass], split)
+        UIView.performWithoutAnimation {
+            moreButton.alpha = split ? 1 : 0
+            stackMoreButton.alpha = split ? 0 : 1
+        }
+        // 不分开时它叠在胶囊右半边上面，不能挡住胶囊接收触摸
+        moreGlass.isUserInteractionEnabled = split
+        stackMoreButton.isUserInteractionEnabled = !split
     }
 
     /// 时间段胶囊上写的字；宽度跟着变
@@ -123,6 +150,7 @@ final class WalletTopBar: UIView {
         backButton.frame = CGRect(x: 0, y: 0, width: size, height: size)
         moreButton.frame = CGRect(x: 0, y: 0, width: size, height: size)
         addButton.frame = CGRect(x: 0, y: 0, width: size, height: size)
+        stackMoreButton.frame = CGRect(x: leadGlass.bounds.width - size, y: 0, width: size, height: size)
         periodButton.frame = CGRect(origin: .zero, size: leadGlass.bounds.size)
     }
 
@@ -146,7 +174,7 @@ final class WalletTopBar: UIView {
         moreButton.accessibilityLabel = isDetail ? "更多" : "管理银行卡"
         moreButton.showsMenuAsPrimaryAction = isDetail
         moreButton.menu = isDetail ? GlassControls.deferredMenu { [weak self] in self?.moreMenu() ?? [] } : nil
-        accessibilityElements = isDetail ? [backButton, periodButton, moreButton] : [addButton, moreButton]
+        accessibilityElements = isDetail ? [backButton, periodButton, moreButton] : [addButton, stackMoreButton]
     }
 
     /// 只有按钮的玻璃接收触摸，空白处不挡住下面的卡包和详情

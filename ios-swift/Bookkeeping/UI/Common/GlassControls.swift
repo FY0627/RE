@@ -75,13 +75,25 @@ enum GlassControls {
         ])
     }
 
-    /// 分开 / 合上：带一点回弹，分出来时弹一下
-    static func morph(_ changes: @escaping () -> Void) {
+    /// 分开 / 合上：带一点回弹，分出来时弹一下。`completion` 收到 false 表示被新的动画打断
+    static func morph(_ changes: @escaping () -> Void, completion: ((Bool) -> Void)? = nil) {
         let options: UIView.AnimationOptions = [.beginFromCurrentState, .allowUserInteraction]
         if UIAccessibility.isReduceMotionEnabled {
-            UIView.animate(withDuration: 0.25, delay: 0, options: options, animations: changes)
+            UIView.animate(withDuration: 0.25, delay: 0, options: options, animations: changes, completion: completion)
         } else {
-            UIView.animate(springDuration: 0.55, bounce: 0.3, initialSpringVelocity: 0, delay: 0, options: options, animations: changes)
+            UIView.animate(
+                springDuration: 0.55, bounce: 0.3, initialSpringVelocity: 0, delay: 0, options: options,
+                animations: changes, completion: completion
+            )
+        }
+    }
+
+    /// 合在一起静止时只留一块玻璃：叠在下面的几块去掉玻璃效果（不播放消散动画）。
+    /// 叠着的几块玻璃画出来是一整块，但按住时只有手指下面那块会动，会露出是几个按钮叠在一起。
+    /// 要分开时先不带动画加回玻璃效果：和上面那块完全重叠，看不出变化，再一起动画分开
+    static func setGlass(_ views: [UIVisualEffectView], _ on: Bool) {
+        UIView.performWithoutAnimation {
+            for view in views { view.effect = on ? glass() : nil }
         }
     }
 

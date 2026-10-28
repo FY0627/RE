@@ -47,9 +47,10 @@ final class HomeTopBarView: UIView, UITextFieldDelegate {
 
     private let titleLabel = UILabel()
     private let container = GlassControls.container()
-    // 平时三块玻璃叠在搜索按钮的位置，合成一个圆
-    private let scopeGlass = GlassControls.capsule(GlassControls.glass())
-    private let closeGlass = GlassControls.capsule(GlassControls.glass())
+    // 平时三块叠在搜索按钮的位置，只有最上面的搜索按钮有玻璃效果（按住时整个圆一起变化）；
+    // 下面两块在展开前一刻才加上玻璃效果，和搜索按钮完全重叠，再一起分开（`setSplit`）
+    private let scopeGlass = GlassControls.capsule(nil)
+    private let closeGlass = GlassControls.capsule(nil)
     private let searchGlass = GlassControls.capsule(GlassControls.glass())
     private let scopeButton = UIButton(configuration: GlassControls.pillConfiguration("全部"))
     private let closeButton = GlassControls.iconButton("xmark", label: "关闭搜索")
@@ -138,15 +139,26 @@ final class HomeTopBarView: UIView, UITextFieldDelegate {
             onClose()
         }
         if window != nil {
-            GlassControls.morph { self.applyLayout() }
+            if searching { setSplit(true) }
+            GlassControls.morph({ self.applyLayout() }, completion: { [weak self] finished in
+                // 并回去停稳了：又变回一块玻璃（中途又展开了就不动）
+                guard let self, finished, !self.isSearching else { return }
+                self.setSplit(false)
+            })
             let searchContent: [UIView] = [scopeButton, closeButton, textField]
             GlassControls.swapContent(show: searching ? searchContent : [titleLabel], hide: searching ? [titleLabel] : searchContent)
         } else {
+            setSplit(searching)
             applyLayout()
             applyContent()
         }
         // 搜索框已经是展开后的大小：键盘和玻璃同时出来
         if searching { textField.becomeFirstResponder() }
+    }
+
+    /// 下拉按钮和关闭按钮是不是单独的玻璃（展开时和展开、合上的途中）
+    private func setSplit(_ split: Bool) {
+        GlassControls.setGlass([scopeGlass, closeGlass], split)
     }
 
     func setScopeTitle(_ title: String) {
