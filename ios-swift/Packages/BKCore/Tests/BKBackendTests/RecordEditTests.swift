@@ -66,6 +66,8 @@ final class RecordEditTests: XCTestCase {
         XCTAssertEqual(corrected.charge?.isActual, true)
         balance = try await backend.balanceSummaries()[account.id]?.primary
         XCTAssertEqual(balance?.ledgerDerivedMinor, 1_000_00 - 79_10)
+        let byCharge = try await backend.records(filter: RecordFilter(text: "79.1"))
+        XCTAssertEqual(byCharge.map(\.id), [row.id], "按实际扣了多少港币也能找到")
 
         // 卡里加上人民币以后，这笔记在人民币里，不再扣港币
         try await backend.updateAccount(id: account.id, AccountEdit(
@@ -230,6 +232,14 @@ final class RecordEditTests: XCTestCase {
         XCTAssertEqual(byAmount.map(\.record.amountMinor), [12_50])
         let byWholeAmount = try await backend.records(filter: RecordFilter(text: "100"))
         XCTAssertEqual(byWholeAmount.map(\.record.amountMinor), [100_00])
+        let roughly = try await backend.records(filter: RecordFilter(text: "12"))
+        XCTAssertEqual(roughly.map(\.record.amountMinor), [12_50], "只写整数：差不多的金额也算（12 找 10.80～13.20）")
+        let roughlyLower = try await backend.records(filter: RecordFilter(text: "28"))
+        XCTAssertEqual(roughlyLower.map(\.record.amountMinor), [30_00], "28 找 25.20～30.80")
+        let tooFar = try await backend.records(filter: RecordFilter(text: "35"))
+        XCTAssertTrue(tooFar.isEmpty, "35 找 31.50～38.50，30 不算")
+        let exactCents = try await backend.records(filter: RecordFilter(text: "12.4"))
+        XCTAssertTrue(exactCents.isEmpty, "写了小数的按原样找")
         let byTailAndKind = try await backend.records(filter: RecordFilter(text: "8801 消费"))
         XCTAssertEqual(byTailAndKind.count, 3)
         let noMatch = try await backend.records(filter: RecordFilter(text: "8801 工资"))

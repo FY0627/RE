@@ -11,6 +11,8 @@ struct RecordRowView: View {
     let row: RecordRow
     var showAccount = true
     var boxed = false
+    /// 按天分组的列表（首页）：只写时间，日期在分组标题上
+    var timeOnly = false
 
     private var inAccount: Bool { !showAccount }
 
@@ -59,7 +61,7 @@ struct RecordRowView: View {
     /// 时间 · 分类 · 账户（转帐写从哪到哪，合成的一单写几张卡各付多少）
     private var subtitle: String {
         let r = row.record
-        var parts = [Fmt.recordTime(r)]
+        var parts = [timeOnly ? Fmt.recordClock(r) : Fmt.recordTime(r)]
         if row.title != row.category?.name || row.category == nil { parts.append(row.categoryText) }
         if inAccount {
             if let peer = row.peer, row.entryType == .transfer {
@@ -228,13 +230,13 @@ struct RecordDetailView: View {
                 Section {
                     LabeledContent("整单", value: Fmt.money(row.record.amountMinor + detail.orderMembers.map(\.record.amountMinor).reduce(0, +), r.currency))
                     ForEach(detail.orderMembers) { member in link(member) }
-                    Button { Task { await splitOrder() } } label: { ActionLabel(title: "拆开", systemImage: "square.split.2x1") }
+                    Button { Task { await splitOrder() } } label: { ActionLabel(title: "拆开") }
                 } header: {
                     Text("同一单")
                 }
             } else if row.entryType != .transfer, r.status == .posted {
                 Section {
-                    Button { merging = true } label: { ActionLabel(title: "合并", systemImage: "square.stack") }
+                    Button { merging = true } label: { ActionLabel(title: "合并") }
                 }
             }
 
@@ -271,7 +273,7 @@ struct RecordDetailView: View {
                         Button("删除这笔流水", systemImage: "trash", role: .destructive) { Task { await delete() } }
                     }
                 } label: {
-                    ActionLabel(title: "删除", systemImage: "trash").foregroundStyle(Color.red)
+                    ActionLabel(title: "删除").foregroundStyle(Color.red)
                 }
             }
         }
@@ -348,18 +350,14 @@ struct RecordDetailView: View {
     }
 }
 
-/// 详情里的操作按钮：图标在左，文字在右
+/// 详情里的操作按钮：只有文字，靠左；整行都能点
 struct ActionLabel: View {
     let title: String
-    let systemImage: String
 
     var body: some View {
-        HStack {
-            Image(systemName: systemImage)
-            Spacer()
-            Text(title)
-        }
-        .contentShape(Rectangle())
+        Text(title)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
     }
 }
 

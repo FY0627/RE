@@ -64,6 +64,18 @@ enum Fmt {
         if let t = r.transactionTime, t.hasTime || t.hasDate { return t.displayText }
         return time(r.effectiveAt)
     }
+
+    /// 按收到那天分组的列表里（首页）只写时间，日期在分组标题上；
+    /// 通知写的交易日期不是收到那天时（例如隔天才发通知）仍写上日期，免得看错是哪天
+    static func recordClock(_ r: LedgerRecord) -> String {
+        guard let t = r.transactionTime else { return time(r.effectiveAt) }
+        if let month = t.month, let day = t.day {
+            let received = calendar.dateComponents([.month, .day], from: r.effectiveAt)
+            if received.month != month || received.day != day { return t.displayText }
+        }
+        guard let hour = t.hour, let minute = t.minute else { return time(r.effectiveAt) }
+        return "\(two(hour)):\(two(minute))"
+    }
 }
 
 extension TransactionKind {

@@ -192,7 +192,7 @@ private struct CategoryDetailView: View {
                 }
             }
         } label: {
-            ActionLabel(title: "删除这个分类", systemImage: "trash").foregroundStyle(Color.red)
+            ActionLabel(title: "删除这个分类").foregroundStyle(Color.red)
         }
     }
 

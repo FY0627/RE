@@ -480,17 +480,22 @@ public enum RecordDAO {
                 any.append("\(entryTypeSQL) IN (\(types.map { _ in "?" }.joined(separator: ", ")))")
                 values += types.map(\.rawValue) as [SQLBindable]
             }
-            for (exponent, minor) in amountMinors(word) {
+            for range in amountRanges(word) {
                 let codes: [String]
                 let test: String
-                switch exponent {
+                switch range.exponent {
                 case 0: (codes, test) = (zeroDecimalCodes, "IN")
                 case 3: (codes, test) = (threeDecimalCodes, "IN")
                 default: (codes, test) = (zeroDecimalCodes + threeDecimalCodes, "NOT IN")
                 }
-                any.append("(r.amount_minor = ? AND r.currency \(test) (\(codes.map { _ in "?" }.joined(separator: ", "))))")
-                values.append(minor)
-                values += codes.map { $0 as SQLBindable }
+                let list = codes.map { _ in "?" }.joined(separator: ", ")
+                // 交易金额，或者按主币种的实际扣款（外币消费记得扣了多少人民币也能找到）
+                for (amount, currency) in [("r.amount_minor", "r.currency"), ("r.settlement_minor", "r.settlement_currency")] {
+                    any.append("(\(amount) BETWEEN ? AND ? AND \(currency) \(test) (\(list)))")
+                    values.append(range.low)
+                    values.append(range.high)
+                    values += codes.map { $0 as SQLBindable }
+                }
             }
             conditions.append("(" + any.joined(separator: " OR ") + ")")
         }
@@ -506,13 +511,38 @@ public enum RecordDAO {
         return result
     }
 
-    /// 关键字像金额（38、38.5、1,234.56）时，按 0、2、3 位小数换算成最小单位；不像金额时为空
-    static func amountMinors(_ word: String) -> [(exponent: Int, minor: Int64)] {
+    /// 关键字像金额时找的范围（按 0、2、3 位小数换算成最小单位）。写了小数的按原样找；
+    /// 只写整数的是记不清的「大概多少」：上下差 10%，至少差 1（38 找 34.20～41.80，5 找 4～6，1000 找 900～1100）
+    static func amountRanges(_ word: String) -> [(exponent: Int, low: Int64, high: Int64)] {
+        let approximate = amountFraction(word).isEmpty
+        return amountMinors(word).map { exponent, minor in
+            guard approximate else { return (exponent, minor, minor) }
+            var unit: Int64 = 1
+            for _ in 0..<exponent { unit *= 10 }
+            let tolerance = max(unit, minor / 10)
+            return (exponent, max(0, minor - tolerance), minor + tolerance)
+        }
+    }
+
+    /// 金额关键字的小数部分（「12,50」这种逗号小数也算）；没写小数时为空
+    private static func amountFraction(_ word: String) -> String {
+        let text = normalizedAmount(word)
+        let parts = text.split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count == 2 ? String(parts[1]) : ""
+    }
+
+    /// 「12,50」（只有一个逗号、后面不超过两位）当作小数点，其余的逗号是千位分隔
+    private static func normalizedAmount(_ word: String) -> String {
         var text = word
         if text.contains(","), !text.contains("."), let last = text.split(separator: ",").last, last.count <= 2, text.split(separator: ",").count == 2 {
             text = text.replacingOccurrences(of: ",", with: ".")
         }
-        text = text.replacingOccurrences(of: ",", with: "")
+        return text.replacingOccurrences(of: ",", with: "")
+    }
+
+    /// 关键字像金额（38、38.5、1,234.56）时，按 0、2、3 位小数换算成最小单位；不像金额时为空
+    static func amountMinors(_ word: String) -> [(exponent: Int, minor: Int64)] {
+        let text = normalizedAmount(word)
         let parts = text.split(separator: ".", omittingEmptySubsequences: false)
         guard (1...2).contains(parts.count), let integer = parts.first, !integer.isEmpty, integer.count <= 12,
               integer.allSatisfy({ $0.isASCII && $0.isNumber }) else { return [] }

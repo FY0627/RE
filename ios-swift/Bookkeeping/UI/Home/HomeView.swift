@@ -6,7 +6,10 @@ import BKModel
 /// 一笔钱只占一行：转帐两边合成一行，合成的一单只占一行，手续费写在那一笔下面；失败、冻结的不在首页（在卡片详情里）。
 ///
 /// 顶部一行（`HomeTopBar`）和资产页一样：左边大标题「日常记账」，右边「记一笔」和搜索两个圆形玻璃按钮（不用系统导航栏，系统的大标题和按钮不在同一行）。
-/// 点搜索按钮展开搜索框，标题的位置变成「全部 / 支出 / 收入 / 转帐」的下拉按钮；可以按备注、交易对方、分类、金额、卡号尾号、银行查流水。
+/// 点搜索按钮展开搜索框，标题的位置变成「全部 / 支出 / 收入 / 转帐」的下拉按钮（不用打字也按它筛选，收起搜索回到全部）；
+/// 可以按备注、交易对方、分类、金额、卡号尾号、银行查流水，只写整数的金额找差不多的（记不清几毛几分、大概多少）。
+/// 查过的条件记住结果，来回切换类型不重新查；数据变了才重新查。
+/// 按天分组，每一笔只写时间（日期在分组标题上），完整时间在流水详情里。
 /// 删除流水在流水详情里。
 struct HomeView: View {
     let openPending: () -> Void
@@ -17,6 +20,8 @@ struct HomeView: View {
     @State private var resultsHaveMore = false
     /// 已经查过的条件：结果对应这些条件时才显示「没有结果」
     @State private var searched: SearchKey?
+    /// 查过的条件和结果（含翻到的页）；数据变了（`revision` 不同）的丢掉
+    @State private var cache: [SearchKey: SearchPage] = [:]
     @State private var loadingMore = false
     @State private var adding = false
     /// 列表滚到了顶部那一行下面：显示磨砂背景
@@ -44,15 +49,22 @@ struct HomeView: View {
         var revision: Int
     }
 
+    struct SearchPage {
+        var rows: [RecordRow]
+        var hasMore: Bool
+    }
+
     private var trimmedQuery: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
+    /// 打了字，或者选了支出 / 收入 / 转帐（只有搜索展开时能选，收起时回到全部）
+    private var filtering: Bool { !trimmedQuery.isEmpty || scope != .all }
 
     var body: some View {
         NavigationStack {
             List {
-                if trimmedQuery.isEmpty {
-                    feed
-                } else {
+                if filtering {
                     searchResults
+                } else {
+                    feed
                 }
             }
             .listStyle(.insetGrouped)
@@ -113,7 +125,7 @@ struct HomeView: View {
     }
 
     private func recordLink(_ row: RecordRow) -> some View {
-        NavigationLink(value: row.id) { RecordRowView(row: row) }
+        NavigationLink(value: row.id) { RecordRowView(row: row, timeOnly: true) }
     }
 
     // MARK: 搜索
@@ -122,7 +134,11 @@ struct HomeView: View {
     private var searchResults: some View {
         if results.isEmpty {
             if searched?.text == trimmedQuery, searched?.scope == scope {
-                ContentUnavailableView.search(text: trimmedQuery)
+                if trimmedQuery.isEmpty {
+                    ContentUnavailableView("没有\(scope.title)", systemImage: "magnifyingglass")
+                } else {
+                    ContentUnavailableView.search(text: trimmedQuery)
+                }
             } else {
                 ProgressView().frame(maxWidth: .infinity)
             }
@@ -144,19 +160,40 @@ struct HomeView: View {
     }
 
     private func search(_ key: SearchKey) async {
-        guard !key.text.isEmpty else {
+        // 没在搜索，或者搜索框空着、选的是全部：就是首页本来的流水
+        guard !key.text.isEmpty || key.scope != .all else {
             results = []
             resultsHaveMore = false
             searched = nil
             return
         }
-        // 边打字边查：停下来一会儿再查
-        try? await Task.sleep(for: .milliseconds(250))
-        guard !Task.isCancelled else { return }
+        cache = cache.filter { $0.key.revision == key.revision }
+        if let page = cache[key] {
+            show(page, for: key)
+            return
+        }
+        let sameText = (searched?.text ?? "") == key.text
+        if sameText, let type = key.scope.entryType {
+            // 只换了类型：先从手上已有的里挑出这一类显示，查回来再换成完整的
+            let shown = searched == nil ? store.homeRows : results
+            results = shown.filter { $0.entryType == type }
+        }
+        // 边打字边查：停下来一会儿再查；只换了类型或者数据变了马上查
+        if !sameText {
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+        }
         let rows = await store.records(Self.searchFilter(key), after: nil, limit: LedgerStore.pageSize)
         guard !Task.isCancelled else { return }
-        results = rows
-        resultsHaveMore = rows.count == LedgerStore.pageSize
+        let page = SearchPage(rows: rows, hasMore: rows.count == LedgerStore.pageSize)
+        if cache.count >= 24 { cache.removeAll() }
+        cache[key] = page
+        show(page, for: key)
+    }
+
+    private func show(_ page: SearchPage, for key: SearchKey) {
+        results = page.rows
+        resultsHaveMore = page.hasMore
         searched = key
     }
 
@@ -169,6 +206,7 @@ struct HomeView: View {
         let known = Set(results.map(\.id))
         results += page.filter { !known.contains($0.id) }
         resultsHaveMore = page.count == LedgerStore.pageSize
+        cache[key] = SearchPage(rows: results, hasMore: resultsHaveMore)
     }
 
     /// 搜索也和首页一样：一笔钱一行
