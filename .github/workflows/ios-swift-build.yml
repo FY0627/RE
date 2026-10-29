@@ -54,6 +54,10 @@ jobs:
           set -o pipefail
           bash ios-swift/ci/package-ipa.sh "$OUT" 2>&1 | tee "$OUT/logs/package-ipa.log"
 
+      - name: App icon check and preview
+        if: success()
+        run: bash ios-swift/ci/icon-preview.sh "$OUT"
+
       - name: Report errors as annotations
         if: failure()
         run: bash ios-swift/ci/annotate-failure.sh "$OUT"
@@ -105,6 +109,7 @@ jobs:
             ci-out/toolchain.txt
             ci-out/ipa-contents.txt
             ci-out/ipa-verification.txt
+            ci-out/icon-preview/
             ci-out/derived-app/Build/Products/Release-iphoneos/*.dSYM
           if-no-files-found: warn
           retention-days: 14

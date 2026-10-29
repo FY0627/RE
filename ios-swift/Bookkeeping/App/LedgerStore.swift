@@ -331,9 +331,9 @@ final class LedgerStore {
         (try? await backend?.ingestLog(limit: 100)) ?? []
     }
 
-    /// 统计页：一段时间的统计，nil 表示不限
-    func stats(from: Date?, to: Date?) async -> MonthStats? {
-        try? await backend?.stats(from: from, to: to)
+    /// 统计页：一段时间的统计，nil 表示不限。`converted` 时另外把所有币种换算成主要币种合计（统计页的总览）
+    func stats(from: Date?, to: Date?, converted: Bool = false) async -> MonthStats? {
+        try? await backend?.stats(from: from, to: to, convertTo: converted ? ExchangeRateStore.primaryCurrency : nil)
     }
 
     /// 账户没有这个币种时，按它的主币种大概扣（入）多少（手动记一笔时提示）

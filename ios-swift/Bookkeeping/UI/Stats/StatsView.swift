@@ -3,26 +3,12 @@ import UIKit
 import BKModel
 
 /// 统计：选一段时间看（右上角的时间段胶囊，和卡片详情一样：全部、本周、本月、上月、今年、自定义）。
-/// 下面用分段控件选「按币种」还是「按账户」（记住上次选的）：
-/// 按币种是每个币种的支出、收入、结余，再按分类排（哪一类花得最多，点进去看小类和每一笔）；
-/// 按账户是每个账户进出多少，点进去看这段时间的每一笔。
-/// 转帐（自己的账户之间、还信用卡、存取现金）不算在收支里；退款从它所在的分类里减掉。多个币种分开统计，不换算。
+/// 先是这段时间的总览：支出、收入、结余，所有币种换算成「我的」里选的主要币种（和首页的本月合计一样算）；
+/// 「查看详情」里再选按币种还是按账户看（`StatsDetailView`）。
+/// 转帐（自己的账户之间、还信用卡、存取现金）不算在收支里；退款从支出里减掉。
 /// 顶部一行和首页、资产页一样：左边大标题「统计」，右边时间段的玻璃胶囊。
 struct StatsView: View {
-    enum Grouping: String, CaseIterable, Identifiable {
-        case currency
-        case account
-        var id: String { rawValue }
-        var title: String { self == .currency ? "按币种" : "按账户" }
-    }
-
-    private struct LoadKey: Equatable {
-        let period: RecordPeriod
-        let revision: Int
-    }
-
     @Environment(LedgerStore.self) private var store
-    @AppStorage("stats.grouping") private var grouping = Grouping.currency
     @State private var period: RecordPeriod = .thisMonth
     @State private var choosingCustom = false
     @State private var stats: MonthStats?
@@ -31,22 +17,16 @@ struct StatsView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    Picker("统计方式", selection: $grouping) {
-                        ForEach(Grouping.allCases) { Text($0.title).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .listRowBackground(Color.clear)
-                    .listRowInsets(EdgeInsets())
-                }
                 if let stats, !stats.currencies.isEmpty {
-                    switch grouping {
-                    case .currency:
-                        ForEach(stats.currencies, id: \.currency) { totals in
-                            currencySections(totals, isFirst: totals.currency == stats.currencies.first?.currency)
+                    Section {
+                        ConvertedTotalsView(total: stats.converted)
+                    } header: {
+                        Text("\(period.title) · 合计（\((stats.converted?.currency ?? ExchangeRateStore.primaryCurrency).chineseName)）")
+                    }
+                    Section {
+                        NavigationLink("查看详情") {
+                            StatsDetailView(period: period)
                         }
-                    case .account:
-                        accountSection(stats.accounts)
                     }
                 } else if stats != nil {
                     Section {
@@ -71,9 +51,9 @@ struct StatsView: View {
             .sheet(isPresented: $choosingCustom) {
                 CustomPeriodSheet(initial: period.customDates) { period = $0 }
             }
-            .task(id: LoadKey(period: period, revision: store.revision)) {
+            .task(id: StatsLoadKey(period: period, revision: store.revision)) {
                 let range = period.range()
-                stats = await store.stats(from: range.from, to: range.to)
+                stats = await store.stats(from: range.from, to: range.to, converted: true)
             }
         }
     }
@@ -87,6 +67,63 @@ struct StatsView: View {
             choosingCustom = true
         }
         return presets + [UIMenu(options: .displayInline, children: [custom])]
+    }
+}
+
+private struct StatsLoadKey: Equatable {
+    let period: RecordPeriod
+    let revision: Int
+}
+
+/// 统计详情：时间段和总览一样，分段控件选「按币种」还是「按账户」（记住上次选的）。
+/// 按币种是每个币种的支出、收入、结余，再按分类排（哪一类花得最多，点进去看小类和每一笔）；
+/// 按账户是每个账户进出多少，点进去看这段时间的每一笔。多个币种分开统计，不换算。
+private struct StatsDetailView: View {
+    enum Grouping: String, CaseIterable, Identifiable {
+        case currency
+        case account
+        var id: String { rawValue }
+        var title: String { self == .currency ? "按币种" : "按账户" }
+    }
+
+    let period: RecordPeriod
+
+    @Environment(LedgerStore.self) private var store
+    @AppStorage("stats.grouping") private var grouping = Grouping.currency
+    @State private var stats: MonthStats?
+
+    var body: some View {
+        List {
+            Section {
+                Picker("统计方式", selection: $grouping) {
+                    ForEach(Grouping.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets())
+            }
+            if let stats, !stats.currencies.isEmpty {
+                switch grouping {
+                case .currency:
+                    ForEach(stats.currencies, id: \.currency) { totals in
+                        currencySections(totals, isFirst: totals.currency == stats.currencies.first?.currency)
+                    }
+                case .account:
+                    accountSection(stats.accounts)
+                }
+            } else if stats != nil {
+                Section {
+                    ContentUnavailableView("这段时间还没有记录", systemImage: "chart.bar", description: Text(period.title))
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle("详情")
+        .navigationBarTitleDisplayMode(.inline)
+        .task(id: StatsLoadKey(period: period, revision: store.revision)) {
+            let range = period.range()
+            stats = await store.stats(from: range.from, to: range.to)
+        }
     }
 
     /// 这段时间的范围（按收到通知的时间）

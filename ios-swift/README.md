@@ -15,6 +15,7 @@ ios-swift/
 │   ├── Intents/                   App Intent「记录银行动账通知」、AccountEntity、AppShortcuts
 │   ├── UI/                        Shell（系统 TabView）、Home、Assets（卡包与已停用卡包、详情转场、卡片信息、卡面编辑、管理银行卡）、Stats、Profile、Pending
 │   ├── Diagnostics/               单变量性能开关、帧率/内存指标
+│   ├── AppIcon.icon/              App 图标（Icon Composer 格式：分层、Liquid Glass，见下面「App 图标」）
 │   └── Assets.xcassets
 ├── Packages/BKCore/               纯 Swift 业务核心（无 UI 依赖）
 │   ├── Sources/BKModel/           值类型：账户、流水、金额（整数最小单位）
@@ -34,7 +35,9 @@ ios-swift/
 2. `swift test`（macOS 主机）+ `xcodebuild test`（iOS 模拟器）运行 BKCore 测试。模拟器按目标设备选择：优先 iPhone 16 Pro，其次其他 iPhone Pro，不使用双屏机型（[`ci/pick-simulator.sh`](ci/pick-simulator.sh)）；
 3. 构建 Release / iphoneos / arm64、不签名的 `Bookkeeping.app`；
 4. 校验可执行文件、Mach-O 平台、Info.plist、依赖、资源与 App Intents 元数据，打包为 `Payload/Bookkeeping.app` 的 IPA；
-5. 上传 IPA（含 SHA-256 与 build-info）和诊断产物。
+5. 上传 IPA（含 SHA-256 与 build-info）和诊断产物；
+6. 检查 App 图标编进了 App，用 Xcode 自带的 `ictool` 按默认、深色、着色渲染预览（[`ci/icon-preview.sh`](ci/icon-preview.sh)，
+   预览图在诊断产物里，32×32 缩略图在运行页面的注释里），不影响打包。
 
 推送 `ios-swift` 分支或在 Actions 页面手动运行（可选指定 Xcode 路径）。
 
@@ -105,8 +108,10 @@ docker run --rm -v "<仓库>/ios-swift/Packages/BKCore:/pkg" -w /pkg bk-swift sw
   列表滚到标题行下面时垫一层磨砂背景（`UI/Common/TitleBar.swift` 的 `TopBarBackdrop`，搜索展开时也一直在）；
   交易对方、备注、分类、账户、银行、尾号、类型、金额都能搜。首页不用系统导航栏，标题和按钮在同一行，和资产页一样；不做下拉刷新。
 - 卡片详情：多币种的卡按币种分开看流水（币种在「交易记录」旁边选），时间段在右上角的胶囊里选；余额在卡片上，校准余额在卡片信息里。
-- 统计（`UI/Stats/StatsView.swift`）：右上角的时间段胶囊选看哪段时间（和卡片详情一样）；分段控件选「按币种」
-  （支出、收入、结余，按分类排，点进去看小类和每一笔）或「按账户」（进出多少，点进去看每一笔）；转帐不算收支。
+- 统计（`UI/Stats/StatsView.swift`）：右上角的时间段胶囊选看哪段时间（和卡片详情一样）；先是这段时间的总览：
+  支出、收入、结余，所有币种换算成主要币种（和首页的本月合计一样算，`UI/Common/ConvertedTotalsView.swift`）。
+  「查看详情」里用分段控件选「按币种」（支出、收入、结余，按分类排，点进去看小类和每一笔）
+  或「按账户」（进出多少，点进去看每一笔）；转帐不算收支。
   标题「统计」和时间段胶囊在同一行，和资产页一样高（`UI/Common/TitleBar.swift`）。
 - 「我的」的标题行也和资产页一样高，滚动时的磨砂背景和首页一样。选币种页面的列表不跟着键盘变矮（收起键盘时搜索框后面不会露出一块）。
 
@@ -126,6 +131,17 @@ docker run --rm -v "<仓库>/ios-swift/Packages/BKCore:/pkg" -w /pkg bk-swift sw
   卡包滚动和详情转场只绘制已解码的位图。换图、移除或取消编辑时删除不再使用的文件。
 - **停用**：卡片信息里，或资产页「更多 › 管理银行卡」里停用（`accounts.archived`）。停用的卡不参与自动记账匹配和净资产，
   流水保留，在资产页最下方以灰色卡包显示，可以点开详情，也可以重新启用。
+
+## App 图标
+
+`Bookkeeping/AppIcon.icon` 是 Icon Composer 格式的分层图标（iOS 26 起的 Liquid Glass 图标），替代原来资源目录里的 `AppIcon.appiconset`；
+构建设置 `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon` 对应它的文件名。按苹果的做法准备：
+
+- 画布 1024×1024，每种颜色一个 SVG 图层（`Assets/`，编号从后往前），图层里不带背景、阴影、透明度和圆角遮罩；
+  背景色、深色和着色外观的颜色写在 `icon.json` 的 `fill-specializations` 里，高光、阴影、半透明和裁切由系统按 Liquid Glass 画。
+- 两组：后面是小票（纸和分隔线），前面是票面元素（¥、标题条、三个分类色块、三条横线、对勾）。`icon.json` 里排在前面的组和图层在上层。
+- 图形和颜色取自设计稿的白天、晚上、色调三版（深色的 ¥ 和对勾是两种蓝，所以分成两个图层）。
+- 没有 Mac 也能看效果：CI 用 Xcode 自带的 `ictool` 渲染各个外观（见上面「构建」第 6 步）。
 
 ## 安装到 iPhone
 

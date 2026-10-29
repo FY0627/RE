@@ -86,7 +86,7 @@ struct HomeView: View {
     @ViewBuilder
     private var feed: some View {
         Section {
-            summary
+            ConvertedTotalsView(total: store.monthStats?.converted, expenseTitle: "本月支出", incomeTitle: "本月收入")
         } header: {
             Text(Self.monthTitle)
         }
@@ -181,42 +181,6 @@ struct HomeView: View {
     private static var monthTitle: String {
         let c = Calendar.current.dateComponents([.year, .month], from: Date())
         return Fmt.monthTitle(year: c.year ?? 0, month: c.month ?? 0)
-    }
-
-    /// 本月支出（减去退款）、本月收入、结余，所有币种换算成主要币种：外币交易有实际扣款的用实际扣款，否则按当天的汇率
-    @ViewBuilder
-    private var summary: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("本月支出").font(.subheadline).foregroundStyle(.secondary)
-            if let total = store.monthStats?.converted {
-                Text(Fmt.money(total.expenseMinor, total.currency))
-                    .font(.system(.largeTitle, design: .rounded).weight(.bold))
-                    .monospacedDigit()
-                    .lineLimit(1).minimumScaleFactor(0.6)
-                    .padding(.top, 2)
-                HStack(alignment: .top, spacing: 20) {
-                    stat("本月收入", Fmt.money(total.incomeMinor, total.currency))
-                    stat("结余", Fmt.money(total.balanceMinor, total.currency))
-                }
-                .padding(.top, 12)
-                if !total.unconverted.isEmpty {
-                    // 还没导入这些币种的汇率：只有这时多一行小字
-                    Text("\(total.unconverted.map(\.chineseName).joined(separator: "、"))没有汇率，没算进去")
-                        .font(.footnote).foregroundStyle(.secondary).padding(.top, 10)
-                }
-            } else {
-                Text("—").font(.system(.largeTitle, design: .rounded).weight(.bold)).foregroundStyle(.secondary)
-            }
-        }
-        .padding(.vertical, 6)
-        .accessibilityElement(children: .combine)
-    }
-
-    private func stat(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.footnote).foregroundStyle(.secondary)
-            Text(value).font(.headline).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
-        }
     }
 
     private var pendingTitle: String {
