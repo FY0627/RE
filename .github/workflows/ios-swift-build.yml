@@ -41,6 +41,9 @@ jobs:
       - name: Toolchain
         run: bash ios-swift/ci/toolchain.sh "$OUT"
 
+      - name: Icon diagnostics (temporary)
+        run: bash ios-swift/ci/icon-diag.sh "$OUT"
+
       - name: Core business tests (macOS host + iOS Simulator)
         run: bash ios-swift/ci/test.sh "$OUT"
 
