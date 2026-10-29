@@ -11,6 +11,8 @@ BUILD_NUMBER="${2:-1}"
 mkdir -p "$OUT/logs" "$OUT/results"
 rm -rf "$OUT/results/Build-Release-iphoneos.xcresult"
 
+# 构建期间暂停 ERR 钩子：钩子里的 echo 会覆盖 PIPESTATUS，构建失败会被当成成功（和 test.sh 一样）
+trap - ERR
 set +e
 xcodebuild \
   -project ios-swift/Bookkeeping.xcodeproj \
@@ -30,6 +32,7 @@ xcodebuild \
   clean build 2>&1 | tee "$OUT/logs/build-device.log"
 STATUS=${PIPESTATUS[0]}
 set -e
+trap 'echo "::error title=build-device.sh::build-device.sh line $LINENO failed: $BASH_COMMAND"' ERR
 
 if [[ $STATUS -ne 0 ]]; then
   echo "::error title=DeviceBuild::Release iphoneos 构建失败（退出码 ${STATUS}）"
