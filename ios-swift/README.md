@@ -15,7 +15,7 @@ ios-swift/
 │   ├── Intents/                   App Intent「记录银行动账通知」、AccountEntity、AppShortcuts
 │   ├── UI/                        Shell（系统 TabView）、Home、Assets（卡包与已停用卡包、详情转场、卡片信息、卡面编辑、管理银行卡）、Stats、Profile、Pending
 │   ├── Diagnostics/               单变量性能开关、帧率/内存指标
-│   ├── AppIcon.icon/              App 图标（Icon Composer 格式：分层、Liquid Glass，见下面「App 图标」）
+│   ├── AppIcon*.icon/             App 图标和跟着 App 外观换的两个备用图标（Icon Composer 格式：分层、Liquid Glass，见下面「App 图标」）
 │   └── Assets.xcassets
 ├── Packages/BKCore/               纯 Swift 业务核心（无 UI 依赖）
 │   ├── Sources/BKModel/           值类型：账户、流水、金额（整数最小单位）
@@ -36,7 +36,7 @@ ios-swift/
 3. 构建 Release / iphoneos / arm64、不签名的 `Bookkeeping.app`；
 4. 校验可执行文件、Mach-O 平台、Info.plist、依赖、资源与 App Intents 元数据，打包为 `Payload/Bookkeeping.app` 的 IPA；
 5. 上传 IPA（含 SHA-256 与 build-info）和诊断产物；
-6. 检查 App 图标编进了 App，用 Xcode 自带的 `ictool` 按默认、深色、着色渲染预览（[`ci/icon-preview.sh`](ci/icon-preview.sh)，
+6. 检查 App 图标和两个备用图标编进了 App，用 Xcode 自带的 `ictool` 按默认、深色、着色渲染预览（[`ci/icon-preview.sh`](ci/icon-preview.sh)，
    预览图在诊断产物里，32×32 缩略图在运行页面的注释里），不影响打包。
 
 推送 `ios-swift` 分支或在 Actions 页面手动运行（可选指定 Xcode 路径）。
@@ -145,9 +145,27 @@ docker run --rm -v "<仓库>/ios-swift/Packages/BKCore:/pkg" -w /pkg bk-swift sw
 
 - 画布 1024×1024，每种颜色一个 SVG 图层（`Assets/`，编号从后往前），图层里不带背景、阴影、透明度和圆角遮罩；
   背景色、深色和着色外观的颜色写在 `icon.json` 的 `fill-specializations` 里，高光、阴影、半透明和裁切由系统按 Liquid Glass 画。
-- 两组：后面是小票（纸和分隔线），前面是票面元素（¥、标题条、三个分类色块、三条横线、对勾）。`icon.json` 里排在前面的组和图层在上层。
-- 图形和颜色取自设计稿的白天、晚上、色调三版（深色的 ¥ 和对勾是两种蓝，所以分成两个图层）。
+- 三组：最后面是背景上三横三竖的网格线（不做玻璃、没有阴影），中间是小票（纸和分隔线），
+  前面是票面元素（¥、标题条、三个分类色块、三条横线、对勾）。`icon.json` 里排在前面的组和图层在上层。
+- 图形和颜色取自设计稿（Apple 蓝单色玻璃 + 网格）的白天、晚上、色调三版；色调版里 ¥、分类块、对勾的灰度不同，所以分成不同图层。
 - 没有 Mac 也能看效果：CI 用 Xcode 自带的 `ictool` 渲染各个外观（见上面「构建」第 6 步）。
+
+### 跟着 App 的外观换图标
+
+系统只能让所有 App 的图标一起变深色。「我的 › 外观」选浅色或深色时，App 用 `setAlternateIconName` 换成备用图标，
+这样可以只让这个 App 的图标变深色（或保持浅色），其他 App 不受影响：
+
+| App 里的外观 | 桌面图标 |
+|---|---|
+| 跟随系统 | `AppIcon`：白天浅色、晚上深色，跟系统一起变 |
+| 浅色 | `AppIconLight`：深色外观也用浅色的颜色 |
+| 深色 | `AppIconDark`：默认外观也用深色的颜色 |
+
+- 三个 `.icon` 的图层一样，只有 `icon.json` 里的颜色不同；改图形或颜色时三个一起改。着色外观三个都一样。
+- 构建设置 `ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "AppIconLight AppIconDark"` 让 actool 把两个备用图标编进去，
+  写进 Info.plist 的 `CFBundleAlternateIcons`（CI 第 6 步检查）。
+- 每次换图标系统都会弹一个「已更改图标」的提示，这是系统行为，去不掉；所以图标已经对了就不再调用。
+  删掉重装后系统会换回主图标，打开 App 时会按当前外观再换一次。
 
 ## 安装到 iPhone
 

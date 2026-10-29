@@ -31,13 +31,14 @@ struct ProfileView: View {
                     .padding(.vertical, 4)
                 }
 
-                Section("外观") {
-                    Picker("外观", selection: $appearance) {
+                Section {
+                    Picker(selection: $appearance) {
                         ForEach(AppearanceMode.allCases) { Text($0.title).tag($0.rawValue) }
+                    } label: {
+                        Label("外观", systemImage: "circle.lefthalf.filled")
                     }
-                    .pickerStyle(.segmented)
-                    .listRowBackground(Color.clear)
-                    .listRowInsets(EdgeInsets())
+                } footer: {
+                    Text("选浅色或深色时，桌面图标也一起换，不跟着系统变。")
                 }
 
                 Section {
@@ -50,12 +51,12 @@ struct ProfileView: View {
                             Label("主要币种", systemImage: "dollarsign.circle")
                         }
                     }
-                    LabeledContent("汇率", value: rateStatus)
                     NavigationLink {
                         ExchangeRateGuideView()
                     } label: {
                         Label("用快捷指令更新汇率", systemImage: "arrow.triangle.2.circlepath")
                     }
+                    LabeledContent("汇率", value: rateStatus)
                     if rates.rates != nil {
                         Link(ExchangeRateFeed.attribution, destination: ExchangeRateFeed.attributionURL)
                     }

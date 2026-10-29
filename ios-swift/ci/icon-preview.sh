@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# App 图标（Icon Composer 的 AppIcon.icon）：确认编进了 App，并用 Xcode 自带的 ictool 按各个外观渲染预览。
+# App 图标（Icon Composer 的 AppIcon.icon，和跟着 App 外观换的备用图标 AppIconLight / AppIconDark）：
+# 确认编进了 App，并用 Xcode 自带的 ictool 按各个外观渲染预览。
 # 预览图存进诊断产物；另外把 32×32 的缩略图以 notice 注释输出，不登录也能看出图层顺序和颜色对不对。
 # 只做检查和预览，不影响打包结果（总是返回 0）。
 # 用法：bash ios-swift/ci/icon-preview.sh <输出目录>
@@ -7,7 +8,7 @@ set -uo pipefail
 
 OUT="${1:?output dir}"
 APP="$OUT/derived-app/Build/Products/Release-iphoneos/Bookkeeping.app"
-ICON="ios-swift/Bookkeeping/AppIcon.icon"
+ICONS="ios-swift/Bookkeeping"
 PREVIEW="$OUT/icon-preview"
 mkdir -p "$PREVIEW"
 
@@ -17,8 +18,15 @@ if [[ "$ICON_NAME" == "AppIcon" ]]; then
 else
   echo "::warning title=AppIcon::Info.plist 里没有 CFBundleIcons › CFBundlePrimaryIcon › CFBundleIconName = AppIcon（实际是 '${ICON_NAME}'）"
 fi
-if [[ -e "$APP/icon.json" || -d "$APP/AppIcon.icon" ]]; then
-  echo "::warning title=AppIcon::AppIcon.icon 被当成普通文件复制进了 App，没有交给 actool 编译"
+for alt in AppIconLight AppIconDark; do
+  if /usr/libexec/PlistBuddy -c "Print :CFBundleIcons:CFBundleAlternateIcons:$alt" "$APP/Info.plist" > /dev/null 2>&1; then
+    echo "OK: Info.plist CFBundleAlternateIcons 有 $alt"
+  else
+    echo "::warning title=AppIcon::Info.plist 里没有 CFBundleIcons › CFBundleAlternateIcons › $alt，App 里换外观时桌面图标换不了"
+  fi
+done
+if [[ -e "$APP/icon.json" ]] || compgen -G "$APP/*.icon" > /dev/null; then
+  echo "::warning title=AppIcon::.icon 被当成普通文件复制进了 App，没有交给 actool 编译"
 fi
 
 # Assets.car 里和图标有关的条目（类型、外观、尺寸）
@@ -48,19 +56,20 @@ if [[ ! -x "$ICTOOL" ]]; then
   exit 0
 fi
 
-for rendition in Default Dark TintedLight TintedDark; do
-  png="$PREVIEW/$rendition.png"
-  "$ICTOOL" "$ICON" --export-image --output-file "$png" --platform iOS --rendition "$rendition" \
-    --width 1024 --height 1024 --scale 1 > "$PREVIEW/$rendition.log" 2>&1 \
-    || "$ICTOOL" "$ICON" --export-preview iOS "$rendition" 1024 1024 1 "$png" >> "$PREVIEW/$rendition.log" 2>&1
+# 用法：render <图标名> <外观>，预览图存成 <图标名>-<外观>.png
+render() {
+  local name="$1-$2" png="$PREVIEW/$1-$2.png"
+  "$ICTOOL" "$ICONS/$1.icon" --export-image --output-file "$png" --platform iOS --rendition "$2" \
+    --width 1024 --height 1024 --scale 1 > "$PREVIEW/$name.log" 2>&1 \
+    || "$ICTOOL" "$ICONS/$1.icon" --export-preview iOS "$2" 1024 1024 1 "$png" >> "$PREVIEW/$name.log" 2>&1
   if [[ ! -f "$png" ]]; then
     help=$("$ICTOOL" --help 2>&1 | head -n 40 | cut -c1-200 | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}')
-    echo "::warning title=IconPreview-$rendition::ictool 没有输出图片：$(tail -n 5 "$PREVIEW/$rendition.log" | tr '\n' ' ' | cut -c1-400)%0A$help"
-    continue
+    echo "::warning title=IconPreview-$name::ictool 没有输出图片：$(tail -n 5 "$PREVIEW/$name.log" | tr '\n' ' ' | cut -c1-400)%0A$help"
+    return 0
   fi
-  sips -z 32 32 "$png" --out "$PREVIEW/$rendition-32.png" > /dev/null 2>&1 || continue
+  sips -z 32 32 "$png" --out "$PREVIEW/$name-32.png" > /dev/null 2>&1 || return 0
   # 每个像素 4 个十六进制数（RGBA 各 4 位），一行接一行
-  python3 - "$PREVIEW/$rendition-32.png" "$rendition" <<'PY'
+  python3 - "$PREVIEW/$name-32.png" "$name" <<'PY'
 import struct, sys, zlib
 data = open(sys.argv[1], "rb").read()
 pos, idat = 8, b""
@@ -102,5 +111,9 @@ for line in rows:
         out.append("".join("%x" % (v >> 4) for v in px))
 print(f"::notice title=IconPreview-{sys.argv[2]}::{width}x{height} rgba4 {''.join(out)}")
 PY
-done
+}
+
+for rendition in Default Dark TintedLight TintedDark; do render AppIcon "$rendition"; done
+# 备用图标不管系统是什么外观都是同一个颜色，看默认外观就够了
+for icon in AppIconLight AppIconDark; do render "$icon" Default; done
 exit 0
