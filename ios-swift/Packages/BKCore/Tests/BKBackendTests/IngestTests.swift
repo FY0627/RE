@@ -558,6 +558,34 @@ final class IngestTests: XCTestCase {
         XCTAssertEqual(r.counterparty, "WEIXIN*Taobao platform Shenzhen CN")
     }
 
+    /// 众安 ZA Card 消费邮件（按用户截图整理）：尾号写在括号里「ZA Card (0627)」，金额单独一行，客服电话不是金额
+    func testZACardPurchaseEmailIsRecorded() async throws {
+        let backend = try makeBackend()
+        let account = try await backend.addAccount(AccountDraft(
+            name: "", bankID: "zabank", bankName: "众安银行", last4: "0627", cardType: .debit, currency: .hkd, paletteID: "ocean", extraCurrencies: [.cny]
+        ))
+        let text = """
+        你好 Kimi,
+
+        你于 2026-09-30 11:22:22 使用 ZA Card (0627) 完成一笔以下消费
+
+        消费金额：
+        HKD 6.49
+        消费商户：WECHAT PAY HONG KONG L
+
+        请到 ZA Bank App 了解详情，并查看 ZA Card 的回赠计划，让你下次消费可以赚取更多！
+
+        如怀疑电 3665 3665。
+        """
+        let result = try await backend.ingest(IngestRequest(text: text, source: .auto))
+        XCTAssertEqual(result.outcome, .recorded, result.summary)
+        let rows = try await backend.records(accountID: account.id)
+        let r = try XCTUnwrap(rows.first?.record)
+        XCTAssertEqual(r.amountMinor, 6_49)
+        XCTAssertEqual(r.currency, .hkd)
+        XCTAssertEqual(r.kind, .purchase)
+    }
+
     /// 快捷指令「电子邮件」触发交来的是 HTML 正文：中英两段说的是同一笔，只记一笔
     func testHangSengCardNotPresentHtmlEmailIsRecorded() async throws {
         let backend = try makeBackend()
