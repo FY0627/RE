@@ -2,7 +2,8 @@ import SwiftUI
 import UIKit
 
 /// 「我的 › 显示 › 主题色」：按钮、导航栏和标签栏的选中项、开关、选中的分类等用的颜色。
-/// 用系统颜色，深色外观下系统自动调亮。SwiftUI 部分在根视图上 `.tint`，UIKit 部分（卡包、首页顶部一行）跟着窗口的 `tintColor`。
+/// 现成的用系统颜色，深色外观下系统自动调亮；也可以自己调（`stored(custom:)`）。
+/// SwiftUI 部分在根视图上 `.tint`，UIKit 部分（卡包、首页顶部一行）跟着窗口的 `tintColor`。
 /// 代码里要用主题色时写 `.tint`（`TintShapeStyle`），不要写 `Color.accentColor`（那是固定的蓝色）。
 enum ThemeColor: String, CaseIterable, Identifiable {
     case blue, indigo, purple, pink, red, orange, green, mint, teal, cyan, brown, graphite
@@ -47,13 +48,22 @@ enum ThemeColor: String, CaseIterable, Identifiable {
 
     var color: Color { Color(uiColor: uiColor) }
 
-    static var current: ThemeColor {
-        UserDefaults.standard.string(forKey: key).flatMap(ThemeColor.init) ?? .blue
+    /// 存在 `key` 里的值：现成的颜色存名字，自己调的存 `#RRGGBB`
+    static func uiColor(stored: String) -> UIColor {
+        if let theme = ThemeColor(rawValue: stored) { return theme.uiColor }
+        guard stored.hasPrefix("#"), let hex = UInt32(stored.dropFirst(), radix: 16) else { return ThemeColor.blue.uiColor }
+        return UIColor(Color(hex: hex))
     }
+
+    static func color(stored: String) -> Color { Color(uiColor: uiColor(stored: stored)) }
+
+    static func title(stored: String) -> String { ThemeColor(rawValue: stored)?.title ?? "自定义" }
+
+    static func stored(custom color: Color) -> String { String(format: "#%06X", color.hex) }
 
     /// UIKit 做的部分跟着窗口的 tintColor 变
     @MainActor static func applyToWindows() {
-        let tint = current.uiColor
+        let tint = uiColor(stored: UserDefaults.standard.string(forKey: key) ?? ThemeColor.blue.rawValue)
         for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
             for window in scene.windows { window.tintColor = tint }
         }
@@ -102,6 +112,14 @@ extension Color {
             blue: Double(hex & 0xFF) / 255,
             opacity: opacity
         )
+    }
+
+    /// `0xRRGGBB`，超出 sRGB 的按边界算
+    var hex: UInt32 {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        UIColor(self).getRed(&r, green: &g, blue: &b, alpha: &a)
+        func byte(_ v: CGFloat) -> UInt32 { UInt32((min(1, max(0, v)) * 255).rounded()) }
+        return byte(r) << 16 | byte(g) << 8 | byte(b)
     }
 }
 

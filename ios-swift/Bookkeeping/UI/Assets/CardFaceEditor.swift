@@ -1,6 +1,5 @@
 import SwiftUI
 import PhotosUI
-import UIKit
 import BKModel
 
 /// 编辑卡面：配色或相册图片作背景，文字颜色和大小。只影响显示，不影响账户匹配。
@@ -121,15 +120,8 @@ struct CardFaceEditor: View {
         Binding {
             Color(hex: face.textColor ?? palette)
         } set: { color in
-            face.textColor = Self.hex(color)
+            face.textColor = color.hex
         }
-    }
-
-    private static func hex(_ color: Color) -> UInt32 {
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a)
-        func byte(_ v: CGFloat) -> UInt32 { UInt32((min(1, max(0, v)) * 255).rounded()) }
-        return byte(r) << 16 | byte(g) << 8 | byte(b)
     }
 
     private func importImage(_ item: PhotosPickerItem) async {

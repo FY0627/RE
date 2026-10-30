@@ -6,8 +6,7 @@ import BKBackend
 /// 「我的」：系统设置风格的分组列表，二级页面用导航推入（`ProfileRoute`）。推进去时标签栏滑出、回来时滑入，
 /// 和资产页打开卡片详情一样：显隐放在整个导航栈外面，在动画里切换。
 ///
-/// 标签栏的状态放在外面这一层，列表和导航栈在 `ProfileList` 里：切换标签栏的动画只改外面这层，
-/// 不会让导航栏在返回途中跟着重新排版（否则「分类」右上角的「编辑」会先挪到中间再退出）。
+/// 标签栏的状态放在外面这一层，列表和导航栈在 `ProfileList` 里：切换标签栏的动画只改外面这层，不重新计算列表。
 struct ProfileView: View {
     @State private var path: [ProfileRoute] = []
     /// 推进了二级页面：标签栏藏起来。和 `path` 分开、在动画里改，标签栏才会滑出 / 滑入，不是一下子没了
@@ -42,6 +41,10 @@ private struct ProfileList: View {
     @State private var retention = 30
     @State private var notifyDenied = false
     @State private var scrolledUnderBar = false
+    @State private var choosingTheme = false
+    /// 导航栈外面的安全区到状态栏下面，里面的页面到导航栏下面，差的就是导航栏的高度
+    @State private var stackSafeTop: CGFloat = 0
+    @State private var pageSafeTop: CGFloat = 0
     @Environment(\.openURL) private var openURL
 
     var body: some View {
@@ -62,11 +65,17 @@ private struct ProfileList: View {
                     }
                     .id("icon-\(themeColor)")
                     .onChange(of: appIcon) { AppearanceMode.applyIcon() }
-                    VStack(alignment: .leading, spacing: 12) {
-                        Label("主题色", systemImage: "paintpalette")
-                        ThemeColorGrid(selection: $themeColor)
+                    Button { choosingTheme = true } label: {
+                        LabeledContent {
+                            Text(ThemeColor.title(stored: themeColor)).foregroundStyle(.tint)
+                        } label: {
+                            Label {
+                                Text("主题色").foregroundStyle(Color.primary)
+                            } icon: {
+                                Image(systemName: "paintpalette")
+                            }
+                        }
                     }
-                    .padding(.vertical, 4)
                 }
 
                 Section("币种与汇率") {
@@ -149,6 +158,10 @@ private struct ProfileList: View {
                     Link(ExchangeRateFeed.attribution, destination: ExchangeRateFeed.attributionURL)
                 }
             }
+            // 这里的 themeColor 比 App 那层的 .tint 先变：按主题色重建的菜单行如果只靠外面的 .tint，
+            // 重建时拿到的还是上一个颜色（比现在选的晚一个）。用同一个值，重建时就是新颜色
+            .tint(ThemeColor.color(stored: themeColor))
+            .sheet(isPresented: $choosingTheme) { ThemeColorSheet(selection: $themeColor) }
             .alert("没有通知权限", isPresented: $notifyDenied) {
                 Button("去设置") {
                     if let url = URL(string: UIApplication.openNotificationSettingsURLString) { openURL(url) }
@@ -159,21 +172,28 @@ private struct ProfileList: View {
             }
             .trackingScrollUnderTopBar($scrolledUnderBar)
             .navigationTitle("我的")
-            // 系统导航栏的大标题比资产页的标题行低；藏起来，自己放一行
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarVisibility(.hidden, for: .navigationBar)
+            // 系统导航栏一直留着，里面什么也不放（标题留给二级页面的返回按钮，这里换成空的）。
+            // 不能藏：藏起来的话从二级页面返回时系统要把导航栏收走，顶上的东西会往中间收、再往上消失
+            .toolbar {
+                ToolbarItem(placement: .principal) { Color.clear.frame(width: 1, height: 1) }
+                    .sharedBackgroundVisibility(.hidden)
+            }
+            // 系统的大标题比资产页的标题行低，自己放一行。它排在导航栏下面，往上提回状态栏下面（高度不写死，系统版本不同高度不同）
             .safeAreaBar(edge: .top) {
                 TitleBar(title: "我的")
                     .frame(height: GlassControls.size)
                     .padding(.horizontal, AppLayout.cardInset)
-                    .padding(.top, 2)
+                    .padding(.top, 2 - (pageSafeTop - stackSafeTop))
                     .padding(.bottom, 6)
                     .background { TopBarBackdrop(visible: scrolledUnderBar) }
             }
+            .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.top } action: { pageSafeTop = $0 }
             .navigationDestination(for: ProfileRoute.self) { destination($0) }
             .task { retention = await store.retentionDays() }
             .onChange(of: retention) { _, days in Task { await store.setRetentionDays(days) } }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.top } action: { stackSafeTop = $0 }
     }
 
     @ViewBuilder
@@ -209,59 +229,6 @@ private struct ProfileList: View {
         Binding { [CurrencyCode(primaryCurrency)] } set: { codes in
             if let code = codes.first { primaryCurrency = code.rawValue }
         }
-    }
-}
-
-/// 选主题色：和记账选分类一样排成格子，每块是它自己的颜色（不跟着主题色），选中的打勾
-private struct ThemeColorGrid: View {
-    @Binding var selection: String
-
-    private static let columns = 6
-
-    var body: some View {
-        let themes = ThemeColor.allCases
-        let lines = stride(from: 0, to: themes.count, by: Self.columns).map { Array(themes[$0..<min($0 + Self.columns, themes.count)]) }
-        VStack(spacing: 12) {
-            ForEach(lines.indices, id: \.self) { index in
-                HStack(alignment: .top, spacing: 6) {
-                    ForEach(lines[index]) { swatch($0) }
-                }
-            }
-        }
-    }
-
-    private func swatch(_ theme: ThemeColor) -> some View {
-        let isSelected = selection == theme.rawValue
-        return Button {
-            selection = theme.rawValue
-            // UIKit 做的部分马上换，不等下一次刷新
-            ThemeColor.applyToWindows()
-        } label: {
-            VStack(spacing: 6) {
-                Circle()
-                    .fill(theme.color)
-                    .frame(width: 36, height: 36)
-                    .overlay {
-                        Image(systemName: "checkmark")
-                            .font(.footnote.weight(.bold))
-                            .foregroundStyle(Color.white)
-                            .opacity(isSelected ? 1 : 0)
-                    }
-                    .padding(3)
-                    .overlay(Circle().stroke(theme.color, lineWidth: isSelected ? 2 : 0))
-                Text(theme.title)
-                    .font(.caption)
-                    .foregroundStyle(Color.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
-            .frame(maxWidth: .infinity)
-            .contentShape(Rectangle())
-            .animation(.snappy(duration: 0.2), value: isSelected)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(theme.title)
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 }
 

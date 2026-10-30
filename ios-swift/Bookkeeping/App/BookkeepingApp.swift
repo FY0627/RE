@@ -68,7 +68,7 @@ struct BookkeepingApp: App {
                 .environment(store)
                 .environment(rates)
                 .preferredColorScheme(appearanceMode.colorScheme)
-                .tint((ThemeColor(rawValue: themeColor) ?? .blue).color)
+                .tint(ThemeColor.color(stored: themeColor))
                 .onChange(of: themeColor, initial: true) { ThemeColor.applyToWindows() }
                 .task { await store.start() }
                 .onChange(of: scenePhase) { _, phase in
