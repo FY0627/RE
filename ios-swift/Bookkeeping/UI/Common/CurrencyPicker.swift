@@ -104,7 +104,7 @@ enum CurrencyCatalog {
 }
 
 /// 选币种：全部 160 多种币种，带国旗，按拼音首字母分组，侧边的 A–Z 索引可以直接跳；
-/// 最下面的搜索框可以打中文、英文、代码或国家名，也可以直接往下翻着选。
+/// 最下面的搜索框（`GlassSearchBar`）可以打中文、英文、代码或国家名，也可以直接往下翻着选。
 /// 单选（币种、主币种、主要币种）点一下就返回；多选（多币种账户的其他币种）勾好后点「完成」返回。
 /// 记一笔、编辑流水时最上面先列自己的账户里有的币种（`suggested`），其余和添加账户时一样。
 struct CurrencyPicker: View {
@@ -149,13 +149,15 @@ struct CurrencyPicker: View {
         // 搜索框后面露出一块矩形跟着它回到底部。键盘挡住的几行往下一翻键盘就收起，看得到
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .scrollDismissesKeyboard(.immediately)
-        .searchable(text: $query, prompt: "币种、代码或国家")
-        .autocorrectionDisabled()
+        // 自己的搜索框（不用系统的）：点进去和退出时关闭按钮像水滴一样分出来、并回去
+        .safeAreaBar(edge: .bottom) {
+            GlassSearchBar(text: $query, prompt: "币种、代码或国家")
+                .padding(.horizontal, AppLayout.cardInset)
+                .padding(.bottom, 6)
+        }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            // 搜索框固定在最下面：添加银行卡（弹出页里）和「我的 › 主要币种」（标签页里推进来）一个样子
-            DefaultToolbarItem(kind: .search, placement: .bottomBar)
             if multiple {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成", systemImage: "checkmark") { dismiss() }
@@ -191,7 +193,7 @@ struct CurrencyPicker: View {
                 }
                 Spacer(minLength: 8)
                 if isSelected {
-                    Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(Color.accentColor)
+                    Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(.tint)
                 }
             }
             .contentShape(Rectangle())

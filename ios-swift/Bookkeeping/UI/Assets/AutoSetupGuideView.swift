@@ -10,38 +10,22 @@ import BKModel
 /// 不按关键词或尾号筛选：繁体（銀行）、英文银行写法各不相同，「信息包含」又只能填一个词。
 /// 由 App 判断是不是动账通知：认出尾号（固定写法，或正文里出现已添加的卡的尾号）才入账；
 /// 不是动账通知的短信不保存。
-/// iOS 不允许 App 创建、导入或查询快捷指令自动化，这里只给出最少的手动步骤，
-/// 并只展示 App 能确认的状态（是否收到过每张卡的真实输入）。
+/// iOS 不允许 App 创建、导入或查询快捷指令自动化，这里只给出最少的手动步骤。
+/// 只放设置步骤；各卡收到过没有、接收日志在「自动记账状态」（`AutomationStatusView`）。
 struct AutoSetupGuideView: View {
-    /// 从某张卡进入（例如刚添加完）时把这张卡排在最前面
-    var account: Account?
-    /// 作为面板或添加流程的最后一步出现时，右上角显示「完成」
+    /// 作为添加流程的最后一步出现时，右上角显示「完成」
     var onDone: (() -> Void)?
 
-    @Environment(LedgerStore.self) private var store
     @Environment(\.openURL) private var openURL
-
-    private var cards: [Account] {
-        // 只列银行卡：现金、电子钱包不参与自动记账
-        guard let account else { return store.accounts.filter(\.isCard) }
-        return [account] + store.accounts.filter { $0.id != account.id && $0.isCard }
-    }
 
     var body: some View {
         List {
             Section {
-                Text("只需设置一次").font(.title2.weight(.bold))
-                    .padding(.vertical, 4)
-                Button {
+                Button("打开快捷指令", systemImage: "arrow.up.forward.app") {
                     if let url = URL(string: "shortcuts://") { openURL(url) }
-                } label: {
-                    Label("打开快捷指令", systemImage: "arrow.up.forward.app")
-                        .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.glassProminent)
-                .controlSize(.large)
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets())
+            } footer: {
+                Text("只需设置一次，之后添加的卡不用再设置。")
             }
 
             Section {
@@ -51,17 +35,6 @@ struct AutoSetupGuideView: View {
             } header: {
                 Text("5 步完成")
             }
-
-            if !cards.isEmpty {
-                Section {
-                    ForEach(cards) { card in
-                        cardRow(card)
-                    }
-                } header: {
-                    Text("各卡状态")
-                }
-            }
-
         }
         .navigationTitle("设置自动记账")
         .navigationBarTitleDisplayMode(.inline)
@@ -74,22 +47,6 @@ struct AutoSetupGuideView: View {
         }
         // 添加银行卡后紧接着出现时不显示返回（卡已经保存，返回会回到已提交的表单）
         .navigationBarBackButtonHidden(onDone != nil)
-    }
-
-    /// 一张卡是否收到过自动输入
-    private func cardRow(_ card: Account) -> some View {
-        let last = store.automation[card.id]?.lastSuccessAt
-        return HStack(spacing: 12) {
-            Image(systemName: last != nil ? "checkmark.circle.fill" : "clock")
-                .font(.title3)
-                .foregroundStyle(last != nil ? Color.green : Color.orange)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(card.displayTitle).font(.body.weight(.medium))
-                Text(last.map { "最近一次接收 \(Fmt.dateTime($0))" } ?? "还没有收到这张卡的自动输入")
-                    .font(.subheadline).foregroundStyle(.secondary)
-            }
-        }
-        .accessibilityElement(children: .combine)
     }
 
     static let smsSteps: [LocalizedStringKey] = [
@@ -111,7 +68,7 @@ struct StepRow: View {
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(.white)
                 .frame(width: 26, height: 26)
-                .background(Color.accentColor, in: Circle())
+                .background(.tint, in: Circle())
                 .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 5 }
             Text(text).font(.body)
         }

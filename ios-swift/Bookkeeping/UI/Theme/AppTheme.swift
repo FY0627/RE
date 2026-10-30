@@ -1,4 +1,64 @@
 import SwiftUI
+import UIKit
+
+/// 「我的 › 显示 › 主题色」：按钮、导航栏和标签栏的选中项、开关、选中的分类等用的颜色。
+/// 用系统颜色，深色外观下系统自动调亮。SwiftUI 部分在根视图上 `.tint`，UIKit 部分（卡包、首页顶部一行）跟着窗口的 `tintColor`。
+/// 代码里要用主题色时写 `.tint`（`TintShapeStyle`），不要写 `Color.accentColor`（那是固定的蓝色）。
+enum ThemeColor: String, CaseIterable, Identifiable {
+    case blue, indigo, purple, pink, red, orange, green, mint, teal, cyan, brown, graphite
+
+    static let key = "themeColor"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .blue: "蓝色"
+        case .indigo: "靛蓝"
+        case .purple: "紫色"
+        case .pink: "粉色"
+        case .red: "红色"
+        case .orange: "橙色"
+        case .green: "绿色"
+        case .mint: "薄荷"
+        case .teal: "水鸭"
+        case .cyan: "青色"
+        case .brown: "棕色"
+        case .graphite: "石墨"
+        }
+    }
+
+    var uiColor: UIColor {
+        switch self {
+        case .blue: .systemBlue
+        case .indigo: .systemIndigo
+        case .purple: .systemPurple
+        case .pink: .systemPink
+        case .red: .systemRed
+        case .orange: .systemOrange
+        case .green: .systemGreen
+        case .mint: .systemMint
+        case .teal: .systemTeal
+        case .cyan: .systemCyan
+        case .brown: .systemBrown
+        case .graphite: .systemGray
+        }
+    }
+
+    var color: Color { Color(uiColor: uiColor) }
+
+    static var current: ThemeColor {
+        UserDefaults.standard.string(forKey: key).flatMap(ThemeColor.init) ?? .blue
+    }
+
+    /// UIKit 做的部分跟着窗口的 tintColor 变
+    @MainActor static func applyToWindows() {
+        let tint = current.uiColor
+        for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
+            for window in scene.windows { window.tintColor = tint }
+        }
+    }
+}
 
 /// 颜色沿用 prototype 分支 `lib/theme/app_theme.dart`。
 enum AppTheme {

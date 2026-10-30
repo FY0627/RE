@@ -200,7 +200,7 @@ struct PaletteGrid: View {
                         }
                         .overlay(
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .stroke(Color.accentColor, lineWidth: selection == palette.id ? 3 : 0)
+                                .stroke(.tint, lineWidth: selection == palette.id ? 3 : 0)
                         )
                 }
                 .buttonStyle(.plain)

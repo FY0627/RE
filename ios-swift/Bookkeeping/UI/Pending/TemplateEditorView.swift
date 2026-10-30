@@ -3,16 +3,26 @@ import UIKit
 import BKBackend
 import BKModel
 
-/// 用一条待处理的通知做识别模板：在原文里选中金额（必选）、尾号、对方，选好交易性质，保存。
+/// 识别模板的编辑页（和记一笔一样是弹出的表单）：新添加、改已有的、或用一条待处理的通知做。
+/// 原文可以粘贴或手动改；在原文里选中金额（必选）、尾号、对方，选好交易性质，保存。
 ///
 /// 模板只保存在这台 iPhone；保存的是写法，选中的内容和原文里的其他数字都不保存。
-/// 保存后，待处理里同样写法的通知按模板重新识别，之后收到的同样写法的通知先按模板识别。
+/// 改已有的模板时没有原文，用 `MessageTemplates.sample` 还原成一条示例（金额 100.00、尾号 1234、其他数字 0）。
+/// 收到通知时先用模板认（新做的在前），都认不出再用 App 自带的读法。
 struct TemplateEditorView: View {
-    let item: PendingItem
+    enum Origin {
+        case new
+        case existing(MessageTemplate)
+        case pending(PendingItem)
+    }
+
+    let origin: Origin
     @Environment(LedgerStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
     @State private var sample = ""
+    @State private var editingText = false
+    @State private var draftText = ""
     @State private var selection = NSRange(location: 0, length: 0)
     @State private var amount: NSRange?
     @State private var cardTail: NSRange?
@@ -23,30 +33,36 @@ struct TemplateEditorView: View {
     @State private var errorText: String?
     @State private var saving = false
     @State private var savedCount: Int?
+    @State private var loaded = false
+
+    init(item: PendingItem) { origin = .pending(item) }
+    init(template: MessageTemplate?) { origin = template.map(Origin.existing) ?? .new }
 
     private enum Mark {
         case amount, cardTail, counterparty
+    }
+
+    private var existing: MessageTemplate? {
+        if case .existing(let template) = origin { return template }
+        return nil
+    }
+
+    private var title: String {
+        switch origin {
+        case .new: "添加识别模板"
+        case .existing: "编辑识别模板"
+        case .pending: "做成识别模板"
+        }
     }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    SelectableText(text: sample, highlights: highlights, selection: $selection)
-                        .frame(height: 220)
-                } header: {
-                    Text("原文")
-                } footer: {
-                    Text("按住原文拖动选中一段，再在下面点「用选中的」。金额必须选。")
+                    TextField("模板名称", text: $name)
                 }
 
-                Section("选中的内容") {
-                    markRow("金额", mark: .amount, range: amount, tint: .green, required: true)
-                    markRow("尾号", mark: .cardTail, range: cardTail, tint: .blue, required: false)
-                    markRow("对方", mark: .counterparty, range: counterparty, tint: .orange, required: false)
-                }
-
-                Section("这是什么交易") {
+                Section("交易") {
                     Picker("性质", selection: $kind) {
                         ForEach(TransactionKind.allCases, id: \.self) { Text($0.displayName).tag($0) }
                     }
@@ -57,30 +73,67 @@ struct TemplateEditorView: View {
                     .pickerStyle(.segmented)
                 }
 
-                Section {
-                    TextField("模板名称", text: $name)
-                } header: {
-                    Text("名称")
-                } footer: {
-                    Text("模板只保存在这台 iPhone，不会发给任何人。保存的是写法：选中的金额、尾号、对方和原文里的其他数字都不保存。")
+                Section("通知原文") {
+                    if editingText {
+                        TextEditor(text: $draftText)
+                            .frame(minHeight: 160)
+                        Button("完成") { applyText(draftText) }
+                    } else {
+                        if sample.isEmpty {
+                            Text("粘贴一条收到的短信或邮件").foregroundStyle(.secondary)
+                        } else {
+                            SelectableText(text: sample, highlights: highlights, selection: $selection)
+                                .frame(height: 200)
+                        }
+                        HStack {
+                            PasteButton(payloadType: String.self) { strings in
+                                guard let text = strings.first else { return }
+                                Task { @MainActor in applyText(text) }
+                            }
+                            .labelStyle(.titleAndIcon)
+                            Spacer()
+                            Button("手动输入") {
+                                draftText = sample
+                                editingText = true
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+
+                if !sample.isEmpty, !editingText {
+                    Section("选中的内容") {
+                        markRow("金额", mark: .amount, range: amount, tint: .green, required: true)
+                        markRow("尾号", mark: .cardTail, range: cardTail, tint: .blue, required: false)
+                        markRow("对方", mark: .counterparty, range: counterparty, tint: .orange, required: false)
+                    }
                 }
 
                 if case .success(let pieces)? = built {
-                    Section("模板写法") {
+                    Section("写法") {
                         Text(pieces.map(\.preview).joined()).font(.footnote).foregroundStyle(.secondary)
                     }
                 }
                 if let errorText {
                     Section { Text(errorText).foregroundStyle(.red) }
                 }
+                if let existing {
+                    Section {
+                        Menu {
+                            Button("删除这个模板", systemImage: "trash", role: .destructive) { Task { await delete(existing) } }
+                        } label: {
+                            ActionLabel(title: "删除").foregroundStyle(Color.red)
+                        }
+                    }
+                }
             }
-            .navigationTitle("做成识别模板")
+            .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消", systemImage: "xmark") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存", systemImage: "checkmark") { Task { await save() } }
-                        .disabled(amount == nil || saving)
+                        .disabled(amount == nil || saving || editingText)
                 }
             }
             .onAppear(perform: setup)
@@ -90,7 +143,7 @@ struct TemplateEditorView: View {
             .alert("已保存", isPresented: Binding(get: { savedCount != nil }, set: { if !$0 { savedCount = nil } })) {
                 Button("好") { dismiss() }
             } message: {
-                Text(savedCount.map { $0 > 0 ? "待处理里有 \($0) 条通知按这个模板重新识别。" : "之后收到同样写法的通知会按这个模板识别。" } ?? "")
+                Text(savedCount.map { "待处理里有 \($0) 条通知按这个模板重新识别。" } ?? "")
             }
         }
     }
@@ -145,18 +198,52 @@ struct TemplateEditorView: View {
         if case .failure(let error)? = built { errorText = error.message }
     }
 
-    /// 用通用读法对这条通知的猜测预先填好：金额位置、性质、方向
     private func setup() {
-        guard sample.isEmpty else { return }
-        sample = MessageParser.cleaned(item.rawText ?? "", source: item.source)
-        if let draft = item.draft {
-            let found = NSString(string: sample).range(of: draft.amount.digits)
-            if found.location != NSNotFound { amount = found }
-            if draft.kind != .other { kind = draft.kind }
-            if let preferred = draft.direction ?? Self.defaultDirection(draft.kind) { direction = preferred }
+        guard !loaded else { return }
+        loaded = true
+        switch origin {
+        case .new:
+            break
+        case .existing(let template):
+            let restored = MessageTemplates.sample(template.pieces)
+            sample = restored.text
+            amount = restored.amount
+            cardTail = restored.cardTail
+            counterparty = restored.counterparty
+            kind = template.kind
+            direction = template.direction
+            name = template.name
+        case .pending(let item):
+            sample = MessageParser.cleaned(item.rawText ?? "", source: item.source)
+            if let draft = item.draft { guess(draft) }
+            let bank = item.draft?.bankHint.flatMap { BankDirectory.profile(id: $0)?.name }
+            name = [bank, kind.displayName + "通知"].compactMap { $0 }.joined(separator: " ")
         }
-        let bank = item.draft?.bankHint.flatMap { BankDirectory.profile(id: $0)?.name }
-        name = [bank, kind.displayName + "通知"].compactMap { $0 }.joined(separator: " ")
+    }
+
+    /// 换了原文（粘贴或手动输入）：整理成识别用的写法，原来选中的位置清掉，再用 App 自带的读法猜一下金额和性质
+    private func applyText(_ text: String) {
+        editingText = false
+        let cleaned = MessageParser.cleaned(text, source: .auto)
+        guard cleaned != sample else { return }
+        sample = cleaned
+        selection = NSRange(location: 0, length: 0)
+        amount = nil
+        cardTail = nil
+        counterparty = nil
+        errorText = nil
+        let parsed = MessageParser.parse(MessageContext(
+            text: text, source: .auto, sender: nil, subject: nil, referenceDate: Date(), calendar: .current
+        ))
+        if let draft = parsed.events.first?.draft { guess(draft) }
+    }
+
+    /// 用通用读法对这条通知的猜测预先填好：金额位置、性质、方向
+    private func guess(_ draft: EventDraft) {
+        let found = NSString(string: sample).range(of: draft.amount.digits)
+        if found.location != NSNotFound { amount = found }
+        if draft.kind != .other { kind = draft.kind }
+        if let preferred = draft.direction ?? Self.defaultDirection(draft.kind) { direction = preferred }
     }
 
     private func save() async {
@@ -166,10 +253,10 @@ struct TemplateEditorView: View {
         }
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let template = MessageTemplate(
-            id: UUID().uuidString, name: trimmedName.isEmpty ? kind.displayName + "通知" : trimmedName,
-            pieces: pieces, kind: kind, direction: direction, createdAt: Date()
+            id: existing?.id ?? UUID().uuidString, name: trimmedName.isEmpty ? kind.displayName + "通知" : trimmedName,
+            pieces: pieces, kind: kind, direction: direction, createdAt: existing?.createdAt ?? Date()
         )
-        // 模板至少要认得出做它用的这条通知
+        // 模板至少要认得出原文这条通知
         guard MessageTemplates.match(template, in: sample) != nil else {
             errorText = "用这个模板认不出这条通知，请换一种选法"
             return
@@ -177,9 +264,19 @@ struct TemplateEditorView: View {
         saving = true
         defer { saving = false }
         do {
-            savedCount = try await store.saveTemplate(template)
+            let count = try await store.saveTemplate(template)
+            if count > 0 { savedCount = count } else { dismiss() }
         } catch {
             errorText = "保存失败：\(error)"
+        }
+    }
+
+    private func delete(_ template: MessageTemplate) async {
+        do {
+            try await store.deleteTemplate(id: template.id)
+            dismiss()
+        } catch {
+            errorText = "删除失败：\(error)"
         }
     }
 

@@ -153,7 +153,7 @@ final class DatabaseTests: XCTestCase {
             id: "t1", name: "测试", pieces: [.text("您尾号"), .cardTail, .text("消费"), .amount, .text("元，余额"), .anyNumber],
             kind: .purchase, direction: .outflow, createdAt: Date(timeIntervalSince1970: 1_790_000_000)
         )
-        try db.writeSync { try TemplateDAO.insert($0, template) }
+        try db.writeSync { try TemplateDAO.save($0, template) }
         XCTAssertEqual(try db.readSync { try TemplateDAO.all($0) }, [template])
         XCTAssertTrue(try db.writeSync { try TemplateDAO.delete($0, id: "t1") })
         XCTAssertEqual(try db.readSync { try TemplateDAO.all($0) }, [])

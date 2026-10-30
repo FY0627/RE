@@ -83,9 +83,9 @@ struct CategoryIcon: View {
     var body: some View {
         Image(systemName: symbol)
             .font(.body)
-            .foregroundStyle(highlighted ? Color.accentColor : Color.primary)
+            .foregroundStyle(highlighted ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.primary))
             .frame(width: 40, height: 40)
-            .background(highlighted ? Color.accentColor.opacity(0.15) : Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(highlighted ? AnyShapeStyle(TintShapeStyle().opacity(0.15)) : AnyShapeStyle(Color.primary.opacity(0.06)), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .accessibilityHidden(true)
     }
 }

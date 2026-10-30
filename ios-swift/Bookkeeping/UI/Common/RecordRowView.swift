@@ -384,11 +384,11 @@ struct OrderMergeView: View {
                             HStack(spacing: 10) {
                                 Image(systemName: chosen.contains(candidate.id) ? "checkmark.circle.fill" : "circle")
                                     .font(.title3)
-                                    .foregroundStyle(chosen.contains(candidate.id) ? Color.accentColor : Color.secondary)
+                                    .foregroundStyle(chosen.contains(candidate.id) ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.secondary))
                                 VStack(alignment: .leading, spacing: 4) {
                                     RecordRowView(row: candidate)
                                     if LedgerBackend.likelySameOrder(row.record, candidate.record) {
-                                        Text("可能是同一单").font(.caption.weight(.semibold)).foregroundStyle(Color.accentColor)
+                                        Text("可能是同一单").font(.caption.weight(.semibold)).foregroundStyle(.tint)
                                     }
                                 }
                             }

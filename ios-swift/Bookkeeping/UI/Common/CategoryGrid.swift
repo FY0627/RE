@@ -91,9 +91,9 @@ struct CategoryGrid: View {
             VStack(spacing: 6) {
                 Image(systemName: cell.symbol)
                     .font(.title3)
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                    .foregroundStyle(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.primary))
                     .frame(width: 48, height: 48)
-                    .background(isSelected ? Color.accentColor.opacity(0.15) : Color.primary.opacity(0.06), in: Circle())
+                    .background(isSelected ? AnyShapeStyle(TintShapeStyle().opacity(0.15)) : AnyShapeStyle(Color.primary.opacity(0.06)), in: Circle())
                 HStack(spacing: 2) {
                     Text(cell.name)
                         .lineLimit(1)
@@ -133,9 +133,9 @@ struct SymbolPicker: View {
                     } label: {
                         Image(systemName: name)
                             .font(.title3)
-                            .foregroundStyle(symbol == name ? Color.accentColor : Color.primary)
+                            .foregroundStyle(symbol == name ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.primary))
                             .frame(width: 48, height: 48)
-                            .background(symbol == name ? Color.accentColor.opacity(0.15) : Color.primary.opacity(0.06), in: Circle())
+                            .background(symbol == name ? AnyShapeStyle(TintShapeStyle().opacity(0.15)) : AnyShapeStyle(Color.primary.opacity(0.06)), in: Circle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(name)

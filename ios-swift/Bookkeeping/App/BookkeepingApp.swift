@@ -56,6 +56,7 @@ struct BookkeepingApp: App {
     @State private var store = LedgerStore()
     @State private var rates = ExchangeRateStore()
     @AppStorage("appearance") private var appearance = AppearanceMode.system.rawValue
+    @AppStorage(ThemeColor.key) private var themeColor = ThemeColor.blue.rawValue
     @AppStorage(ExchangeRateStore.primaryKey) private var primaryCurrency = "CNY"
     @Environment(\.scenePhase) private var scenePhase
 
@@ -67,6 +68,8 @@ struct BookkeepingApp: App {
                 .environment(store)
                 .environment(rates)
                 .preferredColorScheme(appearanceMode.colorScheme)
+                .tint((ThemeColor(rawValue: themeColor) ?? .blue).color)
+                .onChange(of: themeColor, initial: true) { ThemeColor.applyToWindows() }
                 .task { await store.start() }
                 .onChange(of: scenePhase) { _, phase in
                     // 自动化在后台入账后，用户下次打开 App 时刷新

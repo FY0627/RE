@@ -4,27 +4,50 @@ import BKModel
 import BKBackend
 
 /// 「我的」：系统设置风格的分组列表，二级页面用导航推入（`ProfileRoute`）。推进去时标签栏滑出、回来时滑入，
-/// 和资产页打开卡片详情一样：显隐放在整个导航栈上，在动画里切换。
-/// 顶部一行和首页、资产页一样高、一样的位置；列表滚到它下面时垫一层磨砂背景（和首页一样）。
+/// 和资产页打开卡片详情一样：显隐放在整个导航栈外面，在动画里切换。
+///
+/// 标签栏的状态放在外面这一层，列表和导航栈在 `ProfileList` 里：切换标签栏的动画只改外面这层，
+/// 不会让导航栏在返回途中跟着重新排版（否则「分类」右上角的「编辑」会先挪到中间再退出）。
 struct ProfileView: View {
+    @State private var path: [ProfileRoute] = []
+    /// 推进了二级页面：标签栏藏起来。和 `path` 分开、在动画里改，标签栏才会滑出 / 滑入，不是一下子没了
+    @State private var subpageOpen = false
+
+    var body: some View {
+        ProfileList(path: $path)
+            .toolbarVisibility(subpageOpen ? .hidden : .visible, for: .tabBar)
+            .onChange(of: path.isEmpty) { _, empty in
+                withAnimation(.smooth(duration: 0.35)) { subpageOpen = !empty }
+            }
+    }
+}
+
+/// 「我的」推进去的二级页面
+enum ProfileRoute: Hashable {
+    case primaryCurrency, exchangeRates, categories, autoSetup, automationStatus, templates, help, performance
+}
+
+/// 「我的」的列表和导航栈。顶部一行和首页、资产页一样高、一样的位置；列表滚到它下面时垫一层磨砂背景（和首页一样）。
+private struct ProfileList: View {
+    @Binding var path: [ProfileRoute]
+
     @Environment(LedgerStore.self) private var store
     @Environment(ExchangeRateStore.self) private var rates
     @AppStorage("appearance") private var appearance = AppearanceMode.system.rawValue
     @AppStorage(AppearanceMode.iconKey) private var appIcon = AppearanceMode.system.rawValue
+    @AppStorage(ThemeColor.key) private var themeColor = ThemeColor.blue.rawValue
     @AppStorage(ExchangeRateStore.primaryKey) private var primaryCurrency = CurrencyCode.cny.rawValue
     @AppStorage(IngestNotifier.modeKey) private var notifyMode = IngestNotifier.Mode.off.rawValue
+    @AppStorage(ImportExchangeRatesIntent.notifyKey) private var notifyRates = true
     @State private var retention = 30
     @State private var notifyDenied = false
     @State private var scrolledUnderBar = false
-    @State private var path: [ProfileRoute] = []
-    /// 推进了二级页面：标签栏藏起来。和 `path` 分开、在动画里改，标签栏才会滑出 / 滑入，不是一下子没了
-    @State private var subpageOpen = false
     @Environment(\.openURL) private var openURL
 
     var body: some View {
         NavigationStack(path: $path) {
             Form {
-                Section {
+                Section("显示") {
                     Picker(selection: $appearance) {
                         ForEach(AppearanceMode.allCases) { Text($0.title).tag($0.rawValue) }
                     } label: {
@@ -36,11 +59,21 @@ struct ProfileView: View {
                         Label("图标", systemImage: "app")
                     }
                     .onChange(of: appIcon) { AppearanceMode.applyIcon() }
-                } header: {
-                    Text("显示")
+                    Picker(selection: $themeColor) {
+                        ForEach(ThemeColor.allCases) { theme in
+                            Label {
+                                Text(theme.title)
+                            } icon: {
+                                Image(systemName: "circle.fill").foregroundStyle(theme.color)
+                            }
+                            .tag(theme.rawValue)
+                        }
+                    } label: {
+                        Label("主题色", systemImage: "paintpalette")
+                    }
                 }
 
-                Section {
+                Section("币种与汇率") {
                     NavigationLink(value: ProfileRoute.primaryCurrency) {
                         LabeledContent {
                             Text(CurrencyCode(primaryCurrency).chineseName)
@@ -51,12 +84,6 @@ struct ProfileView: View {
                     NavigationLink(value: ProfileRoute.exchangeRates) {
                         Label("用快捷指令更新汇率", systemImage: "arrow.triangle.2.circlepath")
                     }
-                    LabeledContent("汇率", value: rateStatus)
-                    if rates.rates != nil {
-                        Link(ExchangeRateFeed.attribution, destination: ExchangeRateFeed.attributionURL)
-                    }
-                } header: {
-                    Text("币种与汇率")
                 }
 
                 Section("记账") {
@@ -75,26 +102,31 @@ struct ProfileView: View {
                     NavigationLink(value: ProfileRoute.templates) {
                         Label("识别模板", systemImage: "text.viewfinder")
                     }
-                    Picker(selection: $notifyMode) {
-                        ForEach(IngestNotifier.Mode.allCases) { Text($0.title).tag($0.rawValue) }
-                    } label: {
-                        Label("记账结果通知", systemImage: "bell.badge")
-                    }
-                    .onChange(of: notifyMode) { _, mode in
-                        guard mode != IngestNotifier.Mode.off.rawValue else { return }
-                        Task {
-                            if !(await IngestNotifier.requestAuthorization()) {
-                                notifyMode = IngestNotifier.Mode.off.rawValue
-                                notifyDenied = true
-                            }
-                        }
-                    }
                     NavigationLink(value: ProfileRoute.help) {
                         Label("使用说明", systemImage: "questionmark.circle")
                     }
                 }
 
-                Section {
+                Section("通知") {
+                    Picker(selection: $notifyMode) {
+                        ForEach(IngestNotifier.Mode.allCases) { Text($0.title).tag($0.rawValue) }
+                    } label: {
+                        Label("记账结果", systemImage: "bell.badge")
+                    }
+                    .onChange(of: notifyMode) { _, mode in
+                        guard mode != IngestNotifier.Mode.off.rawValue else { return }
+                        askPermission { notifyMode = IngestNotifier.Mode.off.rawValue }
+                    }
+                    Toggle(isOn: $notifyRates) {
+                        Label("导入汇率", systemImage: "arrow.left.arrow.right.circle")
+                    }
+                    .onChange(of: notifyRates) { _, on in
+                        guard on else { return }
+                        askPermission { notifyRates = false }
+                    }
+                }
+
+                Section("隐私与数据") {
                     Picker(selection: $retention) {
                         Text("7 天").tag(7)
                         Text("30 天").tag(30)
@@ -102,8 +134,6 @@ struct ProfileView: View {
                     } label: {
                         Label("原始通知保留", systemImage: "clock.arrow.circlepath")
                     }
-                } header: {
-                    Text("隐私与数据")
                 }
 
                 Section("开发与调试") {
@@ -116,6 +146,9 @@ struct ProfileView: View {
                     LabeledContent("日常记账", value: "iOS 原生 Swift 版")
                     LabeledContent("版本", value: BuildInfo.summary)
                         .font(.subheadline.monospaced())
+                    LabeledContent("汇率", value: rateStatus)
+                    // 汇率数据源要求注明来源并链接到官网
+                    Link(ExchangeRateFeed.attribution, destination: ExchangeRateFeed.attributionURL)
                 }
             }
             .alert("没有通知权限", isPresented: $notifyDenied) {
@@ -143,10 +176,6 @@ struct ProfileView: View {
             .task { retention = await store.retentionDays() }
             .onChange(of: retention) { _, days in Task { await store.setRetentionDays(days) } }
         }
-        .toolbarVisibility(subpageOpen ? .hidden : .visible, for: .tabBar)
-        .onChange(of: path.isEmpty) { _, empty in
-            withAnimation(.smooth(duration: 0.35)) { subpageOpen = !empty }
-        }
     }
 
     @ViewBuilder
@@ -162,14 +191,17 @@ struct ProfileView: View {
         case .performance: PerformanceSettingsView()
         }
     }
-}
 
-/// 「我的」推进去的二级页面
-enum ProfileRoute: Hashable {
-    case primaryCurrency, exchangeRates, categories, autoSetup, automationStatus, templates, help, performance
-}
+    /// 打开一种通知时要通知权限；被拒绝就关回去，提示去系统设置
+    private func askPermission(revert: @escaping () -> Void) {
+        Task {
+            if !(await IngestNotifier.requestAuthorization()) {
+                revert()
+                notifyDenied = true
+            }
+        }
+    }
 
-extension ProfileView {
     private var rateStatus: String {
         rates.rates.map { "更新于 \(Fmt.dateTime($0.updatedAt))" } ?? "尚未导入"
     }

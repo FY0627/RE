@@ -819,14 +819,14 @@ public final class LedgerBackend: Sendable {
         try await database.read { try TemplateDAO.all($0) }
     }
 
-    /// 保存用户在本机做的模板，并用它重新识别还没处理的待处理项。返回重新识别的通知条数。
+    /// 保存用户在本机做的模板（新的或改过的），并用它重新识别还没处理的待处理项。返回重新识别的通知条数。
     public func saveTemplate(_ template: MessageTemplate) async throws -> Int {
         guard template.pieces.contains(.amount) else { throw BackendError.invalidTemplate }
         let now = clock()
         let calendar = calendar
         let newID = newID
         return try await database.write { db in
-            try TemplateDAO.insert(db, template)
+            try TemplateDAO.save(db, template)
             return try IngestEngine(db: db, now: now, calendar: calendar, newID: newID).reapply(template)
         }
     }

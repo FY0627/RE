@@ -285,7 +285,7 @@ private struct CategoryTotalRow: View {
                     Text(Fmt.money(item.amountMinor, currency)).monospacedDigit()
                 }
                 GeometryReader { proxy in
-                    Capsule().fill(Color.accentColor.opacity(0.35))
+                    Capsule().fill(TintShapeStyle().opacity(0.35))
                         .frame(width: max(6, proxy.size.width * CGFloat(max(0, Double(item.amountMinor)) / Double(maxAmount))), height: 6)
                 }
                 .frame(height: 6)

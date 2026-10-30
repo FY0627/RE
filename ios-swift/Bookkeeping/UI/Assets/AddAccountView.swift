@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 import BKModel
 import BKBackend
 
@@ -46,6 +47,14 @@ struct AddAccountView: View {
     @State private var balances: [CurrencyCode: BalanceInput] = [:]
     @State private var paletteID = "ocean"
     @State private var paletteTouched = false
+    /// 卡面用自己的照片（默认不用，选配色）
+    @State private var useOwnPhoto = false
+    @State private var photoItem: PhotosPickerItem?
+    @State private var photoID: String?
+    @State private var importingPhoto = false
+    /// 这次选过的图片；没保存或换掉的在离开时删除
+    @State private var importedPhotoIDs: [String] = []
+    @State private var keptPhotoID: String?
     @State private var saving = false
     @State private var errorText: String?
     @State private var created: Account?
@@ -158,9 +167,30 @@ struct AddAccountView: View {
                         }
                     }
                 }
+                // 先选用不用自己的照片；不用（默认）才列出配色
                 Section("卡面") {
-                    PaletteGrid(selection: Binding(get: { paletteID }, set: { paletteID = $0; paletteTouched = true }))
-                        .padding(.vertical, 4)
+                    Toggle("用自己的照片", isOn: $useOwnPhoto.animation())
+                    if useOwnPhoto {
+                        PhotosPicker(selection: $photoItem, matching: .images) {
+                            HStack {
+                                Label(photoID == nil ? "从相册选择图片" : "更换图片", systemImage: "photo")
+                                Spacer()
+                                if importingPhoto {
+                                    ProgressView()
+                                } else if let photoID, let image = CardFaceImages.shared.image(photoID) {
+                                    Image(uiImage: image)
+                                        .resizable()
+                                        .aspectRatio(AppLayout.cardAspect, contentMode: .fill)
+                                        .frame(width: 56)
+                                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                }
+                            }
+                        }
+                        .disabled(importingPhoto)
+                    } else {
+                        PaletteGrid(selection: Binding(get: { paletteID }, set: { paletteID = $0; paletteTouched = true }))
+                            .padding(.vertical, 4)
+                    }
                 }
                 if let errorText {
                     Section { Text(errorText).foregroundStyle(.red) }
@@ -184,14 +214,21 @@ struct AddAccountView: View {
                 if kind != .card { multiCurrency = false }
                 for (code, input) in balances where input.text.isEmpty { balances[code]?.isDebt = kind == .card && cardType == .credit }
             }
+            .onChange(of: photoItem) { _, item in
+                if let item { Task { await importPhoto(item) } }
+            }
             .navigationDestination(item: $created) { account in
-                AutoSetupGuideView(account: account, onDone: { dismiss() })
+                AutoSetupGuideView(onDone: { dismiss() })
             }
             .task {
                 // 银行和币种的搜索列表第一次要查系统名称、算拼音，先在后台准备好
                 await CurrencyCatalog.prepare()
                 await Task.detached(priority: .utility) { _ = BankCatalog.search("银行") }.value
             }
+        }
+        // 整个添加页关掉时（不是推进选币种页时）：删除没用上的图片
+        .onDisappear {
+            CardFaceImages.shared.discard(importedPhotoIDs.filter { $0 != keptPhotoID })
         }
     }
 
@@ -218,6 +255,33 @@ struct AddAccountView: View {
         if !paletteTouched, let palette = entry.paletteID { paletteID = palette }
     }
 
+    /// 选好的照片缩小、裁成卡片比例存起来（和卡面编辑一样）
+    private func importPhoto(_ item: PhotosPickerItem) async {
+        importingPhoto = true
+        defer {
+            importingPhoto = false
+            photoItem = nil
+        }
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self) else { throw CardFaceImages.ImportError.unreadable }
+            let id = try await Task.detached(priority: .userInitiated) {
+                try CardFaceImages.importImage(data, pixelWidth: 1080, aspect: AppLayout.cardAspect)
+            }.value
+            importedPhotoIDs.append(id)
+            photoID = id
+            errorText = nil
+        } catch {
+            errorText = (error as? LocalizedError)?.errorDescription ?? "无法读取这张图片"
+        }
+    }
+
+    /// 账户添加好以后换上自己的照片；文字用白色，在大多数照片上更清楚
+    private func applyPhoto(to account: Account) async {
+        guard useOwnPhoto, let photoID else { return }
+        try? await store.updateCardFace(accountID: account.id, paletteID: paletteID, face: CardFace(imageID: photoID, textColor: 0xFFFFFF))
+        keptPhotoID = photoID
+    }
+
     private func save() async {
         guard let currency else { return }
         saving = true
@@ -226,10 +290,11 @@ struct AddAccountView: View {
             var opening: Int64?
             if case .valid(let minor) = balance(currency).wrappedValue.value(currency) { opening = minor }
             do {
-                _ = try await store.addAccount(.pocket(
+                let account = try await store.addAccount(.pocket(
                     name: pocketName, type: pocketType, currency: currency, paletteID: paletteID, openingBalanceMinor: opening,
                     walletID: kind == .wallet ? walletID : nil
                 ))
+                await applyPhoto(to: account)
                 dismiss()
             } catch BackendError.invalidAccount(.duplicateAccount) {
                 errorText = "已经有一个叫「\(pocketName)」的\(pocketType.displayName)账户。"
@@ -252,6 +317,7 @@ struct AddAccountView: View {
         do {
             let alreadyAutomated = store.automationVerified
             let account = try await store.addAccount(draft)
+            await applyPhoto(to: account)
             errorText = nil
             // 自动化已经在工作：一个自动化覆盖所有卡，新卡不用再设置
             if alreadyAutomated { dismiss() } else { created = account }

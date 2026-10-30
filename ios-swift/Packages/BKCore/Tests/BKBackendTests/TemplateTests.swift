@@ -57,6 +57,46 @@ final class TemplateTests: XCTestCase {
         XCTAssertEqual(hit.counterparty, "陈大文")
     }
 
+    /// 编辑已有的模板：还原成示例通知、圈好位置，原样再做一次得到同样的写法
+    func testSampleRebuildsTheSameTemplate() throws {
+        let samples: [(String, String, String?, String?)] = [
+            (cleaned(ParserSampleTests.phoneTransfer), "16.49", nil, "+86-183******36"),
+            (cleaned("【某某银行】你的账户 5566 有一笔 HKD 88.20 的变动，对方：陈大文。"), "88.20", "5566", "陈大文"),
+            (cleaned("您好\n您尾号5566的卡\n收到一笔款项\nHKD 527.28", source: .email), "527.28", "5566", nil),
+        ]
+        for (text, amount, tail, counterparty) in samples {
+            let pieces = try MessageTemplates.build(
+                sample: text, amount: range(of: amount, in: text), cardTail: tail.map { range(of: $0, in: text) },
+                counterparty: counterparty.map { range(of: $0, in: text) }
+            ).get()
+            let sample = MessageTemplates.sample(pieces)
+            let again = try MessageTemplates.build(
+                sample: sample.text, amount: try XCTUnwrap(sample.amount), cardTail: sample.cardTail, counterparty: sample.counterparty
+            ).get()
+            XCTAssertEqual(again, pieces, sample.text)
+            XCTAssertNotNil(MessageTemplates.match(template(pieces), in: sample.text), "示例通知认得出")
+        }
+    }
+
+    /// 改过的模板按原来的标识保存：不多出一个，待处理里同样写法的通知按改过的重新识别
+    func testEditedTemplateReplacesTheOldOne() async throws {
+        let backend = try makeBackend()
+        try await addAccount(backend)
+        let sample = cleaned("【某某银行】你的账户 5566 有一笔 HKD 88.20 的变动，对方：陈大文。")
+        let pieces = try MessageTemplates.build(sample: sample, amount: range(of: "88.20", in: sample), cardTail: range(of: "5566", in: sample), counterparty: nil).get()
+        var t = template(pieces, kind: .purchase, direction: .outflow)
+        _ = try await backend.saveTemplate(t)
+        t.name = "改过的名字"
+        t.kind = .transferIn
+        t.direction = .inflow
+        _ = try await backend.saveTemplate(t)
+        let saved = try await backend.templates()
+        XCTAssertEqual(saved.count, 1)
+        XCTAssertEqual(saved.first?.name, "改过的名字")
+        XCTAssertEqual(saved.first?.kind, .transferIn)
+        XCTAssertEqual(saved.first?.createdAt, t.createdAt)
+    }
+
     func testTooFewWordsIsRejected() {
         let sample = "HKD 527.28"
         XCTAssertEqual(MessageTemplates.build(sample: sample, amount: range(of: "527.28", in: sample), cardTail: nil, counterparty: nil), .failure(.tooGeneric))

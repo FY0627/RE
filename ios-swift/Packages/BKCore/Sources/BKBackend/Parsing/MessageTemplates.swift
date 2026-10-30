@@ -154,6 +154,35 @@ public enum MessageTemplates {
         return pieces
     }
 
+    /// 模板还原成的一条示例通知，圈好的位置按 UTF-16 计
+    public struct Sample: Sendable, Hashable {
+        public var text: String
+        public var amount: NSRange?
+        public var cardTail: NSRange?
+        public var counterparty: NSRange?
+    }
+
+    /// 编辑已有的模板：模板里没有原文，把写法还原成一条示例通知再让用户改。
+    /// 金额写 100.00、尾号 1234、对方写「对方」、其他数字写 0；用它再 `build` 得到同样的写法
+    public static func sample(_ pieces: [TemplatePiece]) -> Sample {
+        var result = Sample(text: "")
+        func append(_ part: String) -> NSRange {
+            let range = NSRange(location: result.text.utf16.count, length: part.utf16.count)
+            result.text += part
+            return range
+        }
+        for piece in pieces {
+            switch piece {
+            case .text(let text): _ = append(text)
+            case .anyNumber: _ = append("0")
+            case .amount: result.amount = append("100.00")
+            case .cardTail: result.cardTail = append("1234")
+            case .counterparty: result.counterparty = append("对方")
+            }
+        }
+        return result
+    }
+
     // MARK: 认通知
 
     /// 模板对应的正则：文字原样（空白多少不限），数字任意，圈出的位置是捕获组

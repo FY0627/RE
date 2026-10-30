@@ -22,39 +22,19 @@ struct ExchangeRateGuideView: View {
 
     var body: some View {
         List {
+            // 和系统设置一样的普通行，不用大按钮
             Section {
-                Text("App 不联网也能换算").font(.title2.weight(.bold))
-                    .padding(.vertical, 4)
-                HStack(spacing: 12) {
-                    if sharedShortcutWorks {
-                        Button {
-                            leave(to: Self.shortcutURL)
-                        } label: {
-                            Label("添加快捷指令", systemImage: "plus.square.on.square")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.glassProminent)
-                    } else {
-                        Button {
-                            UIPasteboard.general.string = ExchangeRateFeed.url.absoluteString
-                            copied = true
-                        } label: {
-                            Label(copied ? "已复制" : "复制汇率地址", systemImage: copied ? "checkmark" : "doc.on.doc")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.glassProminent)
+                if sharedShortcutWorks {
+                    Button("添加快捷指令「导入汇率」", systemImage: "plus.square.on.square") { leave(to: Self.shortcutURL) }
+                } else {
+                    Button(copied ? "已复制汇率地址" : "复制汇率地址", systemImage: copied ? "checkmark" : "doc.on.doc") {
+                        UIPasteboard.general.string = ExchangeRateFeed.url.absoluteString
+                        copied = true
                     }
-                    Button {
-                        if let url = URL(string: "shortcuts://") { leave(to: url) }
-                    } label: {
-                        Label("打开快捷指令", systemImage: "arrow.up.forward.app")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.glass)
                 }
-                .controlSize(.large)
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets())
+                Button("打开快捷指令", systemImage: "arrow.up.forward.app") {
+                    if let url = URL(string: "shortcuts://") { leave(to: url) }
+                }
             }
 
             Section {
@@ -69,10 +49,10 @@ struct ExchangeRateGuideView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    /// 导入成功后 App 发通知：离开 App 前先要通知权限
+    /// 「我的 › 通知」里开着导入汇率通知时，离开 App 前先要通知权限
     private func leave(to url: URL) {
         Task {
-            _ = await IngestNotifier.requestAuthorization()
+            if ImportExchangeRatesIntent.notifies { _ = await IngestNotifier.requestAuthorization() }
             openURL(url)
         }
     }

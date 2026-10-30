@@ -850,10 +850,14 @@ public enum TemplateDAO {
         .compactMap { $0 }
     }
 
-    public static func insert(_ db: SQLiteConnection, _ t: MessageTemplate) throws {
+    /// 新模板插入；同一个标识已经有了就改写（编辑模板），添加时间不变，排序也不变
+    public static func save(_ db: SQLiteConnection, _ t: MessageTemplate) throws {
         let json = String(decoding: try JSONEncoder().encode(t.pieces), as: UTF8.self)
         try db.run(
-            "INSERT INTO message_templates (id, name, pieces_json, kind, direction, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            """
+            INSERT INTO message_templates (id, name, pieces_json, kind, direction, created_at) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET name = excluded.name, pieces_json = excluded.pieces_json, kind = excluded.kind, direction = excluded.direction
+            """,
             [t.id, t.name, json, t.kind.rawValue, t.direction.rawValue, t.createdAt]
         )
     }
