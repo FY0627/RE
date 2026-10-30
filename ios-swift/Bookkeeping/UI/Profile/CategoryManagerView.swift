@@ -15,14 +15,6 @@ struct CategoryManagerView: View {
         let nodes = store.categoryTree.nodes(type, includeHidden: true)
         List {
             Section {
-                Picker("类型", selection: $type) {
-                    ForEach(CategoryType.allCases, id: \.self) { Text($0.displayName).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets())
-            }
-            Section {
                 ForEach(nodes) { node in
                     NavigationLink {
                         CategoryDetailView(categoryID: node.id)
@@ -38,6 +30,15 @@ struct CategoryManagerView: View {
                 if type != .transfer {
                     Button("添加大类", systemImage: "plus") { adding = true }
                 }
+            } header: {
+                // 放在分组标题的位置：上下只留一点空隙（单独占一个分组时上下各空一大段）
+                Picker("类型", selection: $type) {
+                    ForEach(CategoryType.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .textCase(nil)
+                .listRowInsets(EdgeInsets())
+                .padding(.bottom, 8)
             }
             if let errorText {
                 Section { Text(errorText).foregroundStyle(.red) }

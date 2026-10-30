@@ -3,7 +3,7 @@ import BKModel
 
 /// 数据访问函数。全部接收 `SQLiteConnection`，只能在 `Database.read/write` 的闭包里调用。
 public enum AccountDAO {
-    static let columns = "id, name, bank_id, bank_name, last4, card_type, currency, palette_id, sort_order, created_at, archived, card_number, face_image_id, face_text_color, face_text_scale, extra_currencies, account_number"
+    static let columns = "id, name, bank_id, bank_name, last4, card_type, currency, palette_id, sort_order, created_at, archived, card_number, face_image_id, face_text_color, face_text_scale, extra_currencies, account_number, deleted_at"
 
     static func map(_ row: SQLiteConnection.Row) -> Account {
         let currency = CurrencyCode(row.string(6))
@@ -12,7 +12,7 @@ public enum AccountDAO {
             last4: row.string(4), cardType: CardType(rawValue: row.string(5)) ?? .other,
             currency: currency, extraCurrencies: decodeCurrencies(row.string(15)),
             paletteID: row.string(7), sortOrder: Int(row.int(8)),
-            createdAt: row.date(9), archived: row.bool(10),
+            createdAt: row.date(9), archived: row.bool(10), deletedAt: row.optionalDate(17),
             cardNumber: row.optionalString(11),
             accountNumber: row.optionalString(16),
             face: CardFace(imageID: row.optionalString(12), textColor: row.optionalInt(13).map { UInt32(truncatingIfNeeded: $0) }, textScale: row.double(14))
@@ -25,8 +25,10 @@ public enum AccountDAO {
         text.split(separator: ",").map { CurrencyCode(String($0)) }
     }
 
-    public static func all(_ db: SQLiteConnection, includeArchived: Bool = false) throws -> [Account] {
-        let filter = includeArchived ? "" : "WHERE archived = 0"
+    /// 账户列表。删除的账户只有 `includeDeleted` 时才有（找回它的流水用）
+    public static func all(_ db: SQLiteConnection, includeArchived: Bool = false, includeDeleted: Bool = false) throws -> [Account] {
+        let conditions = (includeArchived ? [] : ["archived = 0"]) + (includeDeleted ? [] : ["deleted_at IS NULL"])
+        let filter = conditions.isEmpty ? "" : "WHERE " + conditions.joined(separator: " AND ")
         var accounts = try db.query("SELECT \(columns) FROM accounts \(filter) ORDER BY sort_order, created_at", [], map)
         let openings = Dictionary(grouping: try openingBalances(db, accountID: nil), by: \.accountID)
         for index in accounts.indices {
@@ -51,9 +53,10 @@ public enum AccountDAO {
 
     public static func insert(_ db: SQLiteConnection, _ a: Account) throws {
         try db.run(
-            "INSERT INTO accounts (\(columns)) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO accounts (\(columns)) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [a.id, a.name, a.bankID, a.bankName, a.last4, a.cardType.rawValue, a.currency.rawValue, a.paletteID, a.sortOrder, a.createdAt, a.archived,
-             a.cardNumber, a.face.imageID, a.face.textColor.map { Int64($0) }, a.face.textScale, encodeCurrencies(a.extraCurrencies), a.accountNumber]
+             a.cardNumber, a.face.imageID, a.face.textColor.map { Int64($0) }, a.face.textScale, encodeCurrencies(a.extraCurrencies), a.accountNumber,
+             a.deletedAt]
         )
         for opening in a.openingBalances {
             try setOpeningBalance(db, id: a.id, currency: opening.currency, amountMinor: opening.amountMinor, at: opening.at)
@@ -112,23 +115,18 @@ public enum AccountDAO {
         try db.run("UPDATE accounts SET archived = ? WHERE id = ?", [archived, id])
     }
 
-    /// 删除账户和它的流水、银行余额、校准余额，并去掉其他地方指向它的引用。
+    /// 删除账户：只做标记（同时停用），流水、余额都留着，账户名称后面写「已删除」；去掉自动记账指向它的引用。
     /// 通知本身（指纹）保留，同一条通知再来不会重新记上。账户不存在时返回 false
     @discardableResult
-    public static func delete(_ db: SQLiteConnection, id: String) throws -> Bool {
+    public static func markDeleted(_ db: SQLiteConnection, id: String, at date: Date) throws -> Bool {
         guard try find(db, id: id) != nil else { return false }
-        for recordID in try db.query("SELECT id FROM records WHERE account_id = ?", [id], { $0.string(0) }) {
-            try RecordDAO.delete(db, id: recordID)
-        }
-        try db.run("DELETE FROM balance_observations WHERE account_id = ?", [id])
-        try db.run("DELETE FROM opening_balances WHERE account_id = ?", [id])
         try db.run("UPDATE ingests SET bound_account_id = NULL WHERE bound_account_id = ?", [id])
         // 待处理的候选账户是逗号分隔的列表
         try db.run(
             "UPDATE pending_items SET candidate_account_ids = trim(replace(',' || candidate_account_ids || ',', ',' || ? || ',', ','), ',') WHERE instr(',' || candidate_account_ids || ',', ',' || ? || ',') > 0",
             [id, id]
         )
-        try db.run("DELETE FROM accounts WHERE id = ?", [id])
+        try db.run("UPDATE accounts SET archived = 1, deleted_at = ? WHERE id = ?", [date, id])
         return true
     }
 
@@ -175,7 +173,8 @@ public enum RecordDAO {
     , a.name, a.bank_name, a.last4, a.palette_id, a.currency, a.extra_currencies, a.card_type, \
     c.id, c.name, c.symbol, cp.name, pa.name, pa.bank_name, pa.last4, pa.card_type, \
     (SELECT f.amount_minor FROM records f WHERE r.part_index % 2 = 0 AND f.ingest_id = r.ingest_id AND f.part_index = r.part_index + 1 AND f.kind = 'fee' LIMIT 1), \
-    (SELECT SUM(x.amount_minor) FROM records x WHERE x.related_record_id = r.id AND x.status = 'posted')
+    (SELECT SUM(x.amount_minor) FROM records x WHERE x.related_record_id = r.id AND x.status = 'posted'), \
+    a.deleted_at IS NOT NULL, pa.deleted_at IS NOT NULL
     """
     static let rowFrom = """
     FROM records r JOIN accounts a ON a.id = r.account_id
@@ -213,11 +212,14 @@ public enum RecordDAO {
             CategoryLabel(id: id, name: row.string(34), symbol: row.string(35), parentName: row.optionalString(36))
         }
         let peer = row.optionalString(37).map { name in
-            AccountLabel(name: name, bankName: row.string(38), last4: row.string(39), cardType: CardType(rawValue: row.string(40)) ?? .other)
+            AccountLabel(
+                name: name, bankName: row.string(38), last4: row.string(39), cardType: CardType(rawValue: row.string(40)) ?? .other, deleted: row.bool(44)
+            )
         }
         return RecordRow(
             record: map(row), accountName: row.string(26), bankName: row.string(27), last4: row.string(28), paletteID: row.string(29),
-            accountCurrencies: currencies, cardType: CardType(rawValue: row.string(32)) ?? .other, category: category, peer: peer,
+            accountCurrencies: currencies, cardType: CardType(rawValue: row.string(32)) ?? .other, accountDeleted: row.bool(43),
+            category: category, peer: peer,
             feeMinor: row.optionalInt(41), refundedMinor: row.optionalInt(42)
         )
     }

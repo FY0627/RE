@@ -5,7 +5,7 @@
 /// - 每个迁移在一个事务里执行，失败整体回滚，版本号不变；
 /// - 每次修改表结构都要在 `DatabaseTests` 里补迁移测试。
 public enum Migrations {
-    public static let latestVersion = 8
+    public static let latestVersion = 9
 
     static let steps: [(version: Int, sql: String)] = [
         (1, """
@@ -213,6 +213,10 @@ public enum Migrations {
         UPDATE records SET category_id = 'sys.interest' WHERE kind = 'interestCharge' AND direction = 'outflow';
         UPDATE records SET category_id = 'in.salary' WHERE kind = 'salary' AND direction = 'inflow';
         UPDATE records SET category_id = 'in.interest' WHERE kind = 'interestIncome' AND direction = 'inflow';
+        """),
+        // 删除账户只做标记：流水留着，账户名称后面写「已删除」
+        (9, """
+        ALTER TABLE accounts ADD COLUMN deleted_at REAL;
         """),
     ]
 

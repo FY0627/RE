@@ -299,15 +299,18 @@ public struct AccountLabel: Hashable, Sendable {
     public var bankName: String
     public var last4: String
     public var cardType: CardType
+    /// 账户已删除（流水还在）
+    public var deleted: Bool
 
-    public init(name: String, bankName: String, last4: String, cardType: CardType) {
+    public init(name: String, bankName: String, last4: String, cardType: CardType, deleted: Bool = false) {
         self.name = name
         self.bankName = bankName
         self.last4 = last4
         self.cardType = cardType
+        self.deleted = deleted
     }
 
-    public var text: String { cardType.isCard ? "\(bankName) ·\(last4)" : name }
+    public var text: String { (cardType.isCard ? "\(bankName) ·\(last4)" : name) + (deleted ? "（已删除）" : "") }
 }
 
 /// 合成一单的其中一笔（首页那一行下面写「招行 700 + 信用卡 300」）
@@ -337,6 +340,8 @@ public struct RecordRow: Identifiable, Hashable, Sendable {
     /// 账户不持有这笔流水的币种时，按主币种扣款的金额；持有时为 nil
     public var charge: RecordCharge?
     public var cardType: CardType
+    /// 这笔流水的账户已删除
+    public var accountDeleted: Bool
     /// 分类：支出、收入是用户的分类（nil 为待分类）；转帐按交易性质对应到转帐分类
     public var category: CategoryLabel?
     /// 配对的转帐另一边的账户（首页合成一行「招行 → 工行」）
@@ -350,7 +355,7 @@ public struct RecordRow: Identifiable, Hashable, Sendable {
 
     public init(
         record: LedgerRecord, accountName: String, bankName: String, last4: String, paletteID: String,
-        accountCurrencies: [CurrencyCode] = [], charge: RecordCharge? = nil, cardType: CardType = .debit,
+        accountCurrencies: [CurrencyCode] = [], charge: RecordCharge? = nil, cardType: CardType = .debit, accountDeleted: Bool = false,
         category: CategoryLabel? = nil, peer: AccountLabel? = nil, feeMinor: Int64? = nil, refundedMinor: Int64? = nil,
         orderParts: [OrderPart] = []
     ) {
@@ -362,6 +367,7 @@ public struct RecordRow: Identifiable, Hashable, Sendable {
         self.accountCurrencies = accountCurrencies
         self.charge = charge
         self.cardType = cardType
+        self.accountDeleted = accountDeleted
         self.category = category
         self.peer = peer
         self.feeMinor = feeMinor
@@ -372,7 +378,7 @@ public struct RecordRow: Identifiable, Hashable, Sendable {
     public var id: String { record.id }
     /// 账户不持有这笔流水的币种（银行按主币种结汇扣款）
     public var isForeignCurrency: Bool { !accountCurrencies.isEmpty && !accountCurrencies.contains(record.currency) }
-    public var account: AccountLabel { AccountLabel(name: accountName, bankName: bankName, last4: last4, cardType: cardType) }
+    public var account: AccountLabel { AccountLabel(name: accountName, bankName: bankName, last4: last4, cardType: cardType, deleted: accountDeleted) }
     /// 合成一单时整单的金额（同一币种）；不是合单时是这一笔的金额
     public var orderTotalMinor: Int64 {
         orderParts.isEmpty ? record.amountMinor : orderParts.filter { $0.currency == record.currency }.map(\.amountMinor).reduce(0, +)

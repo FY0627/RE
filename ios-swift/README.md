@@ -78,8 +78,9 @@ docker run --rm -v "<仓库>/ios-swift/Packages/BKCore:/pkg" -w /pkg bk-swift sw
   否则按交易当天的汇率估算（那天没有用记录当天的，再没有用最近的一天；`BKBackend/ChargeCalculator.swift`，[ADR 0013](../docs/decisions/0013-ios-swift-record-editing-and-foreign-charges.md)）。
 - 币种从汇率数据源支持的全部 160 多个币种里选（`UI/Common/CurrencyPicker.swift`，按拼音首字母分组、侧边 A–Z 索引，搜索框在最下面）。
 - 「我的 › 币种与汇率」选择主要币种；有汇率时资产页净资产按主要币种换算合计（`App/ExchangeRateStore.swift`）。
-- 汇率来源：快捷指令自动化「获取 URL 内容」→ App 动作「导入汇率」（`Intents/ImportExchangeRatesIntent.swift`），
-  导入成功后发一条本机通知（没有通知权限就不发；设置说明里点「打开快捷指令」时先要权限）。
+- 汇率来源：共享的快捷指令「导入汇率」（「获取 URL 内容」→ App 动作「导入汇率」，`Intents/ImportExchangeRatesIntent.swift`），
+  「我的 › 用快捷指令更新汇率」点「添加快捷指令」打开 iCloud 链接添加，用户再建一个「打开日常记账时」运行它的自动化（`UI/Profile/ExchangeRateGuideView.swift`）。
+  导入成功后发一条本机通知（没有通知权限就不发；设置说明里点按钮离开 App 前先要权限）。
   数据源每天更新一次，在 UTC 0 点刚过（北京时间早上 8 点左右）。
   完整的汇率表原样保存：最新一份在本机缓存，另外按天存进账本（`RateDAO`），以前的日期都保留。
 
@@ -140,8 +141,9 @@ docker run --rm -v "<仓库>/ios-swift/Packages/BKCore:/pkg" -w /pkg bk-swift sw
   卡包滚动和详情转场只绘制已解码的位图。换图、移除或取消编辑时删除不再使用的文件。
 - **停用**：卡片信息里，或资产页「更多 › 管理银行卡」里停用（`accounts.archived`）。停用的卡不参与自动记账匹配和净资产，
   流水保留，在资产页最下方以灰色卡包显示，可以点开详情，也可以重新启用。
-- **删除**：只有停用的卡能删除（卡片信息最下面，确认后删除）。这张卡的流水、银行余额、校准余额和卡面图片一起删除，
-  转帐另一边的流水保留、不再算内部转账；通知的指纹保留，同一条通知再来不会重新记上（`AccountDAO.delete`）。
+- **删除**：只有停用的卡能删除（卡片信息最下面，确认后删除，不能恢复）。只做标记（`accounts.deleted_at`，`AccountDAO.markDeleted`）：
+  卡不再出现在资产页、账户列表、净资产和自动记账里，卡面图片删除；**流水都留着**，首页、详情、统计里账户名称后面写「（已删除）」，
+  转帐两边照样配对。通知的指纹保留，同一条通知再来不会重新记上；同银行同尾号的卡可以重新添加，之后的通知记到新卡上。
 - 再点一次标签栏的「资产」，卡包滚回顶部：卡包是 UIKit 的滚动区，系统不会替它滚，由 `RootView` 记下再点一次，交给 `WalletController`。
 
 ## App 图标

@@ -21,18 +21,6 @@ struct ProfileView: View {
         NavigationStack {
             Form {
                 Section {
-                    HStack(spacing: 14) {
-                        Image(systemName: "book.closed.fill")
-                            .font(.title2)
-                            .foregroundStyle(.white)
-                            .frame(width: 56, height: 56)
-                            .background(Color.accentColor.gradient, in: Circle())
-                        Text("本地账本").font(.title3.weight(.semibold))
-                    }
-                    .padding(.vertical, 4)
-                }
-
-                Section {
                     Picker(selection: $appearance) {
                         ForEach(AppearanceMode.allCases) { Text($0.title).tag($0.rawValue) }
                     } label: {

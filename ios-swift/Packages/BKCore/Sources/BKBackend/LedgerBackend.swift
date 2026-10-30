@@ -69,8 +69,9 @@ public final class LedgerBackend: Sendable {
 
     // MARK: 账户
 
-    public func accounts(includeArchived: Bool = false) async throws -> [Account] {
-        try await database.read { try AccountDAO.all($0, includeArchived: includeArchived) }
+    /// 删除的账户只有 `includeDeleted` 时才有：它的流水还在，编辑流水、统计要找到它的名称
+    public func accounts(includeArchived: Bool = false, includeDeleted: Bool = false) async throws -> [Account] {
+        try await database.read { try AccountDAO.all($0, includeArchived: includeArchived, includeDeleted: includeDeleted) }
     }
 
     public func addAccount(_ draft: AccountDraft) async throws -> Account {
@@ -207,12 +208,14 @@ public final class LedgerBackend: Sendable {
         try await database.write { try AccountDAO.setArchived($0, id: accountID, archived: archived) }
     }
 
-    /// 删除停用的账户和它的所有流水，不能恢复。使用中的账户要先停用（`accountNotArchived`）
+    /// 删除停用的账户，不能恢复。它的流水留着（账户名称后面写「已删除」），不再出现在账户列表、净资产和自动记账里。
+    /// 使用中的账户要先停用（`accountNotArchived`）
     public func deleteAccount(id: String) async throws {
+        let now = clock()
         try await database.write { db in
-            guard let account = try AccountDAO.find(db, id: id) else { throw BackendError.notFound }
+            guard let account = try AccountDAO.find(db, id: id), !account.deleted else { throw BackendError.notFound }
             guard account.archived else { throw BackendError.accountNotArchived }
-            try AccountDAO.delete(db, id: id)
+            try AccountDAO.markDeleted(db, id: id, at: now)
         }
     }
 

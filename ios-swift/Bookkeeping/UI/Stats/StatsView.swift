@@ -126,7 +126,7 @@ struct StatsView: View {
 
     /// 选的账户删掉了就看全部账户
     private var current: StatsScope {
-        if let id = scope.accountID, store.account(id: id) == nil { return .all }
+        if let id = scope.accountID, store.account(id: id)?.deleted != false { return .all }
         return scope
     }
 

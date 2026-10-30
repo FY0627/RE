@@ -211,6 +211,31 @@ final class DatabaseTests: XCTestCase {
         XCTAssertEqual(try db.readSync { try RecordDAO.uncategorizedCount($0) }, 1)
     }
 
+    func testMigrationFromVersion8KeepsAccountsAndMarksDeletedOnly() throws {
+        let path = tempPath()
+        do {
+            let old = try SQLiteConnection(path: path)
+            for step in Migrations.steps where step.version <= 8 { try old.execute(step.sql) }
+            try old.setUserVersion(8)
+            try old.execute("""
+            INSERT INTO accounts (id, name, bank_name, last4, card_type, currency, palette_id, sort_order, created_at, archived) VALUES ('a', '卡', '银行', '0427', 'debit', 'CNY', 'ocean', 0, 0, 1);
+            INSERT INTO ingests (id, fingerprint, source, processed_at, classification, outcome, parser_version) VALUES ('i', 'f', 'sms', 0, 'transaction', 'recorded', 1);
+            INSERT INTO records (id, account_id, amount_minor, currency, direction, kind, status, processed_at, effective_at, source, ingest_id, part_index, dedupe_key, created_at)
+                VALUES ('pay', 'a', 3800, 'CNY', 'outflow', 'purchase', 'posted', 0, 0, 'sms', 'i', 0, 'k', 0);
+            """)
+        }
+        let db = try Database(path: path)
+        XCTAssertEqual(try db.readSync { $0.userVersion }, Migrations.latestVersion)
+        XCTAssertEqual(try db.readSync { try AccountDAO.all($0, includeArchived: true) }.map(\.deleted), [false])
+
+        XCTAssertTrue(try db.writeSync { try AccountDAO.markDeleted($0, id: "a", at: Date(timeIntervalSince1970: 100)) })
+        XCTAssertTrue(try db.readSync { try AccountDAO.all($0, includeArchived: true) }.isEmpty)
+        XCTAssertEqual(try db.readSync { try AccountDAO.all($0, includeArchived: true, includeDeleted: true) }.map(\.deletedAt), [Date(timeIntervalSince1970: 100)])
+        let rows = try db.readSync { try RecordDAO.page($0, filter: RecordFilter(), before: nil, limit: 10) }
+        XCTAssertEqual(rows.map(\.id), ["pay"], "流水留着")
+        XCTAssertEqual(rows.first?.account.text, "银行 ·0427（已删除）")
+    }
+
     func testAmountKeywordsMatchEachMinorUnit() {
         XCTAssertEqual(RecordDAO.amountMinors("38").map(\.minor), [38, 3800, 38000])
         XCTAssertEqual(RecordDAO.amountMinors("38.5").map(\.exponent), [2, 3])

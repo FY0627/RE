@@ -298,14 +298,14 @@ final class RecordEditTests: XCTestCase {
         } catch BackendError.invalidAccount(.invalidCardNumber) {}
     }
 
-    func testOnlyArchivedAccountCanBeDeletedWithItsRecords() async throws {
+    func testDeletingArchivedAccountKeepsItsRecords() async throws {
         let backend = try makeBackend()
         let card = try await addAccount(backend, last4: "0427", opening: 500_00)
         let other = try await addAccount(backend, last4: "1234")
         _ = try await backend.ingest(IngestRequest(text: purchase, source: .sms, receivedAt: now))
         _ = try await backend.addRecord(ManualEntry(type: .transfer, accountID: card.id, toAccountID: other.id, amountMinor: 100_00, currency: .cny, time: now))
-        let otherCount = try await backend.recordCount(accountID: other.id)
-        XCTAssertEqual(otherCount, 1)
+        let before = try await backend.recordCount()
+        XCTAssertEqual(before, 3)
 
         do {
             try await backend.deleteAccount(id: card.id)
@@ -315,18 +315,38 @@ final class RecordEditTests: XCTestCase {
         try await backend.setArchived(accountID: card.id, archived: true)
         try await backend.deleteAccount(id: card.id)
         let accounts = try await backend.accounts(includeArchived: true)
-        XCTAssertEqual(accounts.map(\.id), [other.id])
-        let count = try await backend.recordCount()
-        XCTAssertEqual(count, 1, "这张卡的流水一起删除，另一张卡的转入保留")
-        let peer = try await firstRow(backend, accountID: other.id)
-        XCTAssertNil(peer.record.transferGroupID, "转帐只剩一边，不再算内部转账")
+        XCTAssertEqual(accounts.map(\.id), [other.id], "删除的账户不在账户列表里")
+        let everything = try await backend.accounts(includeArchived: true, includeDeleted: true)
+        let deleted = try XCTUnwrap(everything.first { $0.id == card.id })
+        XCTAssertTrue(deleted.deleted)
+        XCTAssertEqual(deleted.displayTitle, "招商银行 ·0427（已删除）")
         let balances = try await backend.balanceSummaries()
-        XCTAssertNil(balances[card.id])
+        XCTAssertNil(balances[card.id], "不算进余额和净资产")
 
-        // 同一条通知再来不会重新记上
-        _ = try await backend.ingest(IngestRequest(text: purchase, source: .sms, receivedAt: now))
         let after = try await backend.recordCount()
-        XCTAssertEqual(after, 1)
+        XCTAssertEqual(after, 3, "流水都留着")
+        let own = try await firstRow(backend, accountID: card.id)
+        XCTAssertEqual(own.account.text, "招商银行 ·0427（已删除）")
+        let peer = try await firstRow(backend, accountID: other.id)
+        XCTAssertNotNil(peer.record.transferGroupID, "转帐两边都在，还是内部转帐")
+        XCTAssertEqual(peer.peer?.text, "招商银行 ·0427（已删除）")
+        XCTAssertEqual(peer.account.text, "招商银行 ·1234")
+
+        // 同一条通知再来不会重新记上；同尾号的卡可以重新添加，之后的通知记到新卡上
+        _ = try await backend.ingest(IngestRequest(text: purchase, source: .sms, receivedAt: now))
+        let again = try await backend.recordCount()
+        XCTAssertEqual(again, 3)
+        let readded = try await addAccount(backend, last4: "0427")
+        _ = try await backend.ingest(IngestRequest(
+            text: "【招商银行】您尾号0427的储蓄卡于10月24日16:00在全家便利店消费人民币12.00元。", source: .sms, receivedAt: now.addingTimeInterval(60)
+        ))
+        let newCount = try await backend.recordCount(accountID: readded.id)
+        XCTAssertEqual(newCount, 1)
+
+        do {
+            try await backend.deleteAccount(id: card.id)
+            XCTFail("已经删除过")
+        } catch BackendError.notFound {}
     }
 
     // MARK: 银行和币种列表

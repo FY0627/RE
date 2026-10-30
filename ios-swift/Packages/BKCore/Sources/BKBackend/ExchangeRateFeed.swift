@@ -3,7 +3,7 @@ import BKModel
 
 /// 公开汇率数据源（ExchangeRate-API 的免密钥接口，每日更新，覆盖 160 多个币种）。
 /// App 不联网：由快捷指令「获取 URL 内容」下载，再交给 App 动作「导入汇率」。
-/// 这里只提供地址（设置说明里复制给用户）和解析。
+/// 这里只提供地址（「我的」里共享的快捷指令「导入汇率」下载的就是它）和解析。
 public enum ExchangeRateFeed {
     public static let url = URL(string: "https://open.er-api.com/v6/latest/USD")!
     /// 数据源要求在使用汇率的界面上注明来源并链接到官网

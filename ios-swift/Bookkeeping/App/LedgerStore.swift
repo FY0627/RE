@@ -31,8 +31,10 @@ final class LedgerStore {
     }
     /// 已停用的卡：不参与自动记账和净资产，在资产页最下方以灰色卡包显示
     private(set) var archivedAccounts: [Account] = []
-    /// 全部卡片，按添加顺序
+    /// 全部卡片（不含删除的），按添加顺序
     private(set) var allAccounts: [Account] = []
+    /// 删除的账户：不在任何列表里，只用来显示它留下的流水（编辑流水、统计）
+    private var deletedAccounts: [Account] = []
     private(set) var balances: [String: AccountBalances] = [:]
     private(set) var automation: [String: AccountAutomationStatus] = [:]
     private(set) var pendingCount = 0
@@ -95,7 +97,7 @@ final class LedgerStore {
             let now = Date()
             let year = Calendar.current.component(.year, from: now)
             let month = Calendar.current.component(.month, from: now)
-            async let accounts = backend.accounts(includeArchived: true)
+            async let accounts = backend.accounts(includeArchived: true, includeDeleted: true)
             async let balances = backend.balanceSummaries()
             async let automation = backend.automationStatus()
             async let pending = backend.pendingCount()
@@ -106,11 +108,14 @@ final class LedgerStore {
             let (a, b, au, p, r, s, w, c) = try await (accounts, balances, automation, pending, rows, stats, waiting, categories)
             // 期间又开始了一次刷新：这份结果可能已经旧了，交给那一次
             guard generation == refreshGeneration else { return }
-            if allAccounts != a {
-                allAccounts = a
-                self.accounts = a.filter { !$0.archived }
-                archivedAccounts = a.filter(\.archived)
+            let kept = a.filter { !$0.deleted }
+            if allAccounts != kept {
+                allAccounts = kept
+                self.accounts = kept.filter { !$0.archived }
+                archivedAccounts = kept.filter(\.archived)
             }
+            let deleted = a.filter(\.deleted)
+            if deletedAccounts != deleted { deletedAccounts = deleted }
             if self.balances != b { self.balances = b }
             if self.automation != au { self.automation = au }
             if pendingCount != p { pendingCount = p }
@@ -199,7 +204,7 @@ final class LedgerStore {
         await refresh()
     }
 
-    /// 删除停用的卡和它的流水
+    /// 删除停用的卡；它的流水留着，账户名称后面写「已删除」
     func deleteAccount(id: String) async throws {
         guard let backend else { throw BackendError.notFound }
         try await backend.deleteAccount(id: id)
@@ -359,5 +364,6 @@ final class LedgerStore {
     }
 
     /// 包括已停用的卡
-    func account(id: String) -> Account? { allAccounts.first { $0.id == id } }
+    /// 包括删除的账户（它的流水还在）
+    func account(id: String) -> Account? { allAccounts.first { $0.id == id } ?? deletedAccounts.first { $0.id == id } }
 }

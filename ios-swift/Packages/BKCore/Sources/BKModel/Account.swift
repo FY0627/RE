@@ -83,6 +83,8 @@ public struct Account: Identifiable, Hashable, Sendable, Codable {
     public var sortOrder: Int
     public var createdAt: Date
     public var archived: Bool
+    /// 删除的时间。删除的账户不再出现在任何账户列表里，它的流水保留，账户名称后面写「已删除」
+    public var deletedAt: Date?
     /// 各币种的初始余额（每个币种最多一条）
     public var openingBalances: [OpeningBalance]
     /// 选填的完整卡号（纯数字），末四位必须与 `last4` 一致。
@@ -105,6 +107,7 @@ public struct Account: Identifiable, Hashable, Sendable, Codable {
         sortOrder: Int,
         createdAt: Date,
         archived: Bool = false,
+        deletedAt: Date? = nil,
         openingBalances: [OpeningBalance] = [],
         cardNumber: String? = nil,
         accountNumber: String? = nil,
@@ -122,6 +125,7 @@ public struct Account: Identifiable, Hashable, Sendable, Codable {
         self.sortOrder = sortOrder
         self.createdAt = createdAt
         self.archived = archived
+        self.deletedAt = deletedAt
         self.openingBalances = openingBalances
         self.cardNumber = cardNumber
         self.accountNumber = accountNumber
@@ -155,10 +159,11 @@ public struct Account: Identifiable, Hashable, Sendable, Codable {
 
     /// 银行卡（有尾号，参与自动记账匹配）
     public var isCard: Bool { cardType.isCard }
+    public var deleted: Bool { deletedAt != nil }
 
-    /// 银行卡「招商银行 ·0427」，现金和电子钱包写名称
+    /// 银行卡「招商银行 ·0427」，现金和电子钱包写名称；删除的账户后面写「（已删除）」
     public var displayTitle: String { label.text }
-    public var label: AccountLabel { AccountLabel(name: name, bankName: bankName, last4: last4, cardType: cardType) }
+    public var label: AccountLabel { AccountLabel(name: name, bankName: bankName, last4: last4, cardType: cardType, deleted: deleted) }
 
     /// 没填账户名称时的默认名称，例如「招商银行借记卡」
     public static func defaultName(bankName: String, cardType: CardType) -> String { "\(bankName)\(cardType.displayName)" }

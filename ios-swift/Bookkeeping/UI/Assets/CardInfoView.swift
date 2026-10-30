@@ -5,7 +5,7 @@ import BKBackend
 
 /// 卡片信息：银行、卡类型、币种、每个币种的余额和校准余额、完整卡号（选填，默认遮住）、账号。
 /// 编辑时可以改账户名称、卡类型、主币种、多币种账户的其他币种、校准余额、卡号和账号（银行和尾号不能改）；
-/// 也可以停用 / 启用这张卡，停用的卡可以删除（流水一起删除）。
+/// 也可以停用 / 启用这张卡，停用的卡可以删除（流水留着，账户名称后面写「已删除」）。
 /// 校准余额（参考 MOZE 的余额调整）：App 里的余额和实际对不上时，填「现在」实际有多少，之后的流水从这里接着算。
 /// 放在这里不显眼的地方，平时用不到。现金、电子钱包没有银行和卡号。
 struct CardInfoView: View {
@@ -94,7 +94,7 @@ struct CardInfoView: View {
                 if account.archived {
                     Section {
                         Menu {
-                            Section("流水也一起删除，不能恢复") {
+                            Section("删除后不能恢复，流水会保留") {
                                 Button(account.isCard ? "删除这张卡" : "删除这个账户", systemImage: "trash", role: .destructive) { delete(account) }
                             }
                         } label: {
