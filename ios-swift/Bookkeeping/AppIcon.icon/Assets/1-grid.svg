@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-<g fill="#D8DFE8">
-  <rect x="254.5" y="0" width="3" height="1024"/>
-  <rect x="510.5" y="0" width="3" height="1024"/>
-  <rect x="766.5" y="0" width="3" height="1024"/>
-  <rect x="0" y="254.5" width="1024" height="3"/>
-  <rect x="0" y="510.5" width="1024" height="3"/>
-  <rect x="0" y="766.5" width="1024" height="3"/>
+<g fill="#7689A3">
+  <rect x="252.2" y="0" width="7.6" height="1024"/>
+  <rect x="508.2" y="0" width="7.6" height="1024"/>
+  <rect x="764.2" y="0" width="7.6" height="1024"/>
+  <rect x="0" y="252.2" width="1024" height="7.6"/>
+  <rect x="0" y="508.2" width="1024" height="7.6"/>
+  <rect x="0" y="764.2" width="1024" height="7.6"/>
 </g>
 </svg>
