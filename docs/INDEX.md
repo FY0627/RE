@@ -40,6 +40,7 @@
 
 | 目录 | 内容 |
 |---|---|
+| [assets/](assets/) | 仓库首页 README 用的图标、演示动图和截图 |
 | [architecture/](architecture/) | [overview.md](architecture/overview.md)：分层与约定；[performance.md](architecture/performance.md)：性能规范与待验证项 |
 | [decisions/](decisions/) | 架构决策记录（ADR）：[0001 本地优先](decisions/0001-local-first-no-server.md)、[0002 后端 Dart](decisions/0002-backend-dart.md)、[0003 数据库](decisions/0003-database-sqlite-drift.md)、[0004 同步](decisions/0004-sync-qr-lan.md)、[0005 自动记账](decisions/0005-auto-bookkeeping-screenshot-ocr.md)、[0006 iOS 改用原生 Swift](decisions/0006-ios-native-swift.md)、[0007 iOS Swift 数据库](decisions/0007-ios-swift-sqlite.md)、[0008 iOS Swift 自动记账接入](decisions/0008-ios-swift-shortcuts-app-intent.md)、[0009 iOS Swift 构建与分发](decisions/0009-ios-swift-ci-sideloadly.md)、[0010 iOS Swift 卡号与卡面](decisions/0010-ios-swift-card-number-and-face.md)、[0011 iOS Swift 多币种与汇率](decisions/0011-ios-swift-multi-currency-and-rates.md)、[0012 iOS Swift 卡包转场改用 UIKit + Core Animation](decisions/0012-ios-swift-wallet-core-animation.md)、[0013 iOS Swift 流水修改删除与外币扣款](decisions/0013-ios-swift-record-editing-and-foreign-charges.md)、[0014 iOS Swift 支出收入转帐与分类](decisions/0014-ios-swift-entry-types-and-categories.md)、[0015 ios-swift 作为默认分支](decisions/0015-ios-swift-default-branch.md) |
 | [features/](features/) | 功能设计：[sync.md](features/sync.md)、[auto-bookkeeping.md](features/auto-bookkeeping.md)、[ios-swift-auto-bookkeeping.md](features/ios-swift-auto-bookkeeping.md) |

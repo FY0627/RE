@@ -1,33 +1,49 @@
-# 日常记账
+<p align="center">
+  <img src="docs/assets/icon.png" width="96" alt="REC 图标">
+</p>
 
-本地优先的记账 App，支持 Android 和 iOS。
+<h1 align="center">REC</h1>
 
-- **不需要服务器**：数据保存在手机本地，离线完整可用，用户不需要部署任何东西。
-- **设备互传同步**：扫码配对，通过局域网直接同步，Android 和 iOS 之间也能互传。
-- **自动记账**：截图 + OCR 识别支付页面。Android 上点悬浮窗触发，iOS 上用快捷指令。
-- **低端机友好**：以 2020 年左右的 60Hz 手机作为性能基准。
+<p align="center"><b>Record Every Cent</b><br>花了钱，账自动记好。</p>
 
-> 这里是 iOS 原生 Swift 版。Flutter 版骨架在 [`main`](https://github.com/FY0627/REC/tree/main) 分支，前端原型在 [`prototype`](https://github.com/FY0627/REC/tree/prototype) 分支。
+REC 是一款 iPhone 记账 App。你付完款，银行短信一到，它就在后台把账记好，连 App 都不用打开。
 
-## 结构
+<table>
+  <tr>
+    <td align="center"><img src="docs/assets/demo/auto-bookkeeping.gif" width="260" alt="付款后银行短信到达，App 在后台自动记好这笔账"></td>
+    <td align="center"><img src="docs/assets/demo/wallet.gif" width="260" alt="资产页的银行卡像钱包一样叠放，点开可以看详情"></td>
+  </tr>
+  <tr>
+    <td align="center">自动记账</td>
+    <td align="center">银行卡像钱包一样管理</td>
+  </tr>
+</table>
 
-```
-ios-swift/  iOS 原生 Swift 版：SwiftUI 界面、App Intents、SQLite
-docs/       文档，从 docs/INDEX.md 开始看
-```
+## 为什么用它
 
-## 运行
+- **不用手动记账**：设置一次快捷指令，之后银行短信、邮件和 App 通知都能自动入账。
+- **账本只在你手机里**：App 不联网，没有服务器，不用注册账号。
+- **认不准就先问你**：看不懂的通知放进「待处理」等你确认。同一笔钱收到短信和邮件，也只记一笔。
+- **多币种不头疼**：一张卡可以放多个币种，净资产按你的主要币种换算。
+- **用起来就像系统自带的 App**：用 SwiftUI 原生开发，界面和手感都跟 iPhone 一致。
 
-App 由 GitHub Actions 构建，安装方法见 [docs/guides/ios-swift-windows-sideloadly.md](docs/guides/ios-swift-windows-sideloadly.md)。
+<p align="center">
+  <img src="docs/assets/demo/home.jpg" width="23%" alt="首页：本月支出和流水">
+  <img src="docs/assets/demo/assets.jpg" width="23%" alt="资产：净资产和账户">
+  <img src="docs/assets/demo/stats.jpg" width="23%" alt="统计：按分类查看支出">
+  <img src="docs/assets/demo/profile.jpg" width="23%" alt="我的：外观、币种和自动记账设置">
+</p>
 
-本地运行核心测试见 [ios-swift/README.md](ios-swift/README.md)。
+## 现在能用吗
 
-## 文档
+还在测试，没有上架 App Store。需要 iOS 26 或更高版本，目前要自己签名安装，步骤见[安装指南](docs/guides/ios-swift-windows-sideloadly.md)。
 
-- [文档与代码索引](docs/INDEX.md)
-- [iOS Swift 版说明](ios-swift/README.md)
-- [架构决策记录](docs/decisions/)
+有些银行的短信还认不准，可以在 App 里自己做识别模板。App 里现在还叫「日常记账」，之后会改成 REC。
+
+## 开发
+
+代码在 [`ios-swift/`](ios-swift/README.md)，文档从 [docs/INDEX.md](docs/INDEX.md) 开始看。
 
 ## 许可证
 
-[Apache License 2.0](LICENSE)：允许自由使用、修改和分发，包括商业用途。分发时需要保留版权声明和 [NOTICE](NOTICE)，并标明修改过的文件。许可证不授予使用 REC 名称的权利。
+[Apache License 2.0](LICENSE)：可以自由使用、修改和商用，分发时需要保留版权声明和 [NOTICE](NOTICE)。许可证不授予使用 REC 名称的权利。
