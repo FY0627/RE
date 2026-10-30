@@ -17,7 +17,7 @@ struct CategoryManagerView: View {
             Section {
                 ForEach(nodes) { node in
                     NavigationLink {
-                        CategoryDetailView(categoryID: node.id)
+                        CategoryDetailView(categoryID: node.id).hidesTabBar()
                     } label: {
                         CategoryManagerRow(category: node.category, childCount: node.children.count)
                     }
@@ -107,7 +107,7 @@ private struct CategoryDetailView: View {
             Section {
                 TextField("名称", text: $name)
                 NavigationLink {
-                    SymbolPicker(symbol: $symbol)
+                    SymbolPicker(symbol: $symbol).hidesTabBar()
                 } label: {
                     LabeledContent("图标") { Image(systemName: symbol).foregroundStyle(Color.primary) }
                 }
@@ -122,7 +122,7 @@ private struct CategoryDetailView: View {
                 Section("小类") {
                     ForEach(children) { child in
                         NavigationLink {
-                            CategoryDetailView(categoryID: child.id)
+                            CategoryDetailView(categoryID: child.id).hidesTabBar()
                         } label: {
                             CategoryManagerRow(category: child)
                         }
@@ -143,6 +143,7 @@ private struct CategoryDetailView: View {
                                                allowNone: !category.isTopLevel, noneTitle: "单独作为大类") { target in
                                 Task { await run { try await store.moveCategory(id: category.id, toParent: target) } }
                             }
+                            .hidesTabBar()
                         }
                     }
                     NavigationLink("合并到其他分类") {
@@ -154,6 +155,7 @@ private struct CategoryDetailView: View {
                                 dismiss()
                             }
                         }
+                        .hidesTabBar()
                     }
                     deleteMenu(category)
                 }

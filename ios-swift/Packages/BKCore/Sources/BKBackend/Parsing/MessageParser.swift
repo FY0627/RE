@@ -51,7 +51,7 @@ public struct ParsedMessage: Sendable {
 
 /// 规则解析器：纯函数，不访问数据库，不依赖网络。
 public enum MessageParser {
-    public static let version = 3
+    public static let version = 4
 
     // MARK: 识别用正则
 
@@ -70,6 +70,8 @@ public enum MessageParser {
     private static let counterpartyTailMarker = Rx(#"(?:向|至|到|给|对方|收款|付款|\bto|\bfrom)\s*$"#)
     private static let feeClause = Rx(#"(?:含\s*)?(?:手续费|服务费|费用)[^，,。；;)）]*"#)
     private static let cjk = Rx(#"[\x{4E00}-\x{9FFF}]"#)
+    /// 数字后面紧跟着一个词（「12306 beijing」）：是名称里的数字
+    private static let wordAfterNumber = Rx(#"^\s?[A-Za-z\x{4E00}-\x{9FFF}]"#)
 
     private static let dateTimeFull = Rx(#"(20\d{2})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*日?(?:\s*(?:T|\s)?\s*(\d{1,2})\s*[：:时点]\s*(\d{2})\s*(?:[：:分]\s*(\d{2}))?\s*(?:秒|分)?)?"#)
     private static let dateNumericYear = Rx(#"(?<![\d.])(\d{1,2})([/.])(\d{1,2})[/.](20\d{2}|\d{2})(?:,?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?(?![\d])"#)
@@ -85,7 +87,8 @@ public enum MessageParser {
         Rx(#"(?:商户名称|交易商户|商户|对方户名|对方账户名|对方名称|对方|收款方|收款人|付款方|付款人|交易对象|merchant|payee|händler)\s*[：:]\s*([^，,。；;\n()（）]{1,40})"#),
         Rx(#"在\s*([^，,。；;\n\d][^，,。；;\n]{1,29}?)\s*(?:消费|支付|刷卡|网上支付|快捷支付|扣款|购物)"#),
         Rx(#"([^\s，,。；;\n:：]{2,30}?)\s*向您(?:尾号\s*[*xX•]*\d{4})?的?(?:账户|账号|卡)?(?:转账|汇款)"#),
-        Rx(#"向\s*([^您，,。；;\n][^，,。；;\n]{1,29}?)\s*(?:转账|转出|付款|汇款)"#),
+        // 卡组织的商户描述（名称 + 城市 + 国家）可以到 40 多个字符，例如「WEIXIN*Scan QR code fo Shenzhen CN」
+        Rx(#"向\s*([^您，,。；;\n][^，,。；;\n]{1,44}?)\s*(?:转账|转出|付款|汇款|支付)"#),
         Rx(#"(?:转出|转账|汇款|付款)(?:至|到|给)\s*([^，,。；;\n]{2,30}?)\s*(?=[，,。；;\n]|$)"#),
         Rx(#"(?:来自|付款方)\s*([^，,。；;\n]{2,30}?)(?:的|转账|汇款|[，,。；;\n]|$)"#),
         Rx(#"\bat\s+([A-Z0-9][A-Za-z0-9 &'.\-*/]{1,40}?)(?=\s+on\b|\s+\d|[.,;]|\s*$)"#, caseInsensitive: false),
@@ -275,6 +278,15 @@ public enum MessageParser {
             ))
         }
 
+        // 同一句里已经有写明币种的金额时，没写币种、没有小数、后面紧跟着一个词的整数是名称里的数字
+        // （恒生「向12306 beijing CN支付了CNY90」里的商户「12306」），不算金额
+        let sentencesWithCurrency = Set(amounts.filter(\.hasCurrency).map(\.sentence))
+        amounts.removeAll { amount in
+            guard !amount.hasCurrency, sentencesWithCurrency.contains(amount.sentence),
+                  amount.digits.allSatisfy(\.isNumber) else { return false }
+            return wordAfterNumber.test(maskedText.substring(from: amount.range.location + amount.range.length))
+        }
+
         // 同一条通知里其他金额写明的币种，可作为没写币种的金额的线索
         let messageCurrencies = Set(amounts.flatMap(\.amount.currencyCandidates))
         if messageCurrencies.count == 1, let only = messageCurrencies.first {
@@ -418,6 +430,17 @@ public enum MessageParser {
             let d = event.draft
             let key = [d.amount.digits, d.cardTail ?? "", d.kind.rawValue, d.direction?.rawValue ?? "", d.transactionTime?.sortKey ?? "", d.isSplitFee ? "f" : "", d.balanceAfter?.digits ?? ""].joined(separator: "|")
             return seen.insert(key).inserted
+        }
+        // 中英双语的邮件把同一笔写两遍：一段认不出交易性质（other）时，以认出来的那段为准
+        let known = events.filter { $0.draft.kind != .other && !$0.draft.isSplitFee }
+        events = events.filter { event in
+            let d = event.draft
+            guard d.kind == .other, !d.isSplitFee else { return true }
+            return !known.contains { other in
+                let o = other.draft
+                return o.amount.digits == d.amount.digits && o.cardTail == d.cardTail && o.transactionTime?.sortKey == d.transactionTime?.sortKey
+                    && (d.direction == nil || o.direction == d.direction)
+            }
         }
 
         let balances: [ParsedBalance] = amounts.enumerated()

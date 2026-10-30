@@ -555,6 +555,40 @@ final class IngestTests: XCTestCase {
         XCTAssertEqual(r.currency, .cny)
         XCTAssertEqual(r.direction, .outflow)
         XCTAssertEqual(r.kind, .purchase)
+        XCTAssertEqual(r.counterparty, "WEIXIN*Taobao platform Shenzhen CN")
+    }
+
+    /// 快捷指令「电子邮件」触发交来的是 HTML 正文：中英两段说的是同一笔，只记一笔
+    func testHangSengCardNotPresentHtmlEmailIsRecorded() async throws {
+        let backend = try makeBackend()
+        let account = try await addAccount(backend, bank: "x", bankName: "恒生银行", last4: "8482", currency: .hkd)
+        let result = try await backend.ingest(IngestRequest(text: HangSengEmailSamples.cardNotPresent, source: .auto))
+        XCTAssertEqual(result.outcome, .recorded, result.summary)
+        XCTAssertEqual(result.recordedCount, 1)
+        let rows = try await backend.records(accountID: account.id)
+        XCTAssertEqual(rows.count, 1)
+        let r = try XCTUnwrap(rows.first?.record)
+        XCTAssertEqual(r.amountMinor, 90_00)
+        XCTAssertEqual(r.currency, .cny)
+        XCTAssertEqual(r.direction, .outflow)
+        XCTAssertEqual(r.kind, .purchase)
+        XCTAssertEqual(r.counterparty, "12306 beijing CN")
+        XCTAssertEqual(r.transactionTime?.day, 25)
+        XCTAssertEqual(r.transactionTime?.month, 10)
+
+        let weixin = try await backend.ingest(IngestRequest(text: HangSengEmailSamples.cardNotPresentWeixin, source: .auto))
+        XCTAssertEqual(weixin.outcome, .recorded, weixin.summary)
+        let latest = try await backend.records(accountID: account.id)
+        let w = try XCTUnwrap(latest.first { $0.record.amountMinor == 6_00 }?.record, "金额没有小数：CNY6")
+        XCTAssertEqual(w.currency, .cny)
+        XCTAssertEqual(w.counterparty, "WEIXIN*Scan QR code fo Shenzhen CN")
+        XCTAssertEqual(latest.count, 2)
+
+        // 同一封邮件再送一次（例如自动化跑了两次）不会重复记
+        let again = try await backend.ingest(IngestRequest(text: HangSengEmailSamples.cardNotPresent, source: .auto))
+        XCTAssertNotEqual(again.outcome, .recorded, again.summary)
+        let count = try await backend.recordCount(accountID: account.id)
+        XCTAssertEqual(count, 2)
     }
 
     /// 恒生转账邮件（脱敏）：只写打码的户口号码，不写卡号尾号；中英双语；金额单独一行。

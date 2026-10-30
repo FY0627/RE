@@ -80,6 +80,7 @@ docker run --rm -v "<仓库>/ios-swift/Packages/BKCore:/pkg" -w /pkg bk-swift sw
 - 「我的 › 币种与汇率」选择主要币种；有汇率时资产页净资产按主要币种换算合计（`App/ExchangeRateStore.swift`）。
 - 汇率来源：共享的快捷指令「导入汇率」（「获取 URL 内容」→ App 动作「导入汇率」，`Intents/ImportExchangeRatesIntent.swift`），
   「我的 › 用快捷指令更新汇率」点「添加快捷指令」打开 iCloud 链接添加，用户再建一个「打开日常记账时」运行它的自动化（`UI/Profile/ExchangeRateGuideView.swift`）。
+  链接只认做链接时那个 App 的标识（含签名团队后缀）；别人自己侧载的 App 标识不同，页面改成自己搭的 4 步。
   导入成功后发一条本机通知（没有通知权限就不发；设置说明里点按钮离开 App 前先要权限）。
   数据源每天更新一次，在 UTC 0 点刚过（北京时间早上 8 点左右）。
   完整的汇率表原样保存：最新一份在本机缓存，另外按天存进账本（`RateDAO`），以前的日期都保留。
