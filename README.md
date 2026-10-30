@@ -30,6 +30,4 @@ App 由 GitHub Actions 构建，安装方法见 [docs/guides/ios-swift-windows-s
 
 ## 许可证
 
-[PolyForm Noncommercial 1.0.0](LICENSE)：源码公开，允许个人学习、研究和其他非商业用途，**禁止商用**。
-
-注意：这类许可证不属于 OSI 认证的「开源许可证」，因为 OSI 的定义不允许限制商业使用。
+[Apache License 2.0](LICENSE)：允许自由使用、修改和分发，包括商业用途。分发时需要保留版权声明和 [NOTICE](NOTICE)，并标明修改过的文件。许可证不授予使用 REC 名称的权利。
