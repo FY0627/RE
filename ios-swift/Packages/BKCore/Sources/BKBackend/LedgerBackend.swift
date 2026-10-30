@@ -5,6 +5,8 @@ import BKDatabase
 public enum BackendError: Error, Equatable, Sendable {
     case notFound
     case invalidAccount(AccountValidationError)
+    /// 只有停用的账户才能删除
+    case accountNotArchived
     /// 待处理项不允许确认（例如无法识别的通知），只能忽略
     case confirmationNotAllowed
     /// 选择的账户不在系统给出的候选里
@@ -203,6 +205,15 @@ public final class LedgerBackend: Sendable {
     /// 隐藏账户（保留其历史流水）。
     public func setArchived(accountID: String, archived: Bool) async throws {
         try await database.write { try AccountDAO.setArchived($0, id: accountID, archived: archived) }
+    }
+
+    /// 删除停用的账户和它的所有流水，不能恢复。使用中的账户要先停用（`accountNotArchived`）
+    public func deleteAccount(id: String) async throws {
+        try await database.write { db in
+            guard let account = try AccountDAO.find(db, id: id) else { throw BackendError.notFound }
+            guard account.archived else { throw BackendError.accountNotArchived }
+            try AccountDAO.delete(db, id: id)
+        }
     }
 
     public func automationStatus() async throws -> [String: AccountAutomationStatus] {
@@ -916,20 +927,26 @@ public final class LedgerBackend: Sendable {
         return try await stats(from: start, to: end, year: year, month: month, convertTo: primary)
     }
 
-    /// 一段时间的统计（统计页按选的时间段看）：含 `from`，不含 `to`；nil 表示不限。
+    /// 一段时间的统计（统计页按选的时间段看）：含 `from`，不含 `to`；nil 表示不限。`accountID`：只算这个账户。
     /// 结果里的年、月是开始那天所在的月（不限时为 0），只作标识
-    public func stats(from: Date?, to: Date?, convertTo primary: CurrencyCode? = nil) async throws -> MonthStats {
+    public func stats(from: Date?, to: Date?, convertTo primary: CurrencyCode? = nil, accountID: String? = nil) async throws -> MonthStats {
         let c = from.map { calendar.dateComponents([.year, .month], from: $0) }
-        return try await stats(from: from ?? .distantPast, to: to ?? .distantFuture, year: c?.year ?? 0, month: c?.month ?? 0, convertTo: primary)
+        return try await stats(
+            from: from ?? .distantPast, to: to ?? .distantFuture, year: c?.year ?? 0, month: c?.month ?? 0, convertTo: primary, accountID: accountID
+        )
     }
 
-    private func stats(from start: Date, to end: Date, year: Int, month: Int, convertTo primary: CurrencyCode?) async throws -> MonthStats {
+    private func stats(from start: Date, to end: Date, year: Int, month: Int, convertTo primary: CurrencyCode?, accountID: String? = nil) async throws -> MonthStats {
         let calendar = calendar
         return try await database.read { db in
-            let records = try RecordDAO.inRange(db, from: start, to: end)
-            var stats = StatsCalculator.month(year: year, month: month, records: records, categories: try CategoryDAO.all(db))
+            var records = try RecordDAO.inRange(db, from: start, to: end)
+            if let accountID { records = records.filter { $0.accountID == accountID } }
+            let categories = try CategoryDAO.all(db)
+            var stats = StatsCalculator.month(year: year, month: month, records: records, categories: categories)
             if let primary {
-                stats.converted = try StatsCalculator.converted(records, to: primary, charges: ChargeCalculator(db: db, calendar: calendar))
+                stats.converted = try StatsCalculator.converted(
+                    records, to: primary, charges: ChargeCalculator(db: db, calendar: calendar), categories: categories
+                )
             }
             return stats
         }
@@ -1017,10 +1034,13 @@ enum StatsCalculator {
         return MonthStats(year: year, month: month, currencies: currencies, accounts: byAccount.values.sorted { $0.outflowMinor + $0.inflowMinor > $1.outflowMinor + $1.inflowMinor }, holdCount: holds, failedCount: failed)
     }
 
-    /// 所有币种换算成 `primary` 的本月支出（减去退款）和收入。转帐不算。
+    /// 所有币种换算成 `primary` 的本月支出（减去退款）和收入，和按分类的合计。转帐不算。
     /// 外币交易填了实际扣款（正好是 `primary`）就用它，否则按交易当天的汇率；没有汇率的不计入
-    static func converted(_ records: [LedgerRecord], to primary: CurrencyCode, charges: ChargeCalculator) throws -> MonthStats.ConvertedTotals {
+    static func converted(
+        _ records: [LedgerRecord], to primary: CurrencyCode, charges: ChargeCalculator, categories: [LedgerCategory] = []
+    ) throws -> MonthStats.ConvertedTotals {
         var expense: Int64 = 0, income: Int64 = 0
+        var expenseSums: CategorySums = [:], incomeSums: CategorySums = [:]
         var unconverted: Set<CurrencyCode> = []
         for r in records where r.status == .posted && r.entryType != .transfer {
             let amount: Int64
@@ -1033,12 +1053,23 @@ enum StatsCalculator {
                 continue
             }
             switch r.entryType {
-            case .expense: expense += r.isRefund ? -amount : amount
-            case .income: income += amount
+            case .expense:
+                let signed = r.isRefund ? -amount : amount
+                expense += signed
+                let sum = expenseSums[r.categoryID] ?? (0, 0)
+                expenseSums[r.categoryID] = (sum.amount + signed, sum.count + 1)
+            case .income:
+                income += amount
+                let sum = incomeSums[r.categoryID] ?? (0, 0)
+                incomeSums[r.categoryID] = (sum.amount + amount, sum.count + 1)
             case .transfer: break
             }
         }
-        return MonthStats.ConvertedTotals(currency: primary, expenseMinor: expense, incomeMinor: income, unconverted: unconverted.sorted())
+        let tree = CategoryTree(categories)
+        return MonthStats.ConvertedTotals(
+            currency: primary, expenseMinor: expense, incomeMinor: income, unconverted: unconverted.sorted(),
+            expenseCategories: categoryTotals(expenseSums, tree: tree), incomeCategories: categoryTotals(incomeSums, tree: tree)
+        )
     }
 
     /// 按大类汇总，大类下面是小类（直接记在大类上的那部分也作为一项）；找不到的分类算待分类。都按金额从大到小

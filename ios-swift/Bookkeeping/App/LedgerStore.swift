@@ -199,6 +199,13 @@ final class LedgerStore {
         await refresh()
     }
 
+    /// 删除停用的卡和它的流水
+    func deleteAccount(id: String) async throws {
+        guard let backend else { throw BackendError.notFound }
+        try await backend.deleteAccount(id: id)
+        await refresh()
+    }
+
     func detail(recordID: String) async -> RecordDetail? {
         try? await backend?.recordDetail(id: recordID)
     }
@@ -332,8 +339,9 @@ final class LedgerStore {
     }
 
     /// 统计页：一段时间的统计，nil 表示不限。`converted` 时另外把所有币种换算成主要币种合计（统计页的总览）
-    func stats(from: Date?, to: Date?, converted: Bool = false) async -> MonthStats? {
-        try? await backend?.stats(from: from, to: to, convertTo: converted ? ExchangeRateStore.primaryCurrency : nil)
+    /// `accountID`：只算这个账户
+    func stats(from: Date?, to: Date?, converted: Bool = false, accountID: String? = nil) async -> MonthStats? {
+        try? await backend?.stats(from: from, to: to, convertTo: converted ? ExchangeRateStore.primaryCurrency : nil, accountID: accountID)
     }
 
     /// 账户没有这个币种时，按它的主币种大概扣（入）多少（手动记一笔时提示）

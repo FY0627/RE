@@ -17,13 +17,17 @@ struct WalletActions {
     var chooseCustomPeriod: () -> Void = {}
 }
 
-/// 资产页通过它换详情里流水的时间段（自定义时间的面板）。
+/// 资产页通过它换详情里流水的时间段（自定义时间的面板），再点一次标签栏的「资产」时让卡包滚回顶部。
 @MainActor
 final class WalletBridge {
     weak var controller: WalletController?
 
     func setPeriod(_ period: RecordPeriod) {
         controller?.setPeriod(period)
+    }
+
+    func scrollToTop() {
+        controller?.scrollToTop()
     }
 }
 
@@ -430,6 +434,12 @@ final class WalletController: UIViewController, UIScrollViewDelegate, UIGestureR
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         placeCards(only: [.resting, .below])
+    }
+
+    /// 再点一次标签栏的「资产」：卡包滚回顶部（和其他标签页的系统行为一样）。卡包是 UIKit 的滚动区，系统不会替它滚
+    func scrollToTop() {
+        guard selectedIndex == nil else { return }
+        stackScroll.setContentOffset(CGPoint(x: 0, y: -stackScroll.contentInset.top), animated: true)
     }
 
     private func detailScrolled() {

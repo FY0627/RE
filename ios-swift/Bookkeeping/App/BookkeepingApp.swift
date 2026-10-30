@@ -21,8 +21,11 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
         case .dark: .dark
         }
     }
-    /// 桌面图标：浅色、深色各一套备用图标，系统是什么外观都保持这个颜色；
-    /// 跟随系统时用主图标（它自己有深色外观）
+    /// 「我的 › 图标」：桌面图标也是这三种，和界面的外观分开选
+    static let iconKey = "appIcon"
+
+    /// 跟随系统用主图标：它自己有深色外观，系统换外观时自己变，不弹提示。
+    /// 浅色、深色各一套备用图标，系统是什么外观都保持这个颜色
     var iconName: String? {
         switch self {
         case .system: nil
@@ -31,11 +34,20 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
         }
     }
 
-    /// 换成这个外观的桌面图标。每次换系统都会弹提示，所以图标已经对了就不换
-    @MainActor func applyIcon() {
+    /// 换成「我的 › 图标」选的桌面图标。每次换系统都会弹提示，所以图标已经对了就不换。
+    /// 还没选过（包括从图标跟着外观换的版本升上来）就记下现在的图标，不去动它
+    @MainActor static func applyIcon() {
         let app = UIApplication.shared
-        guard app.supportsAlternateIcons, app.alternateIconName != iconName else { return }
-        Task { try? await app.setAlternateIconName(iconName) }
+        guard app.supportsAlternateIcons else { return }
+        let defaults = UserDefaults.standard
+        guard let raw = defaults.string(forKey: iconKey) else {
+            let installed = allCases.first { $0.iconName == app.alternateIconName } ?? .system
+            defaults.set(installed.rawValue, forKey: iconKey)
+            return
+        }
+        let name = (AppearanceMode(rawValue: raw) ?? .system).iconName
+        guard app.alternateIconName != name else { return }
+        Task { try? await app.setAlternateIconName(name) }
     }
 }
 
@@ -60,10 +72,9 @@ struct BookkeepingApp: App {
                     // 自动化在后台入账后，用户下次打开 App 时刷新
                     if phase == .active { store.scheduleRefresh() }
                 }
-                .onChange(of: appearance) { appearanceMode.applyIcon() }
-                // 删掉重装后系统会换回主图标；打开 App 时对一下
+                // 重装后系统可能换回主图标；打开 App 时对一下
                 .onChange(of: scenePhase, initial: true) { _, phase in
-                    if phase == .active { appearanceMode.applyIcon() }
+                    if phase == .active { AppearanceMode.applyIcon() }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .ledgerDidChange)) { _ in
                     store.scheduleRefresh()

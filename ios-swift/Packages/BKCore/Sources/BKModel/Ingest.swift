@@ -487,12 +487,21 @@ public struct MonthStats: Hashable, Sendable {
         public var expenseMinor: Int64
         public var incomeMinor: Int64
         public var unconverted: [CurrencyCode]
+        /// 支出按分类（换算后的金额），排法和 `CurrencyTotals.expenseCategories` 一样
+        public var expenseCategories: [CategoryTotal]
+        /// 收入按分类（换算后的金额）
+        public var incomeCategories: [CategoryTotal]
 
-        public init(currency: CurrencyCode, expenseMinor: Int64, incomeMinor: Int64, unconverted: [CurrencyCode]) {
+        public init(
+            currency: CurrencyCode, expenseMinor: Int64, incomeMinor: Int64, unconverted: [CurrencyCode],
+            expenseCategories: [CategoryTotal] = [], incomeCategories: [CategoryTotal] = []
+        ) {
             self.currency = currency
             self.expenseMinor = expenseMinor
             self.incomeMinor = incomeMinor
             self.unconverted = unconverted
+            self.expenseCategories = expenseCategories
+            self.incomeCategories = incomeCategories
         }
 
         public var balanceMinor: Int64 { incomeMinor - expenseMinor }

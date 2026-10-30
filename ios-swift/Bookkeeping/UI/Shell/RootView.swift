@@ -61,14 +61,24 @@ struct RootView: View {
     @State private var tab: AppTab = .home
     @State private var detail = DetailMotionState()
     @State private var sheet: ActiveSheet?
+    @State private var assetsReselectCount = 0
+
+    /// 再点一次当前的标签时系统也会调用 set：其他页面的列表由系统滚回顶部，
+    /// 资产页的卡包是 UIKit 的滚动区，系统不会替它滚，记一下让资产页自己滚
+    private var selection: Binding<AppTab> {
+        Binding { tab } set: { newTab in
+            if newTab == tab, newTab == .assets { assetsReselectCount += 1 }
+            tab = newTab
+        }
+    }
 
     var body: some View {
-        TabView(selection: $tab) {
+        TabView(selection: selection) {
             Tab(AppTab.home.title, systemImage: AppTab.home.symbol, value: AppTab.home) {
                 HomeView(openPending: { sheet = .pending })
             }
             Tab(AppTab.assets.title, systemImage: AppTab.assets.symbol, value: AppTab.assets) {
-                AssetsView(openAddAccount: { sheet = .addAccount })
+                AssetsView(openAddAccount: { sheet = .addAccount }, reselectCount: assetsReselectCount)
             }
             Tab(AppTab.stats.title, systemImage: AppTab.stats.symbol, value: AppTab.stats) {
                 StatsView()

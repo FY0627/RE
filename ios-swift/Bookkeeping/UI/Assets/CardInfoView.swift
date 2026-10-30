@@ -5,7 +5,7 @@ import BKBackend
 
 /// 卡片信息：银行、卡类型、币种、每个币种的余额和校准余额、完整卡号（选填，默认遮住）、账号。
 /// 编辑时可以改账户名称、卡类型、主币种、多币种账户的其他币种、校准余额、卡号和账号（银行和尾号不能改）；
-/// 也可以停用 / 启用这张卡。
+/// 也可以停用 / 启用这张卡，停用的卡可以删除（流水一起删除）。
 /// 校准余额（参考 MOZE 的余额调整）：App 里的余额和实际对不上时，填「现在」实际有多少，之后的流水从这里接着算。
 /// 放在这里不显眼的地方，平时用不到。现金、电子钱包没有银行和卡号。
 struct CardInfoView: View {
@@ -82,15 +82,23 @@ struct CardInfoView: View {
 
             if !editing {
                 // 停用后详情页保持打开，卡片变灰并移到资产页最下方的「已停用」
-                // 只有文字，靠右
+                // 只有文字，靠左（和流水详情的操作一样）
                 Section {
                     if account.archived {
-                        Button { setArchived(account, false) } label: {
-                            Text("启用").frame(maxWidth: .infinity, alignment: .trailing)
-                        }
+                        Button { setArchived(account, false) } label: { ActionLabel(title: "启用") }
                     } else {
-                        Button(role: .destructive) { setArchived(account, true) } label: {
-                            Text("停用").frame(maxWidth: .infinity, alignment: .trailing)
+                        Button(role: .destructive) { setArchived(account, true) } label: { ActionLabel(title: "停用") }
+                    }
+                }
+                // 停用的卡才能删除；确认的小菜单就在这个按钮旁边弹出
+                if account.archived {
+                    Section {
+                        Menu {
+                            Section("流水也一起删除，不能恢复") {
+                                Button(account.isCard ? "删除这张卡" : "删除这个账户", systemImage: "trash", role: .destructive) { delete(account) }
+                            }
+                        } label: {
+                            ActionLabel(title: "删除").foregroundStyle(Color.red)
                         }
                     }
                 }
@@ -238,6 +246,15 @@ struct CardInfoView: View {
     private func setArchived(_ account: Account, _ archived: Bool) {
         dismiss()
         Task { await store.setArchived(accountID: account.id, archived: archived) }
+    }
+
+    /// 先关掉页面：卡没了以后资产页会直接关闭详情
+    private func delete(_ account: Account) {
+        dismiss()
+        Task {
+            guard (try? await store.deleteAccount(id: account.id)) != nil else { return }
+            if let image = account.face.imageID { CardFaceImages.shared.discard([image]) }
+        }
     }
 
     /// 默认只露出尾号；点眼睛显示完整卡号（每 4 位一组）。

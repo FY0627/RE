@@ -491,6 +491,17 @@ final class LedgerTypeTests: XCTestCase {
         XCTAssertEqual(total.incomeMinor, 1_000_00)
         XCTAssertEqual(total.balanceMinor, 1_000_00 - 164_80)
         XCTAssertEqual(total.unconverted, [.jpy], "没有日元汇率：不计入，单独列出")
+        XCTAssertEqual(total.expenseCategories.map(\.amountMinor).reduce(0, +), total.expenseMinor, "分类也按换算后的金额，加起来等于支出")
+        XCTAssertEqual(total.expenseCategories.map(\.count).reduce(0, +), 3)
+        XCTAssertEqual(total.incomeCategories.map(\.amountMinor), [1_000_00])
+
+        // 只看一个账户
+        let hkOnly = try await backend.stats(from: nil, to: nil, convertTo: .cny, accountID: hk.id)
+        XCTAssertEqual(hkOnly.currencies.map(\.currency), [.hkd])
+        XCTAssertEqual(hkOnly.currencies.first?.netExpenseMinor, 78_00 - 7_80)
+        XCTAssertEqual(hkOnly.currencies.first?.expenseCategories.map(\.amountMinor), [78_00 - 7_80])
+        XCTAssertEqual(hkOnly.converted?.expenseMinor, 72_00 - 7_20)
+        XCTAssertEqual(hkOnly.accounts.map(\.accountID), [hk.id])
     }
 
     // MARK: 电子钱包自动记账

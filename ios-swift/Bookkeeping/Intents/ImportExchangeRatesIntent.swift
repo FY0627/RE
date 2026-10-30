@@ -1,12 +1,13 @@
 import AppIntents
 import Foundation
+import UserNotifications
 import BKBackend
 import BKModel
 
 /// 快捷指令自动化调用：把「获取 URL 内容」下载的汇率数据导入 App，App 自己不联网。
 ///
 /// 自动化示例：触发条件「打开日常记账时」或「每天 8:00」→「获取 URL 内容」（汇率地址）→「导入汇率」。
-/// 和「记录银行动账通知」一样完全在后台执行，不打开 App、不弹出交互。
+/// 和「记录银行动账通知」一样完全在后台执行，不打开 App、不弹出交互；导入成功后发一条本机通知。
 struct ImportExchangeRatesIntent: AppIntent {
     static let title: LocalizedStringResource = "导入汇率"
     static let description = IntentDescription(
@@ -50,7 +51,20 @@ struct ImportExchangeRatesIntent: AppIntent {
             NotificationCenter.default.post(name: .ledgerDidChange, object: nil)
         }
         AppServices.logger.info("exchange rates imported count=\(rates.rates.count)")
+        await Self.notifyImported(rates)
         return .result(value: "已导入 \(rates.rates.count) 个币种的汇率")
+    }
+
+    /// 没有通知权限时系统不显示。同一个标识：通知中心里只留最新一条
+    private static func notifyImported(_ rates: ExchangeRates) async {
+        let center = UNUserNotificationCenter.current()
+        // App 正在前台时（例如「打开日常记账时」触发）也显示横幅
+        center.delegate = NotificationPresenter.shared
+        let content = UNMutableNotificationContent()
+        content.title = "汇率已更新"
+        content.body = "已导入 \(rates.rates.count) 个币种的汇率，数据更新于\(Fmt.dateTime(rates.updatedAt))"
+        content.threadIdentifier = "fx"
+        try? await center.add(UNNotificationRequest(identifier: "fx-imported", content: content, trigger: nil))
     }
 }
 

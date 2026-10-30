@@ -2,63 +2,91 @@ import SwiftUI
 import UIKit
 import BKModel
 
-/// 统计：选一段时间看（右上角的时间段胶囊，和卡片详情一样：全部、本周、本月、上月、今年、自定义），默认本周（本月的首页上有）。
-/// 最上面是这段时间的总览：支出、收入、结余，所有币种换算成「我的」里选的主要币种（和首页的本月合计一样算）。
-/// 下面用分段控件选「按币种」还是「按账户」（记住上次选的），这两种多个币种分开统计，不换算：
-/// 按币种是每个币种的支出、收入、结余，再按分类排（哪一类花得最多，点进去看小类和每一笔）；
-/// 按账户是每个账户进出多少，点进去看这段时间的每一笔。
-/// 转帐（自己的账户之间、还信用卡、存取现金）不算在收支里；退款从它所在的分类里减掉。
-/// 顶部一行和首页、资产页一样：左边大标题「统计」，右边时间段的玻璃胶囊。
-struct StatsView: View {
-    enum Grouping: String, CaseIterable, Identifiable {
-        case currency
-        case account
-        var id: String { rawValue }
-        var title: String { self == .currency ? "按币种" : "按账户" }
+/// 统计看哪些数据：全部账户（换算成主要币种）、一个账户、一个币种。存成文字，记住上次选的
+enum StatsScope: Hashable, RawRepresentable {
+    case all
+    case account(String)
+    case currency(CurrencyCode)
+
+    init?(rawValue: String) {
+        if rawValue == "all" {
+            self = .all
+        } else if rawValue.hasPrefix("account:") {
+            self = .account(String(rawValue.dropFirst("account:".count)))
+        } else if rawValue.hasPrefix("currency:") {
+            self = .currency(CurrencyCode(String(rawValue.dropFirst("currency:".count))))
+        } else {
+            return nil
+        }
     }
 
+    var rawValue: String {
+        switch self {
+        case .all: "all"
+        case .account(let id): "account:\(id)"
+        case .currency(let code): "currency:\(code.rawValue)"
+        }
+    }
+
+    var accountID: String? {
+        if case .account(let id) = self { id } else { nil }
+    }
+}
+
+/// 统计：右上角两个玻璃胶囊，左边选看哪些数据（全部账户、一个账户、一个币种），右边选时间段
+/// （和卡片详情一样：全部、本周、本月、上月、今年、自定义），默认本周（本月的首页上有）。
+/// 三种看法一个样子：上面是这段时间的支出、收入、结余，下面是支出和收入按分类排（哪一类花得最多，点进去看小类和每一笔）。
+/// 全部账户：所有币种换算成「我的」里选的主要币种（和首页的本月合计一样算）；
+/// 一个账户、一个币种：不换算，账户用了几个币种就分开几组。
+/// 转帐（自己的账户之间、还信用卡、存取现金）不算在收支里；退款从它所在的分类里减掉。
+/// 顶部一行和首页、资产页一样：左边大标题「统计」。
+struct StatsView: View {
     private struct LoadKey: Equatable {
         let period: RecordPeriod
         let revision: Int
     }
 
+    private struct AccountKey: Equatable {
+        let period: RecordPeriod
+        let accountID: String?
+        let revision: Int
+    }
+
+    /// 只算一个账户的统计，和它是哪个账户（换账户时不显示上一个账户的）
+    private struct AccountStats {
+        let accountID: String
+        let stats: MonthStats
+    }
+
     @Environment(LedgerStore.self) private var store
-    @AppStorage("stats.grouping") private var grouping = Grouping.currency
+    @AppStorage("stats.scope") private var scope = StatsScope.all
     @State private var period: RecordPeriod = .thisWeek
     @State private var choosingCustom = false
+    /// 所有账户：全部账户、一个币种用它
     @State private var stats: MonthStats?
+    @State private var accountStats: AccountStats?
     @State private var scrolledUnderBar = false
 
     var body: some View {
         NavigationStack {
             List {
-                if let stats, !stats.currencies.isEmpty {
-                    Section {
-                        ConvertedTotalsView(total: stats.converted)
-                    } header: {
-                        Text("\(period.title) · 合计（\((stats.converted?.currency ?? ExchangeRateStore.primaryCurrency).chineseName)）")
-                    }
-                    Section {
-                        Picker("统计方式", selection: $grouping) {
-                            ForEach(Grouping.allCases) { Text($0.title).tag($0) }
+                switch current {
+                case .all:
+                    if let stats { allSections(stats) }
+                case .currency(let code):
+                    if let stats {
+                        if let totals = stats.currencies.first(where: { $0.currency == code }) {
+                            currencySections(totals, accountID: nil)
+                        } else {
+                            empty
                         }
-                        .pickerStyle(.segmented)
-                        .listRowBackground(Color.clear)
-                        .listRowInsets(EdgeInsets())
                     }
-                    // 分段控件上下只留一点空隙（默认的分组间距太大）；前后的分组没有自己的间距，就都用这个
-                    .listSectionSpacing(10)
-                    switch grouping {
-                    case .currency:
-                        ForEach(stats.currencies, id: \.currency) { totals in
-                            currencySections(totals)
+                case .account(let id):
+                    if let loaded = accountStats, loaded.accountID == id {
+                        if loaded.stats.currencies.isEmpty { empty }
+                        ForEach(loaded.stats.currencies, id: \.currency) { totals in
+                            currencySections(totals, accountID: id)
                         }
-                    case .account:
-                        accountSection(stats.accounts)
-                    }
-                } else if stats != nil {
-                    Section {
-                        ContentUnavailableView("这段时间还没有记录", systemImage: "chart.bar", description: Text(period.title))
                     }
                 }
             }
@@ -69,12 +97,15 @@ struct StatsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbarVisibility(.hidden, for: .navigationBar)
             .safeAreaBar(edge: .top) {
-                TitleBar(title: "统计", menu: .init(title: period.title) { periodMenu() })
-                    .frame(height: GlassControls.size)
-                    .padding(.horizontal, AppLayout.cardInset)
-                    .padding(.top, 2)
-                    .padding(.bottom, 6)
-                    .background { TopBarBackdrop(visible: scrolledUnderBar) }
+                TitleBar(title: "统计", menus: [
+                    .init(title: scopeTitle) { scopeMenu() },
+                    .init(title: period.title) { periodMenu() },
+                ])
+                .frame(height: GlassControls.size)
+                .padding(.horizontal, AppLayout.cardInset)
+                .padding(.top, 2)
+                .padding(.bottom, 6)
+                .background { TopBarBackdrop(visible: scrolledUnderBar) }
             }
             .sheet(isPresented: $choosingCustom) {
                 CustomPeriodSheet(initial: period.customDates) { period = $0 }
@@ -83,7 +114,51 @@ struct StatsView: View {
                 let range = period.range()
                 stats = await store.stats(from: range.from, to: range.to, converted: true)
             }
+            .task(id: AccountKey(period: period, accountID: current.accountID, revision: store.revision)) {
+                guard let id = current.accountID else { return }
+                let range = period.range()
+                if let loaded = await store.stats(from: range.from, to: range.to, accountID: id) {
+                    accountStats = AccountStats(accountID: id, stats: loaded)
+                }
+            }
         }
+    }
+
+    /// 选的账户删掉了就看全部账户
+    private var current: StatsScope {
+        if let id = scope.accountID, store.account(id: id) == nil { return .all }
+        return scope
+    }
+
+    private var scopeTitle: String {
+        switch current {
+        case .all: "全部账户"
+        case .account(let id): store.account(id: id)?.displayTitle ?? "全部账户"
+        case .currency(let code): code.chineseName
+        }
+    }
+
+    /// 看哪些数据的菜单：全部账户，另起两组「账户」「币种」
+    private func scopeMenu() -> [UIMenuElement] {
+        let selected = current
+        let all = UIAction(title: "全部账户", state: selected == .all ? .on : .off) { _ in scope = .all }
+        let accounts = (store.accounts + store.archivedAccounts).map { account in
+            UIAction(title: account.displayTitle, state: selected == .account(account.id) ? .on : .off) { _ in scope = .account(account.id) }
+        }
+        let currencies = menuCurrencies.map { code in
+            UIAction(title: code.chineseName, state: selected == .currency(code) ? .on : .off) { _ in scope = .currency(code) }
+        }
+        var items: [UIMenuElement] = [all]
+        if !accounts.isEmpty { items.append(UIMenu(title: "账户", options: .displayInline, children: accounts)) }
+        items.append(UIMenu(title: "币种", options: .displayInline, children: currencies))
+        return items
+    }
+
+    /// 主要币种、这段时间用过的币种、账户里有的币种
+    private var menuCurrencies: [CurrencyCode] {
+        var seen: Set<CurrencyCode> = []
+        let codes = [ExchangeRateStore.primaryCurrency] + (stats?.currencies.map(\.currency) ?? []) + store.accounts.flatMap(\.currencies)
+        return codes.filter { seen.insert($0).inserted }
     }
 
     /// 时间段胶囊的菜单：常用时间段，另起一组「自定义…」（选中时写自定义的日期）
@@ -100,119 +175,92 @@ struct StatsView: View {
     /// 这段时间的范围（按收到通知的时间）
     private var range: (from: Date?, to: Date?) { period.range() }
 
-    /// 一个币种：支出（比上面的总览小一号）、收入、结余，再按分类排。币种写在「支出」旁边，不另起分组标题（分段控件下面不多一行字）
-    @ViewBuilder
-    private func currencySections(_ t: MonthStats.CurrencyTotals) -> some View {
+    private var empty: some View {
         Section {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("支出 · \(t.currency.chineseName)").font(.subheadline).foregroundStyle(.secondary)
-                Text(Fmt.money(t.netExpenseMinor, t.currency))
-                    .font(.system(.title2, design: .rounded).weight(.bold))
-                    .monospacedDigit()
-                    .lineLimit(1).minimumScaleFactor(0.6)
+            ContentUnavailableView("这段时间还没有记录", systemImage: "chart.bar", description: Text(period.title))
+        }
+    }
+
+    /// 全部账户：换算成主要币种的合计，再按分类排（点进去的每一笔不限币种）
+    @ViewBuilder
+    private func allSections(_ stats: MonthStats) -> some View {
+        if stats.currencies.isEmpty {
+            empty
+        } else {
+            let total = stats.converted
+            let currency = total?.currency ?? ExchangeRateStore.primaryCurrency
+            Section {
+                ConvertedTotalsView(total: total)
+            } header: {
+                Text("\(period.title) · 合计（\(currency.chineseName)）")
             }
-            .padding(.vertical, 4)
-            .accessibilityElement(children: .combine)
-            LabeledContent("收入", value: Fmt.money(t.incomeMinor, t.currency))
-            LabeledContent("结余", value: Fmt.money(t.balanceMinor, t.currency))
+            if let total {
+                categorySections(Breakdown(
+                    currency: currency, expense: total.expenseCategories, income: total.incomeCategories,
+                    expenseTotal: total.expenseMinor, incomeTotal: total.incomeMinor, onlyCurrency: false
+                ))
+            }
+        }
+    }
+
+    /// 一个币种（只看一个账户时是这个账户的这个币种）：支出、收入、结余和全部账户一个样子，再按分类排
+    @ViewBuilder
+    private func currencySections(_ t: MonthStats.CurrencyTotals, accountID: String?) -> some View {
+        Section {
+            ConvertedTotalsView(total: MonthStats.ConvertedTotals(
+                currency: t.currency, expenseMinor: t.netExpenseMinor, incomeMinor: t.incomeMinor, unconverted: []
+            ))
             if t.refundMinor > 0 {
                 LabeledContent("其中退款", value: Fmt.money(t.refundMinor, t.currency))
             }
             if t.transferMinor > 0 {
                 LabeledContent("转帐（不算收支）", value: Fmt.money(t.transferMinor, t.currency))
             }
+        } header: {
+            Text("\(period.title) · \(t.currency.chineseName)")
         }
-        if !t.expenseCategories.isEmpty {
+        categorySections(Breakdown(
+            currency: t.currency, expense: t.expenseCategories, income: t.incomeCategories,
+            expenseTotal: t.netExpenseMinor, incomeTotal: t.incomeMinor, accountID: accountID
+        ))
+    }
+
+    /// 下面按分类排的部分。`accountID`、`onlyCurrency`：点进去看每一笔时只看这个账户、这个币种
+    private struct Breakdown {
+        let currency: CurrencyCode
+        let expense: [MonthStats.CategoryTotal]
+        let income: [MonthStats.CategoryTotal]
+        let expenseTotal: Int64
+        let incomeTotal: Int64
+        var accountID: String?
+        var onlyCurrency = true
+    }
+
+    @ViewBuilder
+    private func categorySections(_ b: Breakdown) -> some View {
+        if !b.expense.isEmpty {
             Section("支出分类") {
-                categoryRows(t.expenseCategories, type: .expense, currency: t.currency, total: t.netExpenseMinor)
+                categoryRows(b.expense, type: .expense, total: b.expenseTotal, b)
             }
         }
-        if !t.incomeCategories.isEmpty {
+        if !b.income.isEmpty {
             Section("收入分类") {
-                categoryRows(t.incomeCategories, type: .income, currency: t.currency, total: t.incomeMinor)
+                categoryRows(b.income, type: .income, total: b.incomeTotal, b)
             }
         }
     }
 
-    private func categoryRows(_ totals: [MonthStats.CategoryTotal], type: EntryType, currency: CurrencyCode, total: Int64) -> some View {
+    private func categoryRows(_ totals: [MonthStats.CategoryTotal], type: EntryType, total: Int64, _ b: Breakdown) -> some View {
         let maxAmount = max(1, totals.map(\.amountMinor).max() ?? 1)
         return ForEach(totals) { item in
             NavigationLink {
-                CategoryStatsView(item: item, type: type, currency: currency, from: range.from, to: range.to)
+                CategoryStatsView(
+                    item: item, type: type, currency: b.currency, onlyCurrency: b.onlyCurrency, accountID: b.accountID,
+                    from: range.from, to: range.to
+                )
             } label: {
-                CategoryTotalRow(item: item, currency: currency, maxAmount: maxAmount, total: total)
+                CategoryTotalRow(item: item, currency: b.currency, maxAmount: maxAmount, total: total)
             }
-        }
-    }
-
-    /// 按账户：每个账户（多币种的按币种分开）进出多少，点进去看每一笔
-    private func accountSection(_ totals: [MonthStats.AccountTotal]) -> some View {
-        Section {
-            ForEach(totals, id: \.self) { total in
-                NavigationLink {
-                    AccountStatsView(total: total, from: range.from, to: range.to)
-                } label: {
-                    accountRow(total)
-                }
-            }
-        } footer: {
-            Text("进出都算，包括转帐和退款。")
-        }
-    }
-
-    private func accountRow(_ total: MonthStats.AccountTotal) -> some View {
-        let account = store.account(id: total.accountID)
-        return HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(account?.displayTitle ?? "已删除的账户").lineLimit(1)
-                Text("\(total.currency.chineseName) · \(total.count) 笔").font(.footnote).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 2) {
-                Text("+" + Fmt.money(total.inflowMinor, total.currency)).foregroundStyle(AppTheme.income)
-                Text("-" + Fmt.money(total.outflowMinor, total.currency))
-            }
-            .font(.subheadline.weight(.semibold))
-            .monospacedDigit()
-            .lineLimit(1)
-            .minimumScaleFactor(0.7)
-            .layoutPriority(1)
-        }
-        .accessibilityElement(children: .combine)
-    }
-}
-
-/// 一个账户这段时间的每一笔（这个币种的）
-private struct AccountStatsView: View {
-    let total: MonthStats.AccountTotal
-    let from: Date?
-    let to: Date?
-
-    @Environment(LedgerStore.self) private var store
-    @State private var rows: [RecordRow] = []
-
-    var body: some View {
-        List {
-            Section {
-                LabeledContent("进", value: "+" + Fmt.money(total.inflowMinor, total.currency))
-                LabeledContent("出", value: "-" + Fmt.money(total.outflowMinor, total.currency))
-                LabeledContent("笔数", value: "\(total.count) 笔")
-            }
-            Section("每一笔") {
-                ForEach(rows) { row in
-                    NavigationLink {
-                        RecordDetailView(recordID: row.id)
-                    } label: {
-                        RecordRowView(row: row, showAccount: false)
-                    }
-                }
-            }
-        }
-        .navigationTitle(store.account(id: total.accountID)?.displayTitle ?? "已删除的账户")
-        .navigationBarTitleDisplayMode(.inline)
-        .task(id: store.revision) {
-            let filter = RecordFilter(accountID: total.accountID, from: from, to: to)
-            rows = await store.records(filter, after: nil, limit: 200).filter { $0.record.currency == total.currency && $0.record.status == .posted }
         }
     }
 }
@@ -253,11 +301,14 @@ private struct CategoryTotalRow: View {
     }
 }
 
-/// 一个分类这段时间的明细：大类下面的小类，和这段时间记在这个分类上的每一笔
+/// 一个分类这段时间的明细：大类下面的小类，和这段时间记在这个分类上的每一笔。
+/// 金额是 `currency`；每一笔只看这个币种（`onlyCurrency`，全部账户的换算金额不限）、这个账户（`accountID`）
 private struct CategoryStatsView: View {
     let item: MonthStats.CategoryTotal
     let type: EntryType
     let currency: CurrencyCode
+    let onlyCurrency: Bool
+    let accountID: String?
     let from: Date?
     let to: Date?
 
@@ -297,9 +348,10 @@ private struct CategoryStatsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task(id: store.revision) {
             let filter = RecordFilter(
-                from: from, to: to, entryType: type, categoryID: item.categoryID ?? RecordFilter.uncategorized, feed: true, mergeFees: true
+                accountID: accountID, from: from, to: to, entryType: type, categoryID: item.categoryID ?? RecordFilter.uncategorized,
+                feed: true, mergeFees: true
             )
-            rows = await store.records(filter, after: nil, limit: 200).filter { $0.record.currency == currency }
+            rows = await store.records(filter, after: nil, limit: 200).filter { !onlyCurrency || $0.record.currency == currency }
         }
     }
 }

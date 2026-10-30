@@ -21,8 +21,12 @@ struct ExchangeRateGuideView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.glass)
+                    // 导入成功后 App 发通知：离开 App 前先要通知权限
                     Button {
-                        if let url = URL(string: "shortcuts://") { openURL(url) }
+                        Task {
+                            _ = await IngestNotifier.requestAuthorization()
+                            if let url = URL(string: "shortcuts://") { openURL(url) }
+                        }
                     } label: {
                         Label("打开快捷指令", systemImage: "arrow.up.forward.app")
                             .frame(maxWidth: .infinity)

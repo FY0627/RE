@@ -112,6 +112,26 @@ public enum AccountDAO {
         try db.run("UPDATE accounts SET archived = ? WHERE id = ?", [archived, id])
     }
 
+    /// 删除账户和它的流水、银行余额、校准余额，并去掉其他地方指向它的引用。
+    /// 通知本身（指纹）保留，同一条通知再来不会重新记上。账户不存在时返回 false
+    @discardableResult
+    public static func delete(_ db: SQLiteConnection, id: String) throws -> Bool {
+        guard try find(db, id: id) != nil else { return false }
+        for recordID in try db.query("SELECT id FROM records WHERE account_id = ?", [id], { $0.string(0) }) {
+            try RecordDAO.delete(db, id: recordID)
+        }
+        try db.run("DELETE FROM balance_observations WHERE account_id = ?", [id])
+        try db.run("DELETE FROM opening_balances WHERE account_id = ?", [id])
+        try db.run("UPDATE ingests SET bound_account_id = NULL WHERE bound_account_id = ?", [id])
+        // 待处理的候选账户是逗号分隔的列表
+        try db.run(
+            "UPDATE pending_items SET candidate_account_ids = trim(replace(',' || candidate_account_ids || ',', ',' || ? || ',', ','), ',') WHERE instr(',' || candidate_account_ids || ',', ',' || ? || ',') > 0",
+            [id, id]
+        )
+        try db.run("DELETE FROM accounts WHERE id = ?", [id])
+        return true
+    }
+
     /// 设置或清除某个币种的初始余额。账户不存在时返回 false。
     @discardableResult
     public static func setOpeningBalance(_ db: SQLiteConnection, id: String, currency: CurrencyCode, amountMinor: Int64?, at date: Date) throws -> Bool {

@@ -9,6 +9,8 @@ import BKBackend
 /// 标签栏和卡片用同样参数的弹簧同时开始。
 struct AssetsView: View {
     let openAddAccount: () -> Void
+    /// 每次再点一次标签栏的「资产」加 1
+    let reselectCount: Int
 
     @Environment(LedgerStore.self) private var store
     @Environment(ExchangeRateStore.self) private var rates
@@ -45,6 +47,7 @@ struct AssetsView: View {
         // 详情展开时用系统的方式隐藏标签栏（随打开 / 关闭的动画滑出 / 滑入）。
         // 放在资产页里而不是根视图上：打开详情时只有资产页重新计算，其他标签页不受影响
         .toolbarVisibility(isOpen ? .hidden : .visible, for: .tabBar)
+        .onChange(of: reselectCount) { bridge.scrollToTop() }
         .sheet(item: $sheet) { sheet in
             sheetContent(sheet)
         }

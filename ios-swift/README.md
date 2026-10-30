@@ -15,7 +15,7 @@ ios-swift/
 │   ├── Intents/                   App Intent「记录银行动账通知」、AccountEntity、AppShortcuts
 │   ├── UI/                        Shell（系统 TabView）、Home、Assets（卡包与已停用卡包、详情转场、卡片信息、卡面编辑、管理银行卡）、Stats、Profile、Pending
 │   ├── Diagnostics/               单变量性能开关、帧率/内存指标
-│   ├── AppIcon*.icon/             App 图标和跟着 App 外观换的两个备用图标（Icon Composer 格式：分层、Liquid Glass，见下面「App 图标」）
+│   ├── AppIcon*.icon/             App 图标和「我的 › 图标」里选的两个备用图标（Icon Composer 格式：分层、Liquid Glass，见下面「App 图标」）
 │   └── Assets.xcassets
 ├── Packages/BKCore/               纯 Swift 业务核心（无 UI 依赖）
 │   ├── Sources/BKModel/           值类型：账户、流水、金额（整数最小单位）
@@ -78,7 +78,9 @@ docker run --rm -v "<仓库>/ios-swift/Packages/BKCore:/pkg" -w /pkg bk-swift sw
   否则按交易当天的汇率估算（那天没有用记录当天的，再没有用最近的一天；`BKBackend/ChargeCalculator.swift`，[ADR 0013](../docs/decisions/0013-ios-swift-record-editing-and-foreign-charges.md)）。
 - 币种从汇率数据源支持的全部 160 多个币种里选（`UI/Common/CurrencyPicker.swift`，按拼音首字母分组、侧边 A–Z 索引，搜索框在最下面）。
 - 「我的 › 币种与汇率」选择主要币种；有汇率时资产页净资产按主要币种换算合计（`App/ExchangeRateStore.swift`）。
-- 汇率来源：快捷指令自动化「获取 URL 内容」→ App 动作「导入汇率」（`Intents/ImportExchangeRatesIntent.swift`）。
+- 汇率来源：快捷指令自动化「获取 URL 内容」→ App 动作「导入汇率」（`Intents/ImportExchangeRatesIntent.swift`），
+  导入成功后发一条本机通知（没有通知权限就不发；设置说明里点「打开快捷指令」时先要权限）。
+  数据源每天更新一次，在 UTC 0 点刚过（北京时间早上 8 点左右）。
   完整的汇率表原样保存：最新一份在本机缓存，另外按天存进账本（`RateDAO`），以前的日期都保留。
 
 ## 流水
@@ -114,11 +116,12 @@ docker run --rm -v "<仓库>/ios-swift/Packages/BKCore:/pkg" -w /pkg bk-swift sw
   查过的条件记住结果（`HomeView` 的 `cache`，按数据版本作废），来回切换类型不重新查；只换类型时先从已有的结果里挑出这一类显示，
   查回来再换成完整的。只有打字时停一下再查。首页不用系统导航栏，标题和按钮在同一行，和资产页一样；不做下拉刷新。
 - 卡片详情：多币种的卡按币种分开看流水（币种在「交易记录」旁边选），时间段在右上角的胶囊里选；余额在卡片上，校准余额在卡片信息里。
-- 统计（`UI/Stats/StatsView.swift`）：右上角的时间段胶囊选看哪段时间（和卡片详情一样），默认本周（本月的首页上有）；
-  最上面是这段时间的总览：支出、收入、结余，所有币种换算成主要币种（和首页的本月合计一样算，`UI/Common/ConvertedTotalsView.swift`）。
-  下面紧接着用分段控件选「按币种」（每个币种的支出、收入、结余，按分类排，点进去看小类和每一笔）
-  或「按账户」（进出多少，点进去看每一笔）；分段控件上下的空隙用 `listSectionSpacing` 收小。转帐不算收支。
-  标题「统计」和时间段胶囊在同一行，和资产页一样高（`UI/Common/TitleBar.swift`）。
+- 统计（`UI/Stats/StatsView.swift`）：右上角两个胶囊，右边选看哪段时间（和卡片详情一样），默认本周（本月的首页上有）；
+  左边选看哪些数据（记住上次选的）：全部账户、一个账户（包括停用的）或一个币种。三种一个样子：上面是支出、收入、结余
+  （`UI/Common/ConvertedTotalsView.swift`），下面是支出分类、收入分类（点进去看小类和每一笔）。
+  全部账户换算成主要币种（和首页的本月合计一样算，分类也按换算后的金额，`StatsCalculator.converted`）；
+  一个账户、一个币种不换算，账户用了几个币种就分开几组（`LedgerBackend.stats(accountID:)`）。转帐不算收支。
+  标题「统计」和两个胶囊在同一行，和资产页一样高（`UI/Common/TitleBar.swift`，放不下时左边的胶囊截断）。
 - 「我的」的标题行也和资产页一样高，滚动时的磨砂背景和首页一样。选币种页面的列表不跟着键盘变矮（收起键盘时搜索框后面不会露出一块）。
 
 ## 卡片信息与卡面
@@ -137,6 +140,9 @@ docker run --rm -v "<仓库>/ios-swift/Packages/BKCore:/pkg" -w /pkg bk-swift sw
   卡包滚动和详情转场只绘制已解码的位图。换图、移除或取消编辑时删除不再使用的文件。
 - **停用**：卡片信息里，或资产页「更多 › 管理银行卡」里停用（`accounts.archived`）。停用的卡不参与自动记账匹配和净资产，
   流水保留，在资产页最下方以灰色卡包显示，可以点开详情，也可以重新启用。
+- **删除**：只有停用的卡能删除（卡片信息最下面，确认后删除）。这张卡的流水、银行余额、校准余额和卡面图片一起删除，
+  转帐另一边的流水保留、不再算内部转账；通知的指纹保留，同一条通知再来不会重新记上（`AccountDAO.delete`）。
+- 再点一次标签栏的「资产」，卡包滚回顶部：卡包是 UIKit 的滚动区，系统不会替它滚，由 `RootView` 记下再点一次，交给 `WalletController`。
 
 ## App 图标
 
@@ -147,17 +153,17 @@ docker run --rm -v "<仓库>/ios-swift/Packages/BKCore:/pkg" -w /pkg bk-swift sw
   背景色、深色和着色外观的颜色写在 `icon.json` 的 `fill-specializations` 里，高光、阴影、半透明和裁切由系统按 Liquid Glass 画。
 - 三组：最后面是背景上三横三竖的网格线（不做玻璃、没有阴影），中间是小票（纸和分隔线），
   前面是票面元素（¥、标题条、三个分类色块、三条横线、对勾）。`icon.json` 里排在前面的组和图层在上层。
-- 图形和颜色取自设计稿（Apple 蓝单色玻璃 + 高对比网格）的白天、晚上、色调三版。设计稿里小票 88% 不透明，
+- 图形和颜色取自设计稿（Apple 蓝单色玻璃 + 柔和的网格，线宽 5.2）的白天、晚上、色调三版。设计稿里小票 88% 不透明，
   所以小票组的半透明设成 12%，透出一点后面的网格；分隔线在设计稿里以 78% 叠在纸上，这里直接写成混合后的颜色。
   色调版里 ¥ 和对勾、分类块、标题条的灰度不同，所以分成不同图层。
 - 没有 Mac 也能看效果：CI 用 Xcode 自带的 `ictool` 渲染各个外观（见上面「构建」第 6 步）。
 
-### 跟着 App 的外观换图标
+### 自己选图标
 
-系统只能让所有 App 的图标一起变深色。「我的 › 外观」选浅色或深色时，App 用 `setAlternateIconName` 换成备用图标，
-这样可以只让这个 App 的图标变深色（或保持浅色），其他 App 不受影响：
+系统只能让所有 App 的图标一起变深色。「我的 › 图标」和界面的「外观」分开选；选浅色或深色时，App 用 `setAlternateIconName`
+换成备用图标，这样可以只让这个 App 的图标变深色（或保持浅色），其他 App 不受影响：
 
-| App 里的外观 | 桌面图标 |
+| 「我的 › 图标」 | 桌面图标 |
 |---|---|
 | 跟随系统 | `AppIcon`：白天浅色、晚上深色，跟系统一起变 |
 | 浅色 | `AppIconLight`：深色外观也用浅色的颜色 |
@@ -167,7 +173,8 @@ docker run --rm -v "<仓库>/ios-swift/Packages/BKCore:/pkg" -w /pkg bk-swift sw
 - 构建设置 `ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "AppIconLight AppIconDark"` 让 actool 把两个备用图标编进去，
   写进 Info.plist 的 `CFBundleAlternateIcons`（CI 第 6 步检查）。
 - 每次换图标系统都会弹一个「已更改图标」的提示，这是系统行为，去不掉；所以图标已经对了就不再调用。
-  删掉重装后系统会换回主图标，打开 App 时会按当前外观再换一次。
+  跟随系统时系统自己换主图标的深浅，不弹提示。重装后系统可能换回主图标，打开 App 时按选的再换一次；
+  还没选过（从图标跟着外观换的版本升上来）就记下现在的图标，不去动它（`AppearanceMode.applyIcon`）。
 
 ## 安装到 iPhone
 

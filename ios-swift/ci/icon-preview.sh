@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# App 图标（Icon Composer 的 AppIcon.icon，和跟着 App 外观换的备用图标 AppIconLight / AppIconDark）：
+# App 图标（Icon Composer 的 AppIcon.icon，和「我的 › 图标」里选的备用图标 AppIconLight / AppIconDark）：
 # 确认编进了 App，并用 Xcode 自带的 ictool 按各个外观渲染预览。
 # 预览图存进诊断产物；另外把 32×32 的缩略图以 notice 注释输出，不登录也能看出图层顺序和颜色对不对。
 # 只做检查和预览，不影响打包结果（总是返回 0）。
@@ -22,7 +22,7 @@ for alt in AppIconLight AppIconDark; do
   if /usr/libexec/PlistBuddy -c "Print :CFBundleIcons:CFBundleAlternateIcons:$alt" "$APP/Info.plist" > /dev/null 2>&1; then
     echo "OK: Info.plist CFBundleAlternateIcons 有 $alt"
   else
-    echo "::warning title=AppIcon::Info.plist 里没有 CFBundleIcons › CFBundleAlternateIcons › $alt，App 里换外观时桌面图标换不了"
+    echo "::warning title=AppIcon::Info.plist 里没有 CFBundleIcons › CFBundleAlternateIcons › $alt，「我的 › 图标」换不了桌面图标"
   fi
 done
 if [[ -e "$APP/icon.json" ]] || compgen -G "$APP/*.icon" > /dev/null; then

@@ -298,6 +298,37 @@ final class RecordEditTests: XCTestCase {
         } catch BackendError.invalidAccount(.invalidCardNumber) {}
     }
 
+    func testOnlyArchivedAccountCanBeDeletedWithItsRecords() async throws {
+        let backend = try makeBackend()
+        let card = try await addAccount(backend, last4: "0427", opening: 500_00)
+        let other = try await addAccount(backend, last4: "1234")
+        _ = try await backend.ingest(IngestRequest(text: purchase, source: .sms, receivedAt: now))
+        _ = try await backend.addRecord(ManualEntry(type: .transfer, accountID: card.id, toAccountID: other.id, amountMinor: 100_00, currency: .cny, time: now))
+        let otherCount = try await backend.recordCount(accountID: other.id)
+        XCTAssertEqual(otherCount, 1)
+
+        do {
+            try await backend.deleteAccount(id: card.id)
+            XCTFail("使用中的账户要先停用")
+        } catch BackendError.accountNotArchived {}
+
+        try await backend.setArchived(accountID: card.id, archived: true)
+        try await backend.deleteAccount(id: card.id)
+        let accounts = try await backend.accounts(includeArchived: true)
+        XCTAssertEqual(accounts.map(\.id), [other.id])
+        let count = try await backend.recordCount()
+        XCTAssertEqual(count, 1, "这张卡的流水一起删除，另一张卡的转入保留")
+        let peer = try await firstRow(backend, accountID: other.id)
+        XCTAssertNil(peer.record.transferGroupID, "转帐只剩一边，不再算内部转账")
+        let balances = try await backend.balanceSummaries()
+        XCTAssertNil(balances[card.id])
+
+        // 同一条通知再来不会重新记上
+        _ = try await backend.ingest(IngestRequest(text: purchase, source: .sms, receivedAt: now))
+        let after = try await backend.recordCount()
+        XCTAssertEqual(after, 1)
+    }
+
     // MARK: 银行和币种列表
 
     func testBankCatalogFindsBanksByAnyName() {

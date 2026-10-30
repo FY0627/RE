@@ -85,6 +85,8 @@ enum GlassControls {
         config.imagePadding = 4
         config.baseForegroundColor = .label
         config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 14)
+        // 胶囊放不下时截断后面的字
+        config.titleLineBreakMode = .byTruncatingTail
         return config
     }
 

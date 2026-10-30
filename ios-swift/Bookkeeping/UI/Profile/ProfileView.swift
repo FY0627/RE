@@ -9,6 +9,7 @@ struct ProfileView: View {
     @Environment(LedgerStore.self) private var store
     @Environment(ExchangeRateStore.self) private var rates
     @AppStorage("appearance") private var appearance = AppearanceMode.system.rawValue
+    @AppStorage(AppearanceMode.iconKey) private var appIcon = AppearanceMode.system.rawValue
     @AppStorage(ExchangeRateStore.primaryKey) private var primaryCurrency = CurrencyCode.cny.rawValue
     @AppStorage(IngestNotifier.modeKey) private var notifyMode = IngestNotifier.Mode.off.rawValue
     @State private var retention = 30
@@ -37,8 +38,12 @@ struct ProfileView: View {
                     } label: {
                         Label("外观", systemImage: "circle.lefthalf.filled")
                     }
-                } footer: {
-                    Text("选浅色或深色时，桌面图标也一起换，不跟着系统变。")
+                    Picker(selection: $appIcon) {
+                        ForEach(AppearanceMode.allCases) { Text($0.title).tag($0.rawValue) }
+                    } label: {
+                        Label("图标", systemImage: "app")
+                    }
+                    .onChange(of: appIcon) { AppearanceMode.applyIcon() }
                 }
 
                 Section {

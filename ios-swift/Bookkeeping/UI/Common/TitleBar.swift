@@ -39,8 +39,8 @@ extension View {
     }
 }
 
-/// 页面顶部一行：左边大标题，右边可以有一个玻璃胶囊下拉按钮（写着当前选的，点开是菜单）。
-/// 和首页、资产页的标题行一样高、一样的字号。统计页用它选时间段（和卡片详情的时间段胶囊一样）；「我的」只有标题。
+/// 页面顶部一行：左边大标题，右边可以有几个玻璃胶囊下拉按钮（写着当前选的，点开是菜单）。
+/// 和首页、资产页的标题行一样高、一样的字号。统计页用它选看哪些数据和时间段（时间段和卡片详情的时间段胶囊一样）；「我的」只有标题。
 struct TitleBar: UIViewRepresentable {
     struct Menu {
         /// 胶囊上写的字，例如「本月」
@@ -50,16 +50,17 @@ struct TitleBar: UIViewRepresentable {
     }
 
     let title: String
-    var menu: Menu?
+    /// 从左到右
+    var menus: [Menu] = []
 
     func makeUIView(context: Context) -> TitleBarView {
-        TitleBarView(title: title, hasMenu: menu != nil)
+        TitleBarView(title: title, menuCount: menus.count)
     }
 
     func updateUIView(_ view: TitleBarView, context: Context) {
-        guard let menu else { return }
-        view.menuItems = menu.items
-        view.setMenuTitle(menu.title)
+        for (index, menu) in menus.enumerated() {
+            view.setMenu(index, title: menu.title, items: menu.items)
+        }
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: TitleBarView, context: Context) -> CGSize? {
@@ -69,16 +70,18 @@ struct TitleBar: UIViewRepresentable {
 
 @MainActor
 final class TitleBarView: UIView {
-    var menuItems: @MainActor () -> [UIMenuElement] = { [] }
-
     private let titleLabel = UILabel()
     private let container = GlassControls.container()
-    private let capsule = GlassControls.capsule(GlassControls.glass())
-    private let menuButton: UIButton?
-    private var menuTitle = ""
+    private let capsules: [UIVisualEffectView]
+    private let menuButtons: [UIButton]
+    private var menuTitles: [String]
+    private var menuItems: [@MainActor () -> [UIMenuElement]]
 
-    init(title: String, hasMenu: Bool) {
-        menuButton = hasMenu ? UIButton(configuration: GlassControls.pillConfiguration("")) : nil
+    init(title: String, menuCount: Int) {
+        capsules = (0..<menuCount).map { _ in GlassControls.capsule(GlassControls.glass()) }
+        menuButtons = (0..<menuCount).map { _ in UIButton(configuration: GlassControls.pillConfiguration("")) }
+        menuTitles = Array(repeating: "", count: menuCount)
+        menuItems = Array(repeating: { [] }, count: menuCount)
         super.init(frame: .zero)
         let metrics = UIFontMetrics(forTextStyle: .largeTitle)
         titleLabel.font = metrics.scaledFont(for: UIFont.systemFont(ofSize: 34, weight: .bold))
@@ -90,29 +93,32 @@ final class TitleBarView: UIView {
 
         container.frame = bounds
         container.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        container.isHidden = menuButton == nil
+        container.isHidden = menuCount == 0
         addSubview(container)
-        container.contentView.addSubview(capsule)
-        if let menuButton {
-            menuButton.showsMenuAsPrimaryAction = true
-            menuButton.menu = GlassControls.deferredMenu { [weak self] in self?.menuItems() ?? [] }
-            capsule.contentView.addSubview(menuButton)
+        for (index, (capsule, button)) in zip(capsules, menuButtons).enumerated() {
+            container.contentView.addSubview(capsule)
+            button.showsMenuAsPrimaryAction = true
+            button.menu = GlassControls.deferredMenu { [weak self] in self?.menuItems[index]() ?? [] }
+            capsule.contentView.addSubview(button)
         }
-        accessibilityElements = [titleLabel as UIView] + (menuButton.map { [$0 as UIView] } ?? [])
+        accessibilityElements = [titleLabel as UIView] + (menuButtons as [UIView])
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    /// 胶囊上写的字；宽度跟着变（玻璃胶囊伸缩）
-    func setMenuTitle(_ title: String) {
-        guard let menuButton, title != menuTitle else { return }
-        let first = menuTitle.isEmpty
-        menuTitle = title
+    /// 胶囊上写的字和菜单；宽度跟着字变（玻璃胶囊伸缩）
+    func setMenu(_ index: Int, title: String, items: @escaping @MainActor () -> [UIMenuElement]) {
+        guard menuButtons.indices.contains(index) else { return }
+        menuItems[index] = items
+        guard title != menuTitles[index] else { return }
+        let first = menuTitles[index].isEmpty
+        menuTitles[index] = title
+        let button = menuButtons[index]
         UIView.performWithoutAnimation {
-            menuButton.configuration = GlassControls.pillConfiguration(title)
-            menuButton.layoutIfNeeded()
+            button.configuration = GlassControls.pillConfiguration(title)
+            button.layoutIfNeeded()
         }
         setNeedsLayout()
         if !first, window != nil {
@@ -123,19 +129,25 @@ final class TitleBarView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         let size = GlassControls.size
-        var trailing: CGFloat = 0
-        if let menuButton {
-            let width = GlassControls.pillWidth(menuButton)
-            GlassControls.place(capsule, CGRect(x: bounds.width - width, y: 0, width: width, height: size))
-            menuButton.frame = CGRect(x: 0, y: 0, width: width, height: size)
-            trailing = width + GlassControls.gap
+        var widths = menuButtons.map { GlassControls.pillWidth($0) }
+        // 放不下时缩最左边的胶囊（字截断），标题完整显示
+        let room = bounds.width - 4 - titleLabel.intrinsicContentSize.width - CGFloat(widths.count) * GlassControls.gap
+        if let first = widths.indices.first, widths.reduce(0, +) > room {
+            widths[first] = max(size * 2, room - widths.dropFirst().reduce(0, +))
         }
-        titleLabel.frame = CGRect(x: 4, y: 0, width: max(0, bounds.width - trailing - 4), height: size)
+        var x = bounds.width
+        for index in menuButtons.indices.reversed() {
+            x -= widths[index]
+            GlassControls.place(capsules[index], CGRect(x: x, y: 0, width: widths[index], height: size))
+            menuButtons[index].frame = CGRect(x: 0, y: 0, width: widths[index], height: size)
+            x -= GlassControls.gap
+        }
+        titleLabel.frame = CGRect(x: 4, y: 0, width: max(0, x - 4), height: size)
     }
 
     /// 只有玻璃接收触摸，标题和空白处不挡住下面的列表
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         guard let hit = super.hitTest(point, with: event) else { return nil }
-        return hit.isDescendant(of: capsule) ? hit : nil
+        return capsules.contains { hit.isDescendant(of: $0) } ? hit : nil
     }
 }
