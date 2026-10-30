@@ -39,9 +39,10 @@ extension RecordRow {
         return MoneyFormat.signed(minor, currency: r.currency, direction: r.direction)
     }
 
-    func amountColor(inAccount: Bool) -> Color {
-        if isPairedTransfer, !inAccount { return .secondary }
-        return record.direction == .inflow ? AppTheme.income : .primary
+    /// 进账（收入、退款、转入）用主题色
+    func amountColor(inAccount: Bool) -> AnyShapeStyle {
+        if isPairedTransfer, !inAccount { return AnyShapeStyle(Color.secondary) }
+        return record.direction == .inflow ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.primary)
     }
 
     /// 「招商银行 ·0427 → 工商银行 ·6621」

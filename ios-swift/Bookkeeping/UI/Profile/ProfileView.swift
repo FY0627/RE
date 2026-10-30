@@ -48,29 +48,25 @@ private struct ProfileList: View {
         NavigationStack(path: $path) {
             Form {
                 Section("显示") {
+                    // 菜单按钮右边的文字（选中的项）换了主题色不会马上重画，按主题色重建这一行
                     Picker(selection: $appearance) {
                         ForEach(AppearanceMode.allCases) { Text($0.title).tag($0.rawValue) }
                     } label: {
                         Label("外观", systemImage: "circle.lefthalf.filled")
                     }
+                    .id("appearance-\(themeColor)")
                     Picker(selection: $appIcon) {
                         ForEach(AppearanceMode.allCases) { Text($0.title).tag($0.rawValue) }
                     } label: {
                         Label("图标", systemImage: "app")
                     }
+                    .id("icon-\(themeColor)")
                     .onChange(of: appIcon) { AppearanceMode.applyIcon() }
-                    Picker(selection: $themeColor) {
-                        ForEach(ThemeColor.allCases) { theme in
-                            Label {
-                                Text(theme.title)
-                            } icon: {
-                                Image(systemName: "circle.fill").foregroundStyle(theme.color)
-                            }
-                            .tag(theme.rawValue)
-                        }
-                    } label: {
+                    VStack(alignment: .leading, spacing: 12) {
                         Label("主题色", systemImage: "paintpalette")
+                        ThemeColorGrid(selection: $themeColor)
                     }
+                    .padding(.vertical, 4)
                 }
 
                 Section("币种与汇率") {
@@ -113,12 +109,13 @@ private struct ProfileList: View {
                     } label: {
                         Label("记账结果", systemImage: "bell.badge")
                     }
+                    .id("notify-\(themeColor)")
                     .onChange(of: notifyMode) { _, mode in
                         guard mode != IngestNotifier.Mode.off.rawValue else { return }
                         askPermission { notifyMode = IngestNotifier.Mode.off.rawValue }
                     }
                     Toggle(isOn: $notifyRates) {
-                        Label("导入汇率", systemImage: "arrow.left.arrow.right.circle")
+                        Label("导入汇率通知", systemImage: "arrow.left.arrow.right.circle")
                     }
                     .onChange(of: notifyRates) { _, on in
                         guard on else { return }
@@ -134,6 +131,7 @@ private struct ProfileList: View {
                     } label: {
                         Label("原始通知保留", systemImage: "clock.arrow.circlepath")
                     }
+                    .id("retention-\(themeColor)")
                 }
 
                 Section("开发与调试") {
@@ -211,6 +209,59 @@ private struct ProfileList: View {
         Binding { [CurrencyCode(primaryCurrency)] } set: { codes in
             if let code = codes.first { primaryCurrency = code.rawValue }
         }
+    }
+}
+
+/// 选主题色：和记账选分类一样排成格子，每块是它自己的颜色（不跟着主题色），选中的打勾
+private struct ThemeColorGrid: View {
+    @Binding var selection: String
+
+    private static let columns = 6
+
+    var body: some View {
+        let themes = ThemeColor.allCases
+        let lines = stride(from: 0, to: themes.count, by: Self.columns).map { Array(themes[$0..<min($0 + Self.columns, themes.count)]) }
+        VStack(spacing: 12) {
+            ForEach(lines.indices, id: \.self) { index in
+                HStack(alignment: .top, spacing: 6) {
+                    ForEach(lines[index]) { swatch($0) }
+                }
+            }
+        }
+    }
+
+    private func swatch(_ theme: ThemeColor) -> some View {
+        let isSelected = selection == theme.rawValue
+        return Button {
+            selection = theme.rawValue
+            // UIKit 做的部分马上换，不等下一次刷新
+            ThemeColor.applyToWindows()
+        } label: {
+            VStack(spacing: 6) {
+                Circle()
+                    .fill(theme.color)
+                    .frame(width: 36, height: 36)
+                    .overlay {
+                        Image(systemName: "checkmark")
+                            .font(.footnote.weight(.bold))
+                            .foregroundStyle(Color.white)
+                            .opacity(isSelected ? 1 : 0)
+                    }
+                    .padding(3)
+                    .overlay(Circle().stroke(theme.color, lineWidth: isSelected ? 2 : 0))
+                Text(theme.title)
+                    .font(.caption)
+                    .foregroundStyle(Color.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+            .animation(.snappy(duration: 0.2), value: isSelected)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(theme.title)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 }
 

@@ -74,7 +74,6 @@ enum AppTheme {
     static let darkLine = Color(hex: 0x272729)
     static let lightIndicator = Color.black.opacity(0.08)
     static let darkIndicator = Color.white.opacity(0.16)
-    static let income = Color(hex: 0x34C759)
     static let debt = Color(hex: 0xE54D2E)
 }
 

@@ -4,7 +4,8 @@ import BKBackend
 import BKModel
 
 /// 识别模板的编辑页（和记一笔一样是弹出的表单）：新添加、改已有的、或用一条待处理的通知做。
-/// 原文可以粘贴或手动改；在原文里选中金额（必选）、尾号、对方，选好交易性质，保存。
+/// 原文可以粘贴或手动改；在原文里选中金额（必选）、尾号、对方，和记账一样选支出 / 收入 / 转帐，保存。
+/// 交易性质按选的类型换（`MessageTemplate.fields`），原来的性质还在同一类里就保留，例如手续费、工资、还款。
 ///
 /// 模板只保存在这台 iPhone；保存的是写法，选中的内容和原文里的其他数字都不保存。
 /// 改已有的模板时没有原文，用 `MessageTemplates.sample` 还原成一条示例（金额 100.00、尾号 1234、其他数字 0）。
@@ -27,8 +28,11 @@ struct TemplateEditorView: View {
     @State private var amount: NSRange?
     @State private var cardTail: NSRange?
     @State private var counterparty: NSRange?
-    @State private var kind: TransactionKind = .purchase
-    @State private var direction: FlowDirection = .outflow
+    @State private var type: EntryType = .expense
+    @State private var refund = false
+    @State private var transferDirection: FlowDirection = .outflow
+    /// 原来的交易性质（改已有的模板、用通知猜的）
+    @State private var originalKind: TransactionKind?
     @State private var name = ""
     @State private var errorText: String?
     @State private var saving = false
@@ -62,15 +66,20 @@ struct TemplateEditorView: View {
                     TextField("模板名称", text: $name)
                 }
 
-                Section("交易") {
-                    Picker("性质", selection: $kind) {
-                        ForEach(TransactionKind.allCases, id: \.self) { Text($0.displayName).tag($0) }
-                    }
-                    Picker("方向", selection: $direction) {
-                        Text("流出").tag(FlowDirection.outflow)
-                        Text("流入").tag(FlowDirection.inflow)
+                Section {
+                    Picker("类型", selection: $type) {
+                        ForEach(EntryType.allCases, id: \.self) { Text($0.displayName).tag($0) }
                     }
                     .pickerStyle(.segmented)
+                    if type == .expense {
+                        Toggle("退款（从支出里减掉）", isOn: $refund)
+                    }
+                    if type == .transfer {
+                        Picker("这张卡", selection: $transferDirection) {
+                            Text("转出").tag(FlowDirection.outflow)
+                            Text("转入").tag(FlowDirection.inflow)
+                        }
+                    }
                 }
 
                 Section("通知原文") {
@@ -137,9 +146,6 @@ struct TemplateEditorView: View {
                 }
             }
             .onAppear(perform: setup)
-            .onChange(of: kind) { _, kind in
-                if let preferred = Self.defaultDirection(kind) { direction = preferred }
-            }
             .alert("已保存", isPresented: Binding(get: { savedCount != nil }, set: { if !$0 { savedCount = nil } })) {
                 Button("好") { dismiss() }
             } message: {
@@ -177,6 +183,19 @@ struct TemplateEditorView: View {
         return result
     }
 
+    /// 选的类型对应的交易性质和方向
+    private var fields: (kind: TransactionKind, direction: FlowDirection) {
+        MessageTemplate.fields(type: type, refund: refund, transferDirection: transferDirection, keeping: originalKind)
+    }
+
+    private func show(kind: TransactionKind?, direction: FlowDirection) {
+        let entry = MessageTemplate.entry(kind: kind ?? .other, direction: direction)
+        type = entry.type
+        refund = entry.refund
+        transferDirection = direction
+        originalKind = kind
+    }
+
     private var built: Result<[TemplatePiece], MessageTemplates.BuildError>? {
         guard let amount else { return nil }
         return MessageTemplates.build(sample: sample, amount: amount, cardTail: cardTail, counterparty: counterparty)
@@ -210,14 +229,13 @@ struct TemplateEditorView: View {
             amount = restored.amount
             cardTail = restored.cardTail
             counterparty = restored.counterparty
-            kind = template.kind
-            direction = template.direction
+            show(kind: template.kind, direction: template.direction)
             name = template.name
         case .pending(let item):
             sample = MessageParser.cleaned(item.rawText ?? "", source: item.source)
             if let draft = item.draft { guess(draft) }
             let bank = item.draft?.bankHint.flatMap { BankDirectory.profile(id: $0)?.name }
-            name = [bank, kind.displayName + "通知"].compactMap { $0 }.joined(separator: " ")
+            name = [bank, fields.kind.displayName + "通知"].compactMap { $0 }.joined(separator: " ")
         }
     }
 
@@ -238,12 +256,12 @@ struct TemplateEditorView: View {
         if let draft = parsed.events.first?.draft { guess(draft) }
     }
 
-    /// 用通用读法对这条通知的猜测预先填好：金额位置、性质、方向
+    /// 用通用读法对这条通知的猜测预先填好：金额位置、支出 / 收入 / 转帐
     private func guess(_ draft: EventDraft) {
         let found = NSString(string: sample).range(of: draft.amount.digits)
         if found.location != NSNotFound { amount = found }
-        if draft.kind != .other { kind = draft.kind }
-        if let preferred = draft.direction ?? Self.defaultDirection(draft.kind) { direction = preferred }
+        let kind = draft.kind == .other ? nil : draft.kind
+        show(kind: kind, direction: draft.direction ?? Self.defaultDirection(draft.kind) ?? transferDirection)
     }
 
     private func save() async {
@@ -252,6 +270,7 @@ struct TemplateEditorView: View {
             return
         }
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let (kind, direction) = fields
         let template = MessageTemplate(
             id: existing?.id ?? UUID().uuidString, name: trimmedName.isEmpty ? kind.displayName + "通知" : trimmedName,
             pieces: pieces, kind: kind, direction: direction, createdAt: existing?.createdAt ?? Date()
@@ -280,8 +299,8 @@ struct TemplateEditorView: View {
         }
     }
 
-    /// 性质决定方向时直接选好；还款、其他由用户选
-    static func defaultDirection(_ kind: TransactionKind) -> FlowDirection? {
+    /// 通知没写明方向时按性质猜；还款、其他猜不出
+    private static func defaultDirection(_ kind: TransactionKind) -> FlowDirection? {
         switch kind {
         case .purchase, .transferOut, .interestCharge, .fee, .withdrawal: .outflow
         case .income, .salary, .transferIn, .refund, .deposit, .interestIncome, .reversal: .inflow

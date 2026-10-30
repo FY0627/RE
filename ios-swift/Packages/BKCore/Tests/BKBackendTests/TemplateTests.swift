@@ -97,6 +97,37 @@ final class TemplateTests: XCTestCase {
         XCTAssertEqual(saved.first?.createdAt, t.createdAt)
     }
 
+    /// 编辑页只分支出 / 收入 / 转帐：原来的性质不换类就保留，换了类按新的一类
+    func testEntryTypeKeepsTheOriginalKind() {
+        let kept: [(TransactionKind, FlowDirection)] = [
+            (.purchase, .outflow), (.fee, .outflow), (.interestCharge, .outflow), (.refund, .inflow), (.reversal, .inflow),
+            (.income, .inflow), (.salary, .inflow), (.interestIncome, .inflow),
+            (.transferOut, .outflow), (.transferIn, .inflow), (.repayment, .inflow), (.repayment, .outflow),
+            (.deposit, .inflow), (.withdrawal, .outflow),
+        ]
+        for (kind, direction) in kept {
+            let entry = MessageTemplate.entry(kind: kind, direction: direction)
+            let fields = MessageTemplate.fields(type: entry.type, refund: entry.refund, transferDirection: direction, keeping: kind)
+            XCTAssertEqual(fields.kind, kind, "\(kind) \(direction)")
+            XCTAssertEqual(fields.direction, direction, "\(kind) \(direction)")
+        }
+
+        XCTAssertEqual(MessageTemplate.entry(kind: .transferOut, direction: .outflow).type, .transfer)
+        XCTAssertEqual(MessageTemplate.entry(kind: .other, direction: .inflow).type, .income)
+        XCTAssertTrue(MessageTemplate.entry(kind: .refund, direction: .inflow).refund)
+
+        let toIncome = MessageTemplate.fields(type: .income, refund: false, transferDirection: .outflow, keeping: .purchase)
+        XCTAssertEqual(toIncome.kind, .income)
+        XCTAssertEqual(toIncome.direction, .inflow)
+        let toRefund = MessageTemplate.fields(type: .expense, refund: true, transferDirection: .outflow, keeping: .purchase)
+        XCTAssertEqual(toRefund.kind, .refund)
+        XCTAssertEqual(toRefund.direction, .inflow)
+        let transferIn = MessageTemplate.fields(type: .transfer, refund: false, transferDirection: .inflow, keeping: .withdrawal)
+        XCTAssertEqual(transferIn.kind, .transferIn)
+        let expense = MessageTemplate.fields(type: .expense, refund: false, transferDirection: .outflow, keeping: .other)
+        XCTAssertEqual(expense.kind, .purchase)
+    }
+
     func testTooFewWordsIsRejected() {
         let sample = "HKD 527.28"
         XCTAssertEqual(MessageTemplates.build(sample: sample, amount: range(of: "527.28", in: sample), cardTail: nil, counterparty: nil), .failure(.tooGeneric))

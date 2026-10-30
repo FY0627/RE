@@ -44,3 +44,40 @@ public enum TemplatePiece: Hashable, Sendable, Codable {
         }
     }
 }
+
+extension MessageTemplate {
+    /// 编辑页和记账一样只选支出 / 收入 / 转帐：支出可以是退款，转帐再选这张卡是转出还是转入。
+    /// 交易性质和方向由这几样推出来；原来的性质（改已有的模板、用通知猜的）还在同一类里就保留，例如手续费、工资、还款
+    public static func fields(
+        type: EntryType, refund: Bool, transferDirection: FlowDirection, keeping kind: TransactionKind?
+    ) -> (kind: TransactionKind, direction: FlowDirection) {
+        func keep(_ allowed: Set<TransactionKind>, or fallback: TransactionKind) -> TransactionKind {
+            if let kind, allowed.contains(kind) { return kind }
+            return fallback
+        }
+        switch type {
+        case .expense where refund:
+            return (keep([.refund, .reversal], or: .refund), .inflow)
+        case .expense:
+            return (keep([.purchase, .fee, .interestCharge], or: .purchase), .outflow)
+        case .income:
+            return (keep([.income, .salary, .interestIncome], or: .income), .inflow)
+        case .transfer:
+            switch (kind, transferDirection) {
+            case (.repayment?, _), (.deposit?, .inflow), (.withdrawal?, .outflow):
+                return (kind!, transferDirection)
+            default:
+                return (transferDirection == .outflow ? .transferOut : .transferIn, transferDirection)
+            }
+        }
+    }
+
+    /// 反过来：这个性质和方向在编辑页上是哪一类（转出、转入也算转帐）
+    public static func entry(kind: TransactionKind, direction: FlowDirection) -> (type: EntryType, refund: Bool) {
+        switch kind {
+        case .transferIn, .transferOut, .repayment, .deposit, .withdrawal: (.transfer, false)
+        case .refund where direction == .inflow, .reversal where direction == .inflow: (.expense, true)
+        default: direction == .outflow ? (.expense, false) : (.income, false)
+        }
+    }
+}
