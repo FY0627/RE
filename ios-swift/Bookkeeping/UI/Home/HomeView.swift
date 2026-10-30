@@ -243,11 +243,7 @@ struct HomeView: View {
     }
 
     private var emptyState: some View {
-        ContentUnavailableView {
-            Label("还没有流水", systemImage: "list.bullet.rectangle")
-        } description: {
-            Text("设置自动记账后，银行卡的流水会出现在这里；现金、电子钱包点右上角的「+」记一笔。")
-        }
+        ContentUnavailableView("还没有流水", systemImage: "list.bullet.rectangle")
     }
 
     struct DayGroup {
