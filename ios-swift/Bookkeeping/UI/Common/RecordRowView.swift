@@ -64,9 +64,7 @@ struct RecordRowView: View {
         var parts = [timeOnly ? Fmt.recordClock(r) : Fmt.recordTime(r)]
         if row.title != row.category?.name || row.category == nil { parts.append(row.categoryText) }
         if inAccount {
-            if let peer = row.peer, row.entryType == .transfer {
-                parts.append(r.direction == .outflow ? "转到 \(peer.text)" : "来自 \(peer.text)")
-            }
+            if let side = row.transferSideText { parts.append(side) }
         } else if let order = row.orderText {
             parts.append(order)
         } else if let route = row.transferRoute {
@@ -125,6 +123,7 @@ struct RecordDetailView: View {
     @State private var editing = false
     @State private var deleted = false
     @State private var merging = false
+    @State private var splitting = false
     @State private var note = ""
     @FocusState private var noteFocused: Bool
 
@@ -151,6 +150,9 @@ struct RecordDetailView: View {
         }
         .sheet(isPresented: $merging, onDismiss: { Task { await reload() } }) {
             if let detail { OrderMergeView(row: detail.row) }
+        }
+        .sheet(isPresented: $splitting, onDismiss: { Task { await reload() } }) {
+            if let detail { OrderSplitView(detail: detail) }
         }
         .onChange(of: noteFocused) { _, focused in
             if !focused { Task { await saveNote() } }
@@ -202,6 +204,13 @@ struct RecordDetailView: View {
                 } else {
                     LabeledContent("账户", value: row.account.text)
                 }
+                // 到账和转出不一样（手续费、换汇）时写出另一边
+                if let other = row.peerMoney, other != r.money {
+                    LabeledContent(r.direction == .outflow ? "到账" : "转出", value: Fmt.money(other.minorUnits, other.currency))
+                }
+                if let fee = row.transferFeeMinor {
+                    LabeledContent("手续费", value: Fmt.money(fee, r.currency))
+                }
                 LabeledContent("时间", value: Fmt.dateTime(r.effectiveAt))
                 if let counterparty = r.counterparty {
                     LabeledContent("交易对方", value: counterparty)
@@ -230,7 +239,7 @@ struct RecordDetailView: View {
                 Section {
                     LabeledContent("整单", value: Fmt.money(row.record.amountMinor + detail.orderMembers.map(\.record.amountMinor).reduce(0, +), r.currency))
                     ForEach(detail.orderMembers) { member in link(member) }
-                    Button { Task { await splitOrder() } } label: { ActionLabel(title: "拆开") }
+                    Button { splitting = true } label: { ActionLabel(title: "拆开") }
                 } header: {
                     Text("同一单")
                 }
@@ -330,15 +339,6 @@ struct RecordDetailView: View {
         }
     }
 
-    private func splitOrder() async {
-        do {
-            try await store.splitOrder(recordID: recordID)
-            await reload()
-        } catch {
-            saveError = "拆开失败：\(error.localizedDescription)"
-        }
-    }
-
     private func delete() async {
         do {
             try await store.deleteRecord(id: recordID)
@@ -361,6 +361,88 @@ struct ActionLabel: View {
     }
 }
 
+/// 选几笔时的一行：左边圆圈，选中打勾
+private struct OrderPickRow: View {
+    let row: RecordRow
+    let chosen: Bool
+    var hint: String?
+    let toggle: () -> Void
+
+    var body: some View {
+        Button(action: toggle) {
+            HStack(spacing: 10) {
+                Image(systemName: chosen ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(chosen ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.secondary))
+                VStack(alignment: .leading, spacing: 4) {
+                    RecordRowView(row: row)
+                    if let hint {
+                        Text(hint).font(.caption.weight(.semibold)).foregroundStyle(.tint)
+                    }
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// 拆开合成的一单：选要拆出去的几笔，没选的还是一单，只剩一笔时就不再是一单
+struct OrderSplitView: View {
+    let detail: RecordDetail
+    @Environment(LedgerStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    @State private var chosen: Set<String> = []
+    @State private var errorText: String?
+
+    /// 这一单的每一笔：写它自己的金额和账户，不写整单
+    private var parts: [RecordRow] {
+        ([detail.row] + detail.orderMembers).map { row in
+            var single = row
+            single.orderParts = []
+            return single
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(parts) { part in
+                        OrderPickRow(row: part, chosen: chosen.contains(part.id)) {
+                            if chosen.contains(part.id) { chosen.remove(part.id) } else { chosen.insert(part.id) }
+                        }
+                    }
+                } header: {
+                    Text("选要拆出去的几笔")
+                } footer: {
+                    Text("拆出去的单独显示，分类保留。没选的还是一单，只剩一笔时就不再是一单了。")
+                }
+                if let errorText {
+                    Section { Text(errorText).foregroundStyle(.red) }
+                }
+            }
+            .navigationTitle("拆开")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消", systemImage: "xmark") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("拆开", systemImage: "checkmark") { Task { await split() } }
+                        .disabled(chosen.isEmpty)
+                }
+            }
+        }
+    }
+
+    private func split() async {
+        do {
+            try await store.splitOrder(recordIDs: Array(chosen))
+            dismiss()
+        } catch {
+            errorText = "拆开失败：\(error.localizedDescription)"
+        }
+    }
+}
+
 /// 一单用了几张卡：选同一单的其他几笔，合成一单。离得近、别的卡付的标上「可能是同一单」，只是提示，不自动合并
 struct OrderMergeView: View {
     let row: RecordRow
@@ -380,20 +462,10 @@ struct OrderMergeView: View {
                         Text("前后一天里没有可以合并的记录").foregroundStyle(.secondary)
                     }
                     ForEach(candidates) { candidate in
-                        Button { toggle(candidate.id) } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: chosen.contains(candidate.id) ? "checkmark.circle.fill" : "circle")
-                                    .font(.title3)
-                                    .foregroundStyle(chosen.contains(candidate.id) ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.secondary))
-                                VStack(alignment: .leading, spacing: 4) {
-                                    RecordRowView(row: candidate)
-                                    if LedgerBackend.likelySameOrder(row.record, candidate.record) {
-                                        Text("可能是同一单").font(.caption.weight(.semibold)).foregroundStyle(.tint)
-                                    }
-                                }
-                            }
-                        }
-                        .buttonStyle(.plain)
+                        OrderPickRow(
+                            row: candidate, chosen: chosen.contains(candidate.id),
+                            hint: LedgerBackend.likelySameOrder(row.record, candidate.record) ? "可能是同一单" : nil
+                        ) { toggle(candidate.id) }
                     }
                 }
                 if let errorText {

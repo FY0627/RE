@@ -150,7 +150,7 @@ private struct ProfileList: View {
                 }
 
                 Section("关于") {
-                    LabeledContent("日常记账", value: "iOS 原生 Swift 版")
+                    LabeledContent("REC", value: "iOS 原生 Swift 版")
                     LabeledContent("版本", value: BuildInfo.summary)
                         .font(.subheadline.monospaced())
                     LabeledContent("汇率", value: rateStatus)
@@ -168,7 +168,7 @@ private struct ProfileList: View {
                 }
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("在系统设置里允许日常记账发送通知。")
+                Text("在系统设置里允许 REC 发送通知。")
             }
             .trackingScrollUnderTopBar($scrolledUnderBar)
             .navigationTitle("我的")
@@ -179,14 +179,15 @@ private struct ProfileList: View {
                 ToolbarItem(placement: .principal) { Color.clear.frame(width: 1, height: 1) }
                     .sharedBackgroundVisibility(.hidden)
             }
-            // 系统的大标题比资产页的标题行低，自己放一行。它排在导航栏下面，往上提回状态栏下面（高度不写死，系统版本不同高度不同）
+            // 系统的大标题比资产页的标题行低，自己放一行。它排在导航栏下面，往上提回状态栏下面（高度不写死，系统版本不同高度不同）。
+            // 底部比首页少 8pt：这里的第一个白框比首页低 8pt（真机上量的），这样四个标签页的第一个白框一样高
             .safeAreaBar(edge: .top) {
                 TitleBar(title: "我的")
                     .frame(height: GlassControls.size)
                     .padding(.horizontal, AppLayout.cardInset)
                     .padding(.top, 2 - (pageSafeTop - stackSafeTop))
-                    .padding(.bottom, 6)
-                    .background { TopBarBackdrop(visible: scrolledUnderBar) }
+                    .padding(.bottom, -2)
+                    .background { TopBarBackdrop(visible: scrolledUnderBar).padding(.bottom, -8) }
             }
             .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.top } action: { pageSafeTop = $0 }
             .navigationDestination(for: ProfileRoute.self) { destination($0) }

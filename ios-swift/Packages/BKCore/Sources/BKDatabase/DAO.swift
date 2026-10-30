@@ -168,19 +168,20 @@ public enum RecordDAO {
     r.received_at, r.processed_at, r.source, r.ingest_id, r.part_index, r.bank_reference, r.balance_after_minor, r.included_fee_minor, \
     r.note, r.transfer_group, r.related_record_id, r.transfer_party, r.settlement_minor, r.settlement_currency, r.category_id, r.order_group
     """
-    /// 列表行：记录 + 账户 + 分类 + 配对转帐另一边的账户 + 合并显示的手续费和退款
+    /// 列表行：记录 + 账户 + 分类 + 配对转帐另一边的账户和金额 + 合并显示的手续费和退款
     static let rowColumns = columns + """
     , a.name, a.bank_name, a.last4, a.palette_id, a.currency, a.extra_currencies, a.card_type, \
     c.id, c.name, c.symbol, cp.name, pa.name, pa.bank_name, pa.last4, pa.card_type, \
     (SELECT f.amount_minor FROM records f WHERE r.part_index % 2 = 0 AND f.ingest_id = r.ingest_id AND f.part_index = r.part_index + 1 AND f.kind = 'fee' LIMIT 1), \
     (SELECT SUM(x.amount_minor) FROM records x WHERE x.related_record_id = r.id AND x.status = 'posted'), \
-    a.deleted_at IS NOT NULL, pa.deleted_at IS NOT NULL
+    a.deleted_at IS NOT NULL, pa.deleted_at IS NOT NULL, pr.amount_minor, pr.currency
     """
     static let rowFrom = """
     FROM records r JOIN accounts a ON a.id = r.account_id
     LEFT JOIN categories c ON c.id = r.category_id
     LEFT JOIN categories cp ON cp.id = c.parent_id
-    LEFT JOIN accounts pa ON pa.id = (SELECT p.account_id FROM records p WHERE p.transfer_group = r.transfer_group AND p.id <> r.id LIMIT 1)
+    LEFT JOIN records pr ON pr.id = (SELECT p.id FROM records p WHERE p.transfer_group = r.transfer_group AND p.id <> r.id LIMIT 1)
+    LEFT JOIN accounts pa ON pa.id = pr.account_id
     """
 
     /// 支出、收入还是转帐，和 `LedgerRecord.entryType` 的规则一致
@@ -220,6 +221,7 @@ public enum RecordDAO {
             record: map(row), accountName: row.string(26), bankName: row.string(27), last4: row.string(28), paletteID: row.string(29),
             accountCurrencies: currencies, cardType: CardType(rawValue: row.string(32)) ?? .other, accountDeleted: row.bool(43),
             category: category, peer: peer,
+            peerMoney: row.optionalInt(45).flatMap { minor in row.optionalString(46).map { Money(minorUnits: minor, currency: CurrencyCode($0)) } },
             feeMinor: row.optionalInt(41), refundedMinor: row.optionalInt(42)
         )
     }
@@ -276,10 +278,7 @@ public enum RecordDAO {
         if let group = record.transferGroupID, try db.scalarInt("SELECT COUNT(*) FROM records WHERE transfer_group = ?", [group]) < 2 {
             try clearTransferGroup(db, group: group)
         }
-        // 合成的一单只剩一笔：不再是合单
-        if let group = record.orderGroupID, try db.scalarInt("SELECT COUNT(*) FROM records WHERE order_group = ?", [group]) < 2 {
-            try clearOrderGroup(db, group: group)
-        }
+        if let group = record.orderGroupID { try clearOrderGroupIfAlone(db, group: group) }
         return true
     }
 
@@ -319,6 +318,18 @@ public enum RecordDAO {
 
     public static func clearOrderGroup(_ db: SQLiteConnection, group: String) throws {
         try db.run("UPDATE records SET order_group = NULL WHERE order_group = ?", [group])
+    }
+
+    /// 这几笔从合成的一单里拆出去
+    public static func leaveOrderGroup(_ db: SQLiteConnection, ids: [String]) throws {
+        for id in ids { try db.run("UPDATE records SET order_group = NULL WHERE id = ?", [id]) }
+    }
+
+    /// 合成的一单只剩一笔：不再是合单
+    public static func clearOrderGroupIfAlone(_ db: SQLiteConnection, group: String) throws {
+        if try db.scalarInt("SELECT COUNT(*) FROM records WHERE order_group = ?", [group]) < 2 {
+            try clearOrderGroup(db, group: group)
+        }
     }
 
     /// 同一单的几笔，按时间先后

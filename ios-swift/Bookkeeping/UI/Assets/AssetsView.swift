@@ -109,7 +109,6 @@ struct WalletHeader: View {
                 .accessibilityAddTraits(.isHeader)
 
             OverviewCard()
-                .padding(.top, 8)
 
             if count > 0 {
                 // 只有银行卡时叫「银行卡」；加了现金、电子钱包后叫「账户」
@@ -171,6 +170,13 @@ private struct OverviewCard: View {
     var body: some View {
         let summary = NetWorth(store: store, rates: rates.rates, primary: CurrencyCode(primaryCode))
         let main = summary.main
+        // 和首页、统计页的分组标题同一行，下面的白框才和它们一样高（真机上量的：标题行到白框 42.67pt）
+        Text("合计（\(main.currency.chineseName)）")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity, minHeight: 32.67, alignment: .bottomLeading)
+            .padding(.bottom, 10)
         VStack(alignment: .leading, spacing: 0) {
             Text("净资产").font(.subheadline).foregroundStyle(.secondary)
             Text(Fmt.money(main.net, main.currency))

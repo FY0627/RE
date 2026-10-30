@@ -16,8 +16,14 @@ final class LedgerTypeTests: XCTestCase {
     }
 
     @discardableResult
-    func addAccount(_ backend: LedgerBackend, bank: String = "cmb", bankName: String = "招商银行", last4: String, type: CardType = .debit) async throws -> Account {
-        try await backend.addAccount(AccountDraft(name: "", bankID: bank, bankName: bankName, last4: last4, cardType: type, currency: .cny, paletteID: "ocean"))
+    func addAccount(
+        _ backend: LedgerBackend, bank: String = "cmb", bankName: String = "招商银行", last4: String, type: CardType = .debit,
+        currency: CurrencyCode = .cny, extras: [CurrencyCode] = [], opening: Int64? = nil
+    ) async throws -> Account {
+        try await backend.addAccount(AccountDraft(
+            name: "", bankID: bank, bankName: bankName, last4: last4, cardType: type, currency: currency, paletteID: "ocean",
+            openingBalanceMinor: opening, extraCurrencies: extras
+        ))
     }
 
     func ingest(_ backend: LedgerBackend, _ text: String, at date: Date? = nil) async throws {
@@ -241,10 +247,37 @@ final class LedgerTypeTests: XCTestCase {
         let detail = try await backend.recordDetail(id: feed[0].id)
         XCTAssertEqual(detail.orderMembers.count, 1)
 
-        try await backend.splitOrder(recordID: first.id)
+        try await backend.splitOrder(recordIDs: [first.id])
         feed = try await backend.records(filter: RecordFilter(feed: true))
         XCTAssertEqual(feed.count, 2)
         XCTAssertTrue(feed.allSatisfy { $0.category?.id == home.id }, "拆开后分类保留")
+    }
+
+    func testSplittingLeavesTheRestOfTheOrderTogether() async throws {
+        let backend = try makeBackend()
+        let a = try await addAccount(backend, last4: "0001")
+        let b = try await addAccount(backend, bank: "boc", bankName: "中国银行", last4: "0002")
+        let c = try await addAccount(backend, bank: "icbc", bankName: "工商银行", last4: "0003")
+        var ids: [String] = []
+        for (index, account) in [a, b, c].enumerated() {
+            ids += try await backend.addRecord(ManualEntry(
+                type: .expense, accountID: account.id, amountMinor: Int64(index + 1) * 100_00, currency: .cny, time: now.addingTimeInterval(Double(index))
+            ))
+        }
+        try await backend.mergeOrder(recordIDs: ids)
+
+        try await backend.splitOrder(recordIDs: [ids[0]])
+        var feed = try await backend.records(filter: RecordFilter(feed: true))
+        XCTAssertEqual(feed.count, 2, "拆出去的单独一行，另外两笔还是一单")
+        let order = try XCTUnwrap(feed.first { !$0.orderParts.isEmpty })
+        XCTAssertEqual(order.orderTotalMinor, 500_00)
+        let alone = try XCTUnwrap(feed.first { $0.orderParts.isEmpty })
+        XCTAssertEqual(alone.id, ids[0])
+
+        try await backend.splitOrder(recordIDs: [ids[1]])
+        feed = try await backend.records(filter: RecordFilter(feed: true))
+        XCTAssertEqual(feed.count, 3, "只剩一笔，不再是一单")
+        XCTAssertTrue(feed.allSatisfy { $0.record.orderGroupID == nil })
     }
 
     // MARK: 分类管理
@@ -410,6 +443,122 @@ final class LedgerTypeTests: XCTestCase {
         XCTAssertEqual(detail.transferPeer?.record.accountID, b.id)
     }
 
+    // MARK: 转帐到账多少
+
+    func testTransferWithFeeArrivesLessAndIsNotAnExpense() async throws {
+        let backend = try makeBackend()
+        let a = try await addAccount(backend, last4: "0001", opening: 2_000_00)
+        let b = try await addAccount(backend, bank: "icbc", bankName: "工商银行", last4: "0002", opening: 0)
+        let time = now.addingTimeInterval(60)
+        try await backend.addRecord(ManualEntry(
+            type: .transfer, accountID: a.id, toAccountID: b.id, amountMinor: 1_000_00, currency: .cny, toAmountMinor: 998_00, time: time
+        ))
+        let balances = try await backend.balanceSummaries()
+        XCTAssertEqual(balances[a.id]?.primary?.ledgerDerivedMinor, 1_000_00)
+        XCTAssertEqual(balances[b.id]?.primary?.ledgerDerivedMinor, 998_00, "到账比转出少")
+
+        let feed = try await backend.records(filter: RecordFilter(feed: true))
+        XCTAssertEqual(feed.count, 1, "两边合成一行")
+        XCTAssertEqual(feed[0].record.amountMinor, 1_000_00)
+        XCTAssertEqual(feed[0].peerMoney, Money(minorUnits: 998_00, currency: .cny))
+        XCTAssertEqual(feed[0].record.entryType, .transfer)
+
+        let stats = try await backend.monthStats(year: 2026, month: 10)
+        XCTAssertEqual(stats.currencies.first?.expenseMinor ?? 0, 0, "差额只影响余额，不算支出")
+        XCTAssertEqual(stats.currencies.first?.incomeMinor ?? 0, 0)
+    }
+
+    func testExchangeWithinOneAccountMovesMoneyBetweenCurrencies() async throws {
+        let backend = try makeBackend()
+        let card = try await addAccount(backend, bank: "hangseng", bankName: "恒生银行", last4: "0004", currency: .hkd, extras: [.cny], opening: 1_000_00)
+        try await backend.setOpeningBalance(accountID: card.id, currency: .cny, amountMinor: 0)
+        let time = now.addingTimeInterval(60)
+        try await backend.addRecord(ManualEntry(
+            type: .transfer, accountID: card.id, toAccountID: card.id, amountMinor: 100_00, currency: .hkd,
+            toAmountMinor: 91_00, toCurrency: .cny, time: time
+        ))
+        let balances = try await backend.balanceSummaries()
+        XCTAssertEqual(balances[card.id]?.item(.hkd)?.ledgerDerivedMinor, 900_00)
+        XCTAssertEqual(balances[card.id]?.item(.cny)?.ledgerDerivedMinor, 91_00)
+        let feed = try await backend.records(filter: RecordFilter(feed: true))
+        XCTAssertEqual(feed.count, 1)
+        XCTAssertEqual(feed[0].peer?.text, feed[0].account.text, "两边是同一个账户")
+        XCTAssertEqual(feed[0].peerMoney, Money(minorUnits: 91_00, currency: .cny))
+
+        do {
+            try await backend.addRecord(ManualEntry(type: .transfer, accountID: card.id, toAccountID: card.id, amountMinor: 1_00, currency: .hkd, time: time))
+            XCTFail("同一个账户的同一个币种不是转帐")
+        } catch BackendError.invalidTransfer {}
+    }
+
+    func testExchangeOnACreditCardIsNotARepayment() async throws {
+        let backend = try makeBackend()
+        let card = try await addAccount(backend, last4: "0005", type: .credit, currency: .cny, extras: [.usd])
+        let ids = try await backend.addRecord(ManualEntry(
+            type: .transfer, accountID: card.id, toAccountID: card.id, amountMinor: 700_00, currency: .cny, toAmountMinor: 95_00, toCurrency: .usd, time: now
+        ))
+        let rows = try await backend.records(accountID: card.id)
+        XCTAssertEqual(rows.count, ids.count)
+        XCTAssertTrue(rows.allSatisfy { $0.record.kind != .repayment })
+    }
+
+    func testEditingWhatArrivedKeepsTheTransferPaired() async throws {
+        let backend = try makeBackend()
+        let a = try await addAccount(backend, last4: "0001", opening: 0)
+        let b = try await addAccount(backend, bank: "icbc", bankName: "工商银行", last4: "0002", opening: 0)
+        let ids = try await backend.addRecord(ManualEntry(
+            type: .transfer, accountID: a.id, toAccountID: b.id, amountMinor: 100_00, currency: .cny, time: now.addingTimeInterval(60)
+        ))
+        try await backend.updateRecord(id: ids[0], RecordEdit(
+            accountID: a.id, amountMinor: 100_00, currency: .cny, direction: .outflow, kind: .transferOut,
+            counterparty: nil, time: nil, note: "", peerAmountMinor: 97_00, peerCurrency: .cny
+        ))
+        var detail = try await backend.recordDetail(id: ids[0])
+        XCTAssertEqual(detail.transferPeer?.record.amountMinor, 97_00)
+        var balances = try await backend.balanceSummaries()
+        XCTAssertEqual(balances[b.id]?.primary?.ledgerDerivedMinor, 97_00)
+
+        // 到账已经和转出不一样：只改备注时另一边不动
+        try await backend.updateRecord(id: ids[0], RecordEdit(
+            accountID: a.id, amountMinor: 100_00, currency: .cny, direction: .outflow, kind: .transferOut,
+            counterparty: nil, time: nil, note: "手续费 3 块"
+        ))
+        detail = try await backend.recordDetail(id: ids[0])
+        XCTAssertEqual(detail.transferPeer?.record.amountMinor, 97_00)
+        balances = try await backend.balanceSummaries()
+        XCTAssertEqual(balances[b.id]?.primary?.ledgerDerivedMinor, 97_00)
+    }
+
+    func testBankRecordsThatDifferByAFeeCanBePaired() async throws {
+        let backend = try makeBackend()
+        let a = try await addAccount(backend, last4: "0427")
+        let b = try await addAccount(backend, bank: "icbc", bankName: "工商银行", last4: "6621")
+        try await ingest(backend, "您尾号0427账户10月24日10:00向张三转账500.00元【招商银行】", at: now.addingTimeInterval(-3600))
+        try await ingest(backend, "您尾号6621账户10月24日14:00转入498.00元【工商银行】", at: now)
+        let outRows = try await backend.records(accountID: a.id)
+        let out = try XCTUnwrap(outRows.first)
+        XCTAssertNil(out.record.transferGroupID, "金额不一样，自动配对不上")
+
+        try await backend.updateRecord(id: out.id, RecordEdit(
+            accountID: a.id, amountMinor: 500_00, currency: .cny, direction: .outflow, kind: .transferOut,
+            counterparty: out.record.counterparty, time: nil, note: "", transferParty: .own, peer: .account(b.id),
+            peerAmountMinor: 498_00, peerCurrency: .cny
+        ))
+        let count = try await backend.recordCount()
+        XCTAssertEqual(count, 2, "那边银行记的一笔配成一对，不补记")
+        var detail = try await backend.recordDetail(id: out.id)
+        XCTAssertEqual(detail.transferPeer?.record.accountID, b.id)
+        XCTAssertEqual(detail.row.peerMoney, Money(minorUnits: 498_00, currency: .cny))
+
+        // 银行记的另一边：填了到账多少时改它，仍是一对
+        try await backend.updateRecord(id: out.id, RecordEdit(
+            accountID: a.id, amountMinor: 500_00, currency: .cny, direction: .outflow, kind: out.record.kind,
+            counterparty: out.record.counterparty, time: nil, note: "", transferParty: .own, peerAmountMinor: 495_00, peerCurrency: .cny
+        ))
+        detail = try await backend.recordDetail(id: out.id)
+        XCTAssertEqual(detail.transferPeer?.record.amountMinor, 495_00)
+    }
+
     func testManualEntryInACurrencyTheAccountLacksIsChargedInItsMainCurrency() async throws {
         let backend = try makeBackend()
         let cny = try await addAccount(backend, last4: "0427")
@@ -437,16 +586,17 @@ final class LedgerTypeTests: XCTestCase {
         XCTAssertEqual(rows.first?.record.settlement, Money(minorUnits: 95_10, currency: .cny))
         XCTAssertEqual(rows.first?.charge?.isActual, true)
 
-        // 转帐：两边都没有日元，各自按主币种扣款、入账
+        // 转帐：转出的账户没有日元就按主币种扣款，到账写实际到了多少港币
         let ids = try await backend.addRecord(ManualEntry(
-            type: .transfer, accountID: cny.id, toAccountID: hkd.id, amountMinor: 10_000, currency: .jpy, time: now.addingTimeInterval(120),
-            settlementMinor: 480_00, toSettlementMinor: 520_00
+            type: .transfer, accountID: cny.id, toAccountID: hkd.id, amountMinor: 10_000, currency: .jpy,
+            toAmountMinor: 520_00, toCurrency: .hkd, time: now.addingTimeInterval(120), settlementMinor: 480_00
         ))
         XCTAssertEqual(ids.count, 2)
         let out = try await backend.records(accountID: cny.id).first { $0.record.amountMinor == 10_000 }
         XCTAssertEqual(out?.record.settlement, Money(minorUnits: 480_00, currency: .cny))
         let into = try await backend.records(accountID: hkd.id).first
-        XCTAssertEqual(into?.record.settlement, Money(minorUnits: 520_00, currency: .hkd))
+        XCTAssertEqual(into?.record.money, Money(minorUnits: 520_00, currency: .hkd))
+        XCTAssertNil(into?.record.settlement)
         XCTAssertEqual(into?.record.direction, .inflow)
 
         // 账户有这个币种：不存实际扣款

@@ -346,6 +346,8 @@ public struct RecordRow: Identifiable, Hashable, Sendable {
     public var category: CategoryLabel?
     /// 配对的转帐另一边的账户（首页合成一行「招行 → 工行」）
     public var peer: AccountLabel?
+    /// 配对的转帐另一边的金额和币种：有手续费、换汇时和这一笔不一样
+    public var peerMoney: Money?
     /// 同一条通知拆出的手续费，合在这一笔下面显示
     public var feeMinor: Int64?
     /// 关联到这一笔的退款合计
@@ -356,7 +358,7 @@ public struct RecordRow: Identifiable, Hashable, Sendable {
     public init(
         record: LedgerRecord, accountName: String, bankName: String, last4: String, paletteID: String,
         accountCurrencies: [CurrencyCode] = [], charge: RecordCharge? = nil, cardType: CardType = .debit, accountDeleted: Bool = false,
-        category: CategoryLabel? = nil, peer: AccountLabel? = nil, feeMinor: Int64? = nil, refundedMinor: Int64? = nil,
+        category: CategoryLabel? = nil, peer: AccountLabel? = nil, peerMoney: Money? = nil, feeMinor: Int64? = nil, refundedMinor: Int64? = nil,
         orderParts: [OrderPart] = []
     ) {
         self.record = record
@@ -370,6 +372,7 @@ public struct RecordRow: Identifiable, Hashable, Sendable {
         self.accountDeleted = accountDeleted
         self.category = category
         self.peer = peer
+        self.peerMoney = peerMoney
         self.feeMinor = feeMinor
         self.refundedMinor = refundedMinor
         self.orderParts = orderParts
@@ -438,11 +441,15 @@ public struct RecordEdit: Hashable, Sendable {
     public var transferParty: TransferParty?
     /// 转帐的另一边是哪个账户
     public var peer: TransferPeerChange
+    /// 转帐另一边的金额和币种（这一笔转出时是到账多少）；nil 时手动补记的另一边跟着这一笔，银行通知记的不改
+    public var peerAmountMinor: Int64?
+    public var peerCurrency: CurrencyCode?
 
     public init(
         accountID: String, amountMinor: Int64, currency: CurrencyCode, direction: FlowDirection, kind: TransactionKind,
         counterparty: String?, time: Date?, note: String, settlementMinor: Int64? = nil,
-        categoryID: String? = nil, keepsCategory: Bool = true, transferParty: TransferParty? = nil, peer: TransferPeerChange = .keep
+        categoryID: String? = nil, keepsCategory: Bool = true, transferParty: TransferParty? = nil, peer: TransferPeerChange = .keep,
+        peerAmountMinor: Int64? = nil, peerCurrency: CurrencyCode? = nil
     ) {
         self.accountID = accountID
         self.amountMinor = amountMinor
@@ -457,6 +464,8 @@ public struct RecordEdit: Hashable, Sendable {
         self.keepsCategory = keepsCategory
         self.transferParty = transferParty
         self.peer = peer
+        self.peerAmountMinor = peerAmountMinor
+        self.peerCurrency = peerCurrency
     }
 
     /// 编辑页选了支出 / 收入 / 转帐：换成对应的方向和交易性质（尽量保留原来的性质）。
@@ -492,11 +501,14 @@ public struct ManualEntry: Hashable, Sendable {
     public var type: EntryType
     /// 支出、收入记到的账户；转帐时是转出的账户
     public var accountID: String
-    /// 转帐时转入的账户
+    /// 转帐时转入的账户；可以和转出的账户相同（同一个账户两个币种之间换汇）
     public var toAccountID: String?
     /// 最小货币单位，必须大于 0
     public var amountMinor: Int64
     public var currency: CurrencyCode
+    /// 转帐时到账多少、到账的币种：有手续费、换汇时和转出不一样；nil 时和转出一样
+    public var toAmountMinor: Int64?
+    public var toCurrency: CurrencyCode?
     public var categoryID: String?
     /// 支出里的退款（从支出里减掉）
     public var isRefund: Bool
@@ -505,26 +517,26 @@ public struct ManualEntry: Hashable, Sendable {
     public var time: Date
     /// 账户（转帐时是转出的账户）没有这个币种时，实际扣款或入账多少账户主币种；nil 按交易当天的汇率估算
     public var settlementMinor: Int64?
-    /// 转帐时转入的账户没有这个币种：实际入账多少它的主币种；nil 按汇率估算
-    public var toSettlementMinor: Int64?
 
     public init(
         type: EntryType, accountID: String, toAccountID: String? = nil, amountMinor: Int64, currency: CurrencyCode,
+        toAmountMinor: Int64? = nil, toCurrency: CurrencyCode? = nil,
         categoryID: String? = nil, isRefund: Bool = false, counterparty: String? = nil, note: String = "", time: Date,
-        settlementMinor: Int64? = nil, toSettlementMinor: Int64? = nil
+        settlementMinor: Int64? = nil
     ) {
         self.type = type
         self.accountID = accountID
         self.toAccountID = toAccountID
         self.amountMinor = amountMinor
         self.currency = currency
+        self.toAmountMinor = toAmountMinor
+        self.toCurrency = toCurrency
         self.categoryID = categoryID
         self.isRefund = isRefund
         self.counterparty = counterparty
         self.note = note
         self.time = time
         self.settlementMinor = settlementMinor
-        self.toSettlementMinor = toSettlementMinor
     }
 }
 

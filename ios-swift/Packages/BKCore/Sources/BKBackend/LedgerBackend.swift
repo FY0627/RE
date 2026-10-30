@@ -20,7 +20,7 @@ public enum BackendError: Error, Equatable, Sendable {
     case invalidCategory
     /// 转帐和系统分类不能删除、合并
     case categoryLocked
-    /// 转帐的转出、转入账户相同或缺少一边
+    /// 转帐缺少一边，或者转出、转入是同一个账户的同一个币种
     case invalidTransfer
     /// 合成一单至少要两笔，而且都是已入账的同一币种的支出（或收入）
     case invalidOrder
@@ -283,11 +283,12 @@ public final class LedgerBackend: Sendable {
     }
 
     /// 修改一笔流水。改了时间：交易时间和接收时间都改成它（影响排序和余额推算）；没改时间则保持原样。
-    /// 配对的内部转账：另一边是手动补记的就跟着改（金额、币种、时间），仍是一对；
-    /// 另一边是银行通知记的，改了账户、金额、币种、方向，或不再是转账类，就不再配对。
+    /// 配对的内部转账：另一边是手动补记的就跟着改（金额、币种、时间），仍是一对；填了到账多少（`edit.peerAmountMinor`）就用填的。
+    /// 另一边是银行通知记的：填了到账多少时改它的金额和币种，仍是一对；
+    /// 没填时改了账户、金额、币种、方向，或不再是转账类，就不再配对。
     /// 转帐可以换另一边的账户（`edit.peer`）。改了分类：同一单的几笔一起改。转帐不保存分类
     public func updateRecord(id: String, _ edit: RecordEdit) async throws {
-        guard edit.amountMinor > 0 else { throw BackendError.invalidAmount }
+        guard edit.amountMinor > 0, (edit.peerAmountMinor ?? 1) > 0 else { throw BackendError.invalidAmount }
         let calendar = calendar
         let now = clock()
         let newID = newID
@@ -319,14 +320,21 @@ public final class LedgerBackend: Sendable {
             if let group = original.transferGroupID {
                 let peer = try RecordDAO.inGroup(db, group: group).first { $0.id != id }
                 let stillTransfer = record.kind.isTransferLike && record.transferParty != .other
-                if let peer, peer.source == .manual, stillTransfer, peer.accountID != record.accountID {
-                    // 手动补记的另一边跟着改
+                let toItself = peer?.accountID == record.accountID && (edit.peerCurrency ?? peer?.currency) == record.currency
+                let confirmedBankPeer = edit.peer == .keep && edit.peerAmountMinor != nil
+                    && original.accountID == record.accountID && original.direction == record.direction
+                if let peer, stillTransfer, !toItself, peer.source == .manual || confirmedBankPeer {
+                    // 两边原来一样多时，没填到账多少就跟着这一笔；原来不一样（手续费、换汇）时不动
+                    let matched = peer.amountMinor == original.amountMinor && peer.currency == original.currency
                     var synced = peer
-                    synced.amountMinor = record.amountMinor
-                    synced.currency = record.currency
-                    synced.direction = record.direction.opposite
-                    synced.transactionTime = record.transactionTime
-                    synced.receivedAt = record.receivedAt
+                    synced.amountMinor = edit.peerAmountMinor ?? (matched ? record.amountMinor : peer.amountMinor)
+                    synced.currency = edit.peerCurrency ?? (matched ? record.currency : peer.currency)
+                    if synced.amountMinor != peer.amountMinor || synced.currency != peer.currency { synced.settlement = nil }
+                    if peer.source == .manual {
+                        synced.direction = record.direction.opposite
+                        synced.transactionTime = record.transactionTime
+                        synced.receivedAt = record.receivedAt
+                    }
                     _ = try RecordDAO.update(db, synced)
                 } else if !stillTransfer || original.accountID != record.accountID || original.amountMinor != record.amountMinor
                             || original.currency != record.currency || original.direction != record.direction {
@@ -337,7 +345,10 @@ public final class LedgerBackend: Sendable {
                 }
             }
             if record.entryType == .transfer, edit.peer != .keep {
-                try Self.changePeer(edit.peer, of: &record, account: account, db: db, now: now, newID: newID)
+                try Self.changePeer(
+                    edit.peer, of: &record, amountMinor: edit.peerAmountMinor ?? record.amountMinor, currency: edit.peerCurrency ?? record.currency,
+                    account: account, db: db, now: now, newID: newID
+                )
             }
             if !edit.keepsCategory { record.categoryID = edit.categoryID }
             let tree = CategoryTree(try CategoryDAO.all(db))
@@ -355,10 +366,12 @@ public final class LedgerBackend: Sendable {
     }
 
     /// 编辑转帐时换了另一边的账户。先拆开现在的另一边（手动补记的删掉，银行通知记的留着、不再配对），
-    /// 再和新账户配对：那个账户前后 3 天里有对得上、还没配对的一笔（银行通知记的）就配成一对，没有就在那边补记一笔。
+    /// 再和新账户配对：那个账户前后 3 天里有对得上（`amountMinor`、`currency` 是另一边的金额和币种）、还没配对的一笔（银行通知记的）就配成一对，
+    /// 没有就在那边补记一笔。可以是同一个账户的另一个币种（换汇）。
     /// 转进信用卡算还款。`untracked`：对方是自己没添加到 App 的账户，不配对
     static func changePeer(
-        _ change: TransferPeerChange, of record: inout LedgerRecord, account: Account, db: SQLiteConnection, now: Date, newID: () -> String
+        _ change: TransferPeerChange, of record: inout LedgerRecord, amountMinor: Int64, currency: CurrencyCode,
+        account: Account, db: SQLiteConnection, now: Date, newID: () -> String
     ) throws {
         let recordID = record.id
         let current = try record.transferGroupID.map { group in try RecordDAO.inGroup(db, group: group).filter { $0.id != recordID } } ?? []
@@ -370,8 +383,11 @@ public final class LedgerBackend: Sendable {
             if record.kind == .transferIn || record.kind == .transferOut { record.transferParty = .own }
             return
         }
-        guard peerID != record.accountID, let target = try AccountDAO.find(db, id: peerID) else { throw BackendError.invalidTransfer }
-        let repayment = (record.direction == .outflow && target.cardType == .credit) || (record.direction == .inflow && account.cardType == .credit)
+        guard peerID != record.accountID || currency != record.currency, let target = try AccountDAO.find(db, id: peerID) else {
+            throw BackendError.invalidTransfer
+        }
+        let repayment = peerID != record.accountID
+            && ((record.direction == .outflow && target.cardType == .credit) || (record.direction == .inflow && account.cardType == .credit))
         if repayment {
             record.kind = .repayment
             record.transferParty = nil
@@ -383,7 +399,7 @@ public final class LedgerBackend: Sendable {
         let at = record.effectiveAt
         let window: TimeInterval = 3 * 86_400
         let existing = try RecordDAO.candidates(
-            db, amountMinor: record.amountMinor, currency: record.currency, direction: record.direction.opposite,
+            db, amountMinor: amountMinor, currency: currency, direction: record.direction.opposite,
             effectiveFrom: at.addingTimeInterval(-window), effectiveTo: at.addingTimeInterval(window), excludingIngest: record.ingestID
         )
         .filter { $0.accountID == peerID && $0.id != recordID && $0.status == .posted && $0.kind.isTransferLike && $0.transferGroupID == nil }
@@ -394,7 +410,7 @@ public final class LedgerBackend: Sendable {
             let ingestID = newID()
             try IngestDAO.insertManual(db, id: ingestID, receivedAt: at, processedAt: now)
             let peer = LedgerRecord(
-                id: newID(), accountID: peerID, amountMinor: record.amountMinor, currency: record.currency, direction: record.direction.opposite,
+                id: newID(), accountID: peerID, amountMinor: amountMinor, currency: currency, direction: record.direction.opposite,
                 kind: repayment ? .repayment : (record.direction == .outflow ? .transferIn : .transferOut), status: .posted, counterparty: nil,
                 transactionTime: record.transactionTime, receivedAt: at, processedAt: now, source: .manual, ingestID: ingestID, partIndex: 0,
                 bankReference: nil, balanceAfterMinor: nil, includedFeeMinor: nil, note: "", transferGroupID: group, relatedRecordID: nil
@@ -555,10 +571,11 @@ public final class LedgerBackend: Sendable {
         }
     }
 
-    /// 手动记一笔。支出、收入记一条；转帐记两条（转出、转入）并配成一对，转入信用卡算还款，两个账户都要有这个币种。返回新流水的标识
+    /// 手动记一笔。支出、收入记一条；转帐记两条（转出、转入）并配成一对，转入信用卡算还款。
+    /// 转入那条用到账的金额和币种，差额（手续费、汇损）只体现在余额上，不算支出；同一个账户只能在两个币种之间转（换汇）。返回新流水的标识
     @discardableResult
     public func addRecord(_ entry: ManualEntry) async throws -> [String] {
-        guard entry.amountMinor > 0 else { throw BackendError.invalidAmount }
+        guard entry.amountMinor > 0, (entry.toAmountMinor ?? 1) > 0 else { throw BackendError.invalidAmount }
         let now = clock()
         let calendar = calendar
         let newID = newID
@@ -573,14 +590,16 @@ public final class LedgerBackend: Sendable {
                 .flatMap { $0.isEmpty ? nil : String($0.prefix(200)) }
             // 账户没有这个币种：按账户主币种扣款（入账），填了实际金额就存下来，否则按汇率估算
             func record(
-                _ account: Account, _ direction: FlowDirection, _ kind: TransactionKind, part: Int, category: String?, settlement: Int64?
+                _ account: Account, _ direction: FlowDirection, _ kind: TransactionKind, part: Int, category: String?, settlement: Int64?,
+                amount: Int64? = nil, currency: CurrencyCode? = nil
             ) -> LedgerRecord {
+                let currency = currency ?? entry.currency
                 var settled: Money?
-                if !account.currencies.contains(entry.currency), let settlement, settlement > 0 {
+                if !account.currencies.contains(currency), let settlement, settlement > 0 {
                     settled = Money(minorUnits: settlement, currency: account.currency)
                 }
                 return LedgerRecord(
-                    id: newID(), accountID: account.id, amountMinor: entry.amountMinor, currency: entry.currency, direction: direction,
+                    id: newID(), accountID: account.id, amountMinor: amount ?? entry.amountMinor, currency: currency, direction: direction,
                     kind: kind, status: .posted, counterparty: counterparty,
                     transactionTime: time, receivedAt: entry.time, processedAt: now, source: .manual, ingestID: ingestID, partIndex: part,
                     bankReference: nil, balanceAfterMinor: nil, includedFeeMinor: nil, note: String(entry.note.prefix(500)),
@@ -603,13 +622,17 @@ public final class LedgerBackend: Sendable {
             case .income:
                 records = [record(account, .inflow, .income, part: 0, category: category, settlement: entry.settlementMinor)]
             case .transfer:
-                guard let toID = entry.toAccountID, toID != account.id, let target = try AccountDAO.find(db, id: toID) else {
+                guard let toID = entry.toAccountID, let target = try AccountDAO.find(db, id: toID),
+                      toID != account.id || (entry.toCurrency ?? entry.currency) != entry.currency else {
                     throw BackendError.invalidTransfer
                 }
-                let repayment = target.cardType == .credit
+                let repayment = target.cardType == .credit && toID != account.id
                 records = [
                     record(account, .outflow, repayment ? .repayment : .transferOut, part: 0, category: nil, settlement: entry.settlementMinor),
-                    record(target, .inflow, repayment ? .repayment : .transferIn, part: 2, category: nil, settlement: entry.toSettlementMinor),
+                    record(
+                        target, .inflow, repayment ? .repayment : .transferIn, part: 2, category: nil, settlement: nil,
+                        amount: entry.toAmountMinor, currency: entry.toCurrency
+                    ),
                 ]
                 let group = newID()
                 for index in records.indices { records[index].transferGroupID = group }
@@ -695,11 +718,16 @@ public final class LedgerBackend: Sendable {
         }
     }
 
-    /// 拆开这一单：几笔各自单独显示（分类保留）
-    public func splitOrder(recordID: String) async throws {
+    /// 把这几笔从合成的一单里拆出去，各自单独显示（分类保留）。其余的还是一单，只剩一笔时不再是合单
+    public func splitOrder(recordIDs: [String]) async throws {
         try await database.write { db in
-            guard let record = try RecordDAO.find(db, id: recordID) else { throw BackendError.notFound }
-            if let group = record.orderGroupID { try RecordDAO.clearOrderGroup(db, group: group) }
+            var groups: Set<String> = []
+            for id in recordIDs {
+                guard let record = try RecordDAO.find(db, id: id) else { throw BackendError.notFound }
+                if let group = record.orderGroupID { groups.insert(group) }
+            }
+            try RecordDAO.leaveOrderGroup(db, ids: recordIDs)
+            for group in groups { try RecordDAO.clearOrderGroupIfAlone(db, group: group) }
         }
     }
 

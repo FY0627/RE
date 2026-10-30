@@ -334,8 +334,8 @@ final class LedgerStore {
         await refresh()
     }
 
-    func splitOrder(recordID: String) async throws {
-        try await backend?.splitOrder(recordID: recordID)
+    func splitOrder(recordIDs: [String]) async throws {
+        try await backend?.splitOrder(recordIDs: recordIDs)
         await refresh()
     }
 
