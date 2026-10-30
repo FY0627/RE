@@ -1,10 +1,10 @@
-# Windows 11 + iPhone：下载 IPA、用 Sideloadly 安装、设置自动记账
+# Windows 11 + iPhone：下载 IPA、用 iLoader 安装、设置自动记账
 
 适用：没有 Mac，只有 Windows 11 电脑和 iPhone（本项目按 iPhone 16 Pro / iOS 27.0.1 编写）。
-构建在 GitHub Actions 上完成（[ADR 0009](../decisions/0009-ios-swift-ci-sideloadly.md)），签名在你自己的电脑上用你自己的 Apple 账户完成。
+构建在 GitHub Actions 上完成（[ADR 0009](../decisions/0009-ios-swift-ci-sideloadly.md)），签名在你自己的电脑上用你自己的 Apple 账户完成（[ADR 0016](../decisions/0016-ios-swift-iloader.md)）。
 
-> Apple 账户密码只输入到你本机的 Sideloadly / Apple 登录流程中。不要放进仓库、GitHub Secrets 或发给任何人。
-> Sideloadly 是第三方工具，它会用你的 Apple 账户向 Apple 申请免费的开发证书；请只从官网下载。
+> Apple 账户密码只在你本机的 iLoader 里输入。不要放进仓库、GitHub Secrets 或发给任何人。
+> iLoader 是第三方工具，它会用你的 Apple 账户向 Apple 申请免费的开发证书；请只从官方渠道下载。
 
 ## 1. 下载 IPA
 
@@ -20,25 +20,23 @@
 
    两个哈希值必须一致；也可以与运行页面上「IPA」注释里的 sha256 对照。
 
-## 2. 安装 Sideloadly 及其依赖
+## 2. 安装 iLoader 及其依赖
 
-1. 只从官网 <https://sideloadly.io/> 下载 Windows 版并安装。
-2. Sideloadly 要求**网页版**（非 Microsoft Store 版）的 iTunes 和 iCloud。若已装了商店版，先卸载，再从 Apple 官网下载网页安装包安装（Sideloadly 官网页面提供了链接）。
-3. 安装后重启电脑。
+1. 只从官方渠道下载 Windows 版：<https://github.com/nab138/iloader/releases> 或 <https://iloader.app>。
+2. 安装 [iTunes](https://apple.co/ms)，iLoader 靠它连接 iPhone。
 
 ## 3. 连接并信任 iPhone
 
 1. 用数据线连接 iPhone 与电脑，解锁 iPhone。
 2. iPhone 弹出「要信任此电脑吗？」→ 选「信任」并输入锁屏密码。
-3. Sideloadly 左上角设备列表里应能看到你的 iPhone。
+3. 打开 iLoader，确认它能检测到你的 iPhone。
 
 ## 4. 签名并安装
 
-1. 把 `.ipa` 拖进 Sideloadly。
-2. 「Apple Account」填你自己的 Apple 账户，点 **Start**，按提示输入密码与双重认证验证码。**不需要付费开发者账户。**
-3. **Bundle ID 保持不变**：默认是 `com.example.bookkeepingApp.swift`。
-   如果 Sideloadly 报告该 Bundle ID 已被占用，在 Advanced Options 里设置一个你自己的固定 ID（例如 `com.example.bookkeepingApp.swift.<你的缩写>`），
-   **以后每次安装都用同一个 ID 和同一个 Apple 账户**，否则会被当成另一个 App：数据不能保留，快捷指令里的动作引用也会失效。
+1. 在 iLoader 里登录你自己的 Apple 账户，按提示完成验证。**不需要付费开发者账户。**
+2. 选择导入 IPA 的操作（iLoader 的功能名是「Import any IPA」，按钮文字以实际界面为准），选中第 1 步下载的 `.ipa`。
+3. **以后每次安装都用同一个 Apple 账户，不要改 Bundle ID**（默认是 `com.example.bookkeepingApp.swift`），
+   否则会被当成另一个 App：数据不能保留，快捷指令里的动作引用也会失效。
 4. 不要勾选会删除或修改 App 能力的选项；本 App 不需要任何额外权限（无 App Group、推送、iCloud）。
 
 ## 5. 在 iPhone 上允许运行
@@ -69,16 +67,18 @@
 
 | 情况 | 做法 | 数据 |
 |---|---|---|
-| 新版本 IPA | 用 Sideloadly、**同一 Apple 账户、同一 Bundle ID** 直接安装覆盖。**不要先删除旧 App。** | 覆盖安装按 iOS 规则保留 App 数据（需真机确认，见清单） |
-| 免费签名到期（约 7 天） | 到期前用同一个 IPA 重新安装一次即可续签；也可用 Sideloadly 的自动续签（需电脑开着并与 iPhone 同网络） | 保留 |
+| 新版本 IPA | 用 iLoader、**同一 Apple 账户、同一 Bundle ID** 直接安装覆盖。**不要先删除旧 App。** | 覆盖安装按 iOS 规则保留 App 数据（需真机确认，见清单） |
+| 免费签名到期（约 7 天） | 到期前用同一个 IPA 重新安装一次即可续签 | 保留 |
 | 已经过期 | App 打不开、自动化运行失败；重新签名安装后恢复。过期期间到达的通知不会被补记 | 保留（未删除 App 时） |
 | 删除 App | 本地账本随之删除，无云备份 | **丢失** |
 
-免费 Apple 账户的已知限制（以 Apple / Sideloadly 实际提示为准）：签名约 7 天有效；同时安装的侧载 App 数量有限（常见为 3 个）；
-每 7 天可注册的 App ID 数量有限（常见为 10 个），频繁更换 Bundle ID 会很快用完。
+免费 Apple 账户的已知限制（以 Apple / iLoader 实际提示为准）：签名约 7 天有效；同时安装的侧载 App 数量有限（常见为 3 个）；
+每 7 天可注册的 App ID 数量有限（常见为 10 个），频繁更换 Bundle ID 会很快用完。可以在 iLoader 里查看和撤销开发证书与 App ID。
 
 ## 9. 常见问题
 
+- **iLoader 检测不到 iPhone**：确认 iPhone 已解锁并信任这台电脑。新版 iTunes 可能不再自带 USB 驱动，到 Windows Update 的可选更新里安装「Apple, Inc. - USBDevice」。
+- **iLoader 报错**：日志在 `%APPDATA%\me.nabdev.iloader\logs`。
 - **快捷指令每次都问我是否运行**：自动化没选「立即运行」。编辑自动化改为立即运行。
 - **每次运行都有系统通知**：在该自动化里关闭「运行时通知」。这是系统行为，不是 App 弹窗。
 - **状态一直「待验证」**：在「我的 › 自动记账状态」看接收日志。没有任何记录说明自动化没有触发；有「空输入」说明「通知内容」没有选「快捷指令输入」。

@@ -186,7 +186,7 @@ docker run --rm -v "<仓库>/ios-swift/Packages/BKCore:/pkg" -w /pkg bk-swift sw
 
 ## 安装到 iPhone
 
-见 [Windows + Sideloadly 安装指南](../docs/guides/ios-swift-windows-sideloadly.md) 与 [真机验收清单](../docs/guides/ios-swift-device-checklist.md)。
+见 [Windows + iLoader 安装指南](../docs/guides/ios-swift-windows-iloader.md) 与 [真机验收清单](../docs/guides/ios-swift-device-checklist.md)。
 
 ## 自动记账
 

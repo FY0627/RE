@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 把真机 .app 打包成可由 Sideloadly 重新签名的 IPA，并校验完整性。
+# 把真机 .app 打包成可由 iLoader 重新签名的 IPA，并校验完整性。
 # 用法：bash ios-swift/ci/package-ipa.sh <输出目录>
 set -euo pipefail
 # 任何未被 fail() 捕获的命令失败也要在运行页面上留下行号
@@ -85,7 +85,7 @@ for action_id, action in (data.get("actions") or {}).items():
     print(f"action: {action_id} modes={action.get('supportedModes') or action.get('openAppWhenRun')} params={[p.get('name') for p in action.get('parameters', [])]}")
 PY
 
-[[ ! -d "$APP/_CodeSignature" ]] && ok "未签名（CI 不使用任何证书，由 Sideloadly 签名）" || ok "存在 _CodeSignature（将被 Sideloadly 替换）"
+[[ ! -d "$APP/_CodeSignature" ]] && ok "未签名（CI 不使用任何证书，由 iLoader 签名）" || ok "存在 _CodeSignature（将被 iLoader 替换）"
 [[ ! -f "$APP/embedded.mobileprovision" ]] || fail "不应包含描述文件"
 
 if [[ -n "${GITHUB_SHA:-}" ]]; then

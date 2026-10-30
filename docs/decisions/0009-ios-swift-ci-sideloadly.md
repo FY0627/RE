@@ -1,6 +1,6 @@
 # 0009 iOS Swift 版构建与分发：GitHub Actions 打包未签名 IPA，用户用 Sideloadly 签名安装
 
-- 状态：已采纳（`ios-swift/`）
+- 状态：已采纳（`ios-swift/`）；签名安装工具已改用 iLoader，见 [ADR 0016](0016-ios-swift-iloader.md)
 - 日期：2026-10-24
 
 ## 背景
@@ -33,6 +33,6 @@
 ## 影响
 
 - 用户需要在 Windows 上安装 Sideloadly（以及其要求的网页版 iTunes / iCloud），用自己的 Apple 账户签名。
-  步骤见 [guides/ios-swift-windows-sideloadly.md](../guides/ios-swift-windows-sideloadly.md)。
+  现在的步骤见 [guides/ios-swift-windows-iloader.md](../guides/ios-swift-windows-iloader.md)。
 - 免费账户签名约 7 天有效，需要定期重签；Bundle ID 和签名账户保持不变才能覆盖安装并保留数据。
 - runner 镜像更新后 Xcode 默认版本可能变化；可用 `workflow_dispatch` 的 `xcode_app` 参数指定。

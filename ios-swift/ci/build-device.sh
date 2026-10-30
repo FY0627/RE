@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 构建 Release / iphoneos / arm64 真机 App，不签名（签名交给用户本地的 Sideloadly）。
+# 构建 Release / iphoneos / arm64 真机 App，不签名（签名交给用户本地的 iLoader）。
 # 这里不走 archive + exportArchive：未签名的 archive 不能用常规导出流程生成 IPA，
 # 所以直接构建真机 .app，再由 package-ipa.sh 按 Payload/<App>.app 结构打包。
 # 用法：bash ios-swift/ci/build-device.sh <输出目录> <构建号>
