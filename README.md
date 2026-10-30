@@ -7,32 +7,25 @@
 - **自动记账**：截图 + OCR 识别支付页面。Android 上点悬浮窗触发，iOS 上用快捷指令。
 - **低端机友好**：以 2020 年左右的 60Hz 手机作为性能基准。
 
-> 当前阶段：项目骨架。前端原型在 [`prototype`](https://github.com/FY0627/REC/tree/prototype) 分支。
+> 这里是 iOS 原生 Swift 版。Flutter 版骨架在 [`main`](https://github.com/FY0627/REC/tree/main) 分支，前端原型在 [`prototype`](https://github.com/FY0627/REC/tree/prototype) 分支。
 
 ## 结构
 
 ```
-app/        前端：Flutter 界面
-backend/    后端：运行在手机内的业务层（纯 Dart）
-database/   数据库：SQLite + drift
-native/     原生能力：悬浮窗截屏、OCR、iOS App Intent（Kotlin / Swift）
+ios-swift/  iOS 原生 Swift 版：SwiftUI 界面、App Intents、SQLite
 docs/       文档，从 docs/INDEX.md 开始看
 ```
 
 ## 运行
 
-```sh
-flutter pub get        # 在仓库根目录执行
-cd app
-flutter run
-```
+App 由 GitHub Actions 构建，安装方法见 [docs/guides/ios-swift-windows-sideloadly.md](docs/guides/ios-swift-windows-sideloadly.md)。
 
-更多命令见 [docs/guides/development.md](docs/guides/development.md)。
+本地运行核心测试见 [ios-swift/README.md](ios-swift/README.md)。
 
 ## 文档
 
 - [文档与代码索引](docs/INDEX.md)
-- [架构总览](docs/architecture/overview.md)
+- [iOS Swift 版说明](ios-swift/README.md)
 - [架构决策记录](docs/decisions/)
 
 ## 许可证

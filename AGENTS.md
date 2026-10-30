@@ -4,11 +4,11 @@ AI 编程助手的入口文件。Claude Code 通过 `CLAUDE.md` 引用本文件�
 
 ## 项目
 
-本地优先的记账 App，用 Flutter 开发，支持 Android 和 iOS。
+本地优先的记账 App。默认分支 `ios-swift` 是 iOS 原生 Swift 版。
 
 - **没有服务器**：数据保存在手机本地的 SQLite 里；多台设备之间通过「扫码配对 + 局域网直传」同步。
 - **低端机优先**：目标设备包括 2020 年左右的 60Hz 手机，性能、资源占用和稳定性优先于视觉效果。
-- **当前阶段**：只有骨架。前端原型在 `prototype` 分支，只作参考，不合并进 main。
+- **其他分支**：`main` 保留 Flutter 版骨架（见 [ADR 0015](docs/decisions/0015-ios-swift-default-branch.md)）；`prototype` 是前端原型，只作参考，不合并进 main。
 
 ## 先查索引
 
@@ -16,33 +16,31 @@ AI 编程助手的入口文件。Claude Code 通过 `CLAUDE.md` 引用本文件�
 
 ## 结构
 
-| 目录 | 层 | 包名 |
+| 目录 | 内容 | 模块 |
 |---|---|---|
-| `app/` | 前端：Flutter 界面 | `bookkeeping_app` |
-| `backend/` | 后端：运行在手机内的业务层，纯 Dart | `bk_backend` |
-| `database/` | 数据库：SQLite + drift，纯 Dart | `bk_database` |
-| `native/` | 原生能力：Flutter 插件（Kotlin / Swift） | `bk_native` |
-| `ios-swift/` | iOS 原生 Swift 版（独立工程，不依赖 Flutter；见 ADR 0006–0009） | `BKModel` / `BKDatabase` / `BKBackend` |
+| `ios-swift/Bookkeeping/` | App target：SwiftUI 界面、App Intents、性能诊断 | `Bookkeeping` |
+| `ios-swift/Packages/BKCore/` | 纯 Swift 业务核心（见 ADR 0006–0009） | `BKModel` / `BKDatabase` / `BKBackend` |
+| `ios-swift/ci/` | GitHub Actions 调用的测试、构建、打包、校验脚本 | — |
+| `docs/` | 文档 | — |
 
-详细说明见 [docs/architecture/overview.md](docs/architecture/overview.md)。
+详细说明见 [ios-swift/README.md](ios-swift/README.md)。
 
 ## 命令
 
 ```sh
-flutter pub get            # 在仓库根目录执行，一次解析全部包（pub workspace）
-flutter analyze            # 在仓库根目录执行
-cd app && flutter test
-cd native && flutter test
-cd app && flutter run      # 真机调试；测性能用 flutter run --profile
+# BKCore 测试：Windows 上用 Docker，镜像构建方法见 ios-swift/README.md
+docker run --rm -v "<仓库>/ios-swift/Packages/BKCore:/pkg" -w /pkg bk-swift swift test
 ```
+
+App target 和 IPA 由 GitHub Actions 构建，见 `.github/workflows/ios-swift-build.yml`。
 
 ## 硬性规则
 
-1. **依赖方向是单向的**：`app → backend → database`，`app → native`。
-   - `app` 不能直接 import `bk_database`。
-   - `backend` 和 `database` 不能依赖 Flutter。
-2. **UI isolate 不做重活**：数据库运行在后台 isolate；统计、同步合并、文本解析用 `Isolate.run`。
-3. **性能改动**按 [docs/architecture/performance.md](docs/architecture/performance.md) 执行：在测试机上用 profile 模式测量，一次只改一个变量，用 `--dart-define` 开关做对照。
+1. **依赖方向是单向的**：`App → BKBackend → BKDatabase → BKModel`。
+   - App 不能直接 import `BKDatabase`（CI 检查）。
+   - `BKCore` 不能依赖 SwiftUI / UIKit。
+2. **主线程不做重活**：数据库访问和解析在专用串行队列上执行，不要假设 `async` 会自动离开 MainActor。
+3. **性能改动**在真机上测量，一次只改一个变量，用「性能开关与调试指标」做对照，方法见 [docs/guides/ios-swift-device-checklist.md](docs/guides/ios-swift-device-checklist.md)。
 4. **引入新的第三方依赖、改变架构或技术选型**时，在 `docs/decisions/` 新增一份 ADR。
 5. **新增、移动或删除模块 / 文档 / 决策后**，同步更新 [docs/INDEX.md](docs/INDEX.md)。
-6. **包名是临时的**：`bookkeeping_app`、`bk_*` 和 `com.example` 会在项目改名时统一替换，不要再引入新的命名前缀。
+6. **包名是临时的**：`BK*` 和 `com.example` 会在项目改名时统一替换，不要再引入新的命名前缀。
