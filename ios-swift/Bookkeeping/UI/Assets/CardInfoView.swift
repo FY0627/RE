@@ -113,23 +113,28 @@ struct CardInfoView: View {
             }
         }
         .toolbar {
-            if editing {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消", systemImage: "xmark") {
-                        editing = false
-                        errorText = nil
+            // 左上角一直是返回：编辑时回到查看（不保存），查看时关掉卡片信息
+            ToolbarItem(placement: .topBarLeading) {
+                Button("返回", systemImage: "chevron.left") {
+                    if editing {
+                        withAnimation(Self.modeChange) {
+                            editing = false
+                            errorText = nil
+                        }
+                    } else {
+                        dismiss()
                     }
                 }
+            }
+            // 右上角：查看时是「编辑」，编辑时换成勾（保存）；在动画里切换，按钮跟着变
+            if editing {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存", systemImage: "checkmark") { Task { await save(account) } }
                         .disabled(saving || currency == nil)
                 }
             } else {
-                ToolbarItem(placement: .cancellationAction) {
+                ToolbarItem(placement: .primaryAction) {
                     Button("编辑") { startEditing(account) }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("完成", systemImage: "checkmark") { dismiss() }
                 }
             }
         }
@@ -184,7 +189,7 @@ struct CardInfoView: View {
         Section {
             CurrencyLink(title: multiCurrency ? "主币种" : "币种", currency: primaryCurrency)
             if let currency {
-                OpeningBalanceRow(currency: currency, label: multiCurrency ? currency.chineseName : nil, input: balance(currency), placeholderTitle: "校准余额")
+                OpeningBalanceRow(currency: currency, label: multiCurrency ? currency.chineseName : nil, input: balance(currency), placeholderTitle: "校准余额", emptyPlaceholder: "校准余额（选填）")
             }
             if account.isCard {
                 Toggle("多币种账户", isOn: $multiCurrency)
@@ -196,7 +201,7 @@ struct CardInfoView: View {
                     LabeledContent("其他币种", value: heldExtras.isEmpty ? "请选择" : heldExtras.map(\.chineseName).joined(separator: "、"))
                 }
                 ForEach(heldExtras, id: \.self) { code in
-                    OpeningBalanceRow(currency: code, label: code.chineseName, input: balance(code), placeholderTitle: "校准余额")
+                    OpeningBalanceRow(currency: code, label: code.chineseName, input: balance(code), placeholderTitle: "校准余额", emptyPlaceholder: "校准余额（选填）")
                 }
             }
         } header: {
@@ -240,8 +245,11 @@ struct CardInfoView: View {
         number = account.cardNumber ?? ""
         accountNumber = account.accountNumber ?? ""
         errorText = nil
-        editing = true
+        withAnimation(Self.modeChange) { editing = true }
     }
+
+    /// 查看 ↔ 编辑：右上角的按钮和下面的内容一起变
+    private static let modeChange: Animation = .smooth(duration: 0.35)
 
     private func setArchived(_ account: Account, _ archived: Bool) {
         dismiss()
@@ -318,7 +326,7 @@ struct CardInfoView: View {
             ))
             errorText = nil
             revealed = false
-            editing = false
+            withAnimation(Self.modeChange) { editing = false }
         } catch BackendError.invalidAccount(.duplicateAccount) {
             errorText = "已经有一张同一银行、同一尾号的\(cardType.displayName)。"
         } catch BackendError.invalidAccount(.invalidAccountNumber) {

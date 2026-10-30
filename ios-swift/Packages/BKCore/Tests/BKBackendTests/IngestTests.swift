@@ -328,17 +328,18 @@ final class IngestTests: XCTestCase {
         let account = try await addAccount(backend, last4: "0427")
         _ = try await backend.ingest(IngestRequest(text: "您尾号0427账户10月24日14:30消费10.00元，余额900.00元【招商银行】", source: .sms))
         let summary = try await backend.balanceSummaries()[account.id]?.primary
-        XCTAssertNil(summary?.ledgerDerivedMinor, "没填初始余额时余额未知，通知里写的余额不使用")
+        XCTAssertEqual(summary?.ledgerDerivedMinor, 0, "通知里写的余额不使用（没填余额从 0 开始，这笔和添加同时到达）")
         let rows = try await backend.records()
         XCTAssertEqual(rows.first?.record.balanceAfterMinor, 90_000, "流水上仍保留通知里写的余额")
     }
 
-    func testDerivedBalanceUnknownWithoutBase() async throws {
+    func testBalanceStartsAtZeroWhenNotFilled() async throws {
         let backend = try makeBackend()
         let account = try await addAccount(backend, last4: "0427")
-        _ = try await backend.ingest(IngestRequest(text: "您尾号0427账户10月24日14:30消费10.00元【招商银行】", source: .sms))
+        XCTAssertEqual(account.openingBalanceMinor, 0, "添加时没填余额：从 0 开始")
+        _ = try await backend.ingest(IngestRequest(text: "您尾号0427账户10月24日14:30消费10.00元【招商银行】", source: .sms, receivedAt: now.addingTimeInterval(60)))
         let summary = try await backend.balanceSummaries()[account.id]?.primary
-        XCTAssertNil(summary?.ledgerDerivedMinor, "没有初始余额时显示未知")
+        XCTAssertEqual(summary?.ledgerDerivedMinor, -10_00)
     }
 
     // MARK: 多币种账户
@@ -367,7 +368,7 @@ final class IngestTests: XCTestCase {
         XCTAssertEqual(balances.items.map(\.currency), [.hkd, .usd, .cny])
         XCTAssertEqual(balances.item(.hkd)?.ledgerDerivedMinor, 1_000_00 - 100_00 - 20_00)
         XCTAssertEqual(balances.item(.usd)?.ledgerDerivedMinor, 200_00 - 12_50)
-        XCTAssertNil(balances.item(.cny)?.ledgerDerivedMinor, "人民币没有起点，余额未知")
+        XCTAssertEqual(balances.item(.cny)?.ledgerDerivedMinor, -30_00, "人民币没填余额，从 0 开始")
 
         try await backend.setOpeningBalance(accountID: account.id, currency: .cny, amountMinor: 500_00)
         var updated = try await backend.balanceSummaries()[account.id]
@@ -536,7 +537,7 @@ final class IngestTests: XCTestCase {
         let count = try await backend.recordCount()
         XCTAssertEqual(count, 0)
         let summary = try await backend.balanceSummaries()[account.id]?.primary
-        XCTAssertNil(summary?.ledgerDerivedMinor, "只有余额的通知不改变卡片余额")
+        XCTAssertEqual(summary?.ledgerDerivedMinor, 0, "只有余额的通知不改变卡片余额")
         let status = try await backend.automationStatus()
         XCTAssertEqual(status[account.id]?.lastSuccessAt, now, "但记为这张卡收到过自动输入")
     }

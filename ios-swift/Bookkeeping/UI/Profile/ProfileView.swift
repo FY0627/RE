@@ -3,7 +3,8 @@ import UIKit
 import BKModel
 import BKBackend
 
-/// 「我的」：系统设置风格的分组列表，二级页面用导航推入，推进去时藏起底部的标签栏（`hidesTabBar`）。
+/// 「我的」：系统设置风格的分组列表，二级页面用导航推入（`ProfileRoute`）。推进去时标签栏滑出、回来时滑入，
+/// 和资产页打开卡片详情一样：显隐放在整个导航栈上，在动画里切换。
 /// 顶部一行和首页、资产页一样高、一样的位置；列表滚到它下面时垫一层磨砂背景（和首页一样）。
 struct ProfileView: View {
     @Environment(LedgerStore.self) private var store
@@ -15,10 +16,13 @@ struct ProfileView: View {
     @State private var retention = 30
     @State private var notifyDenied = false
     @State private var scrolledUnderBar = false
+    @State private var path: [ProfileRoute] = []
+    /// 推进了二级页面：标签栏藏起来。和 `path` 分开、在动画里改，标签栏才会滑出 / 滑入，不是一下子没了
+    @State private var subpageOpen = false
     @Environment(\.openURL) private var openURL
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Form {
                 Section {
                     Picker(selection: $appearance) {
@@ -37,19 +41,14 @@ struct ProfileView: View {
                 }
 
                 Section {
-                    NavigationLink {
-                        CurrencyPicker(title: "主要币种", selection: primaryCurrencyList, multiple: false)
-                            .hidesTabBar()
-                    } label: {
+                    NavigationLink(value: ProfileRoute.primaryCurrency) {
                         LabeledContent {
                             Text(CurrencyCode(primaryCurrency).chineseName)
                         } label: {
                             Label("主要币种", systemImage: "dollarsign.circle")
                         }
                     }
-                    NavigationLink {
-                        ExchangeRateGuideView().hidesTabBar()
-                    } label: {
+                    NavigationLink(value: ProfileRoute.exchangeRates) {
                         Label("用快捷指令更新汇率", systemImage: "arrow.triangle.2.circlepath")
                     }
                     LabeledContent("汇率", value: rateStatus)
@@ -61,27 +60,19 @@ struct ProfileView: View {
                 }
 
                 Section("记账") {
-                    NavigationLink {
-                        CategoryManagerView().hidesTabBar()
-                    } label: {
+                    NavigationLink(value: ProfileRoute.categories) {
                         Label("分类", systemImage: "square.grid.2x2")
                     }
                 }
 
                 Section("自动记账") {
-                    NavigationLink {
-                        AutoSetupGuideView().hidesTabBar()
-                    } label: {
+                    NavigationLink(value: ProfileRoute.autoSetup) {
                         Label("设置自动记账", systemImage: "bolt.badge.automatic")
                     }
-                    NavigationLink {
-                        AutomationStatusView().hidesTabBar()
-                    } label: {
+                    NavigationLink(value: ProfileRoute.automationStatus) {
                         Label("自动记账状态", systemImage: "checkmark.seal")
                     }
-                    NavigationLink {
-                        TemplateListView().hidesTabBar()
-                    } label: {
+                    NavigationLink(value: ProfileRoute.templates) {
                         Label("识别模板", systemImage: "text.viewfinder")
                     }
                     Picker(selection: $notifyMode) {
@@ -98,9 +89,7 @@ struct ProfileView: View {
                             }
                         }
                     }
-                    NavigationLink {
-                        HelpView().hidesTabBar()
-                    } label: {
+                    NavigationLink(value: ProfileRoute.help) {
                         Label("使用说明", systemImage: "questionmark.circle")
                     }
                 }
@@ -118,9 +107,7 @@ struct ProfileView: View {
                 }
 
                 Section("开发与调试") {
-                    NavigationLink {
-                        PerformanceSettingsView().hidesTabBar()
-                    } label: {
+                    NavigationLink(value: ProfileRoute.performance) {
                         Label("性能开关与调试指标", systemImage: "speedometer")
                     }
                 }
@@ -152,10 +139,34 @@ struct ProfileView: View {
                     .padding(.bottom, 6)
                     .background { TopBarBackdrop(visible: scrolledUnderBar) }
             }
+            .navigationDestination(for: ProfileRoute.self) { destination($0) }
             .task { retention = await store.retentionDays() }
             .onChange(of: retention) { _, days in Task { await store.setRetentionDays(days) } }
         }
+        .toolbarVisibility(subpageOpen ? .hidden : .visible, for: .tabBar)
+        .onChange(of: path.isEmpty) { _, empty in
+            withAnimation(.smooth(duration: 0.35)) { subpageOpen = !empty }
+        }
     }
+
+    @ViewBuilder
+    private func destination(_ route: ProfileRoute) -> some View {
+        switch route {
+        case .primaryCurrency: CurrencyPicker(title: "主要币种", selection: primaryCurrencyList, multiple: false)
+        case .exchangeRates: ExchangeRateGuideView()
+        case .categories: CategoryManagerView()
+        case .autoSetup: AutoSetupGuideView()
+        case .automationStatus: AutomationStatusView()
+        case .templates: TemplateListView()
+        case .help: HelpView()
+        case .performance: PerformanceSettingsView()
+        }
+    }
+}
+
+/// 「我的」推进去的二级页面
+enum ProfileRoute: Hashable {
+    case primaryCurrency, exchangeRates, categories, autoSetup, automationStatus, templates, help, performance
 }
 
 extension ProfileView {
@@ -169,12 +180,6 @@ extension ProfileView {
             if let code = codes.first { primaryCurrency = code.rawValue }
         }
     }
-}
-
-extension View {
-    /// 「我的」推进去的页面：藏起底部的标签栏（和系统设置一样）；再往里推的页面也要加，不然标签栏又出来。
-    /// 选币种页面的搜索框也就和添加银行卡时一样在最下面
-    func hidesTabBar() -> some View { toolbarVisibility(.hidden, for: .tabBar) }
 }
 
 enum BuildInfo {

@@ -154,6 +154,8 @@ struct CurrencyPicker: View {
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // 搜索框固定在最下面：添加银行卡（弹出页里）和「我的 › 主要币种」（标签页里推进来）一个样子
+            DefaultToolbarItem(kind: .search, placement: .bottomBar)
             if multiple {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成", systemImage: "checkmark") { dismiss() }

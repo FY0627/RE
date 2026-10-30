@@ -89,10 +89,10 @@ public final class LedgerBackend: Sendable {
                 throw BackendError.invalidAccount(.duplicateAccount)
             }
             let extras = Account.normalizedExtras(draft.extraCurrencies, primary: draft.currency)
-            var openings: [OpeningBalance] = []
-            if let minor = draft.openingBalanceMinor { openings.append(OpeningBalance(currency: draft.currency, amountMinor: minor, at: now)) }
+            // 没填余额的币种从 0 开始：添加之后到达的流水直接加减，余额不再显示「未知」
+            var openings = [OpeningBalance(currency: draft.currency, amountMinor: draft.openingBalanceMinor ?? 0, at: now)]
             for currency in extras {
-                if let minor = draft.extraOpeningBalances[currency] { openings.append(OpeningBalance(currency: currency, amountMinor: minor, at: now)) }
+                openings.append(OpeningBalance(currency: currency, amountMinor: draft.extraOpeningBalances[currency] ?? 0, at: now))
             }
             let account = Account(
                 id: id, name: name.isEmpty ? Account.defaultName(bankName: bankName, cardType: draft.cardType) : name, bankID: draft.bankID, bankName: bankName,
