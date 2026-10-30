@@ -7,7 +7,7 @@
 - **自动记账**：截图 + OCR 识别支付页面。Android 上点悬浮窗触发，iOS 上用快捷指令。
 - **低端机友好**：以 2020 年左右的 60Hz 手机作为性能基准。
 
-> 当前阶段：项目骨架。前端原型在 [`prototype`](https://github.com/FY0627/RE/tree/prototype) 分支。
+> 当前阶段：项目骨架。前端原型在 [`prototype`](https://github.com/FY0627/REC/tree/prototype) 分支。
 
 ## 结构
 
