@@ -25,19 +25,17 @@
 1. 只从官方渠道下载 Windows 版：<https://github.com/nab138/iloader/releases> 或 <https://iloader.app>。
 2. 安装 [iTunes](https://apple.co/ms)，iLoader 靠它连接 iPhone。
 
-## 3. 连接并信任 iPhone
+## 3. 登录并连接 iPhone
 
-1. 用数据线连接 iPhone 与电脑，解锁 iPhone。
-2. iPhone 弹出「要信任此电脑吗？」→ 选「信任」并输入锁屏密码。
-3. 打开 iLoader，确认它能检测到你的 iPhone。
+1. 打开 iLoader，登录你自己的 Apple 账户。**不需要付费开发者账户。**
+2. 用数据线连接 iPhone 与电脑，解锁 iPhone。
+3. iPhone 弹出「要信任此电脑吗？」→ 选「信任」并输入锁屏密码。
 
-## 4. 签名并安装
+## 4. 导入 IPA
 
-1. 在 iLoader 里登录你自己的 Apple 账户，按提示完成验证。**不需要付费开发者账户。**
-2. 选择导入 IPA 的操作（iLoader 的功能名是「Import any IPA」，按钮文字以实际界面为准），选中第 1 步下载的 `.ipa`。
-3. **以后每次安装都用同一个 Apple 账户，不要改 Bundle ID**（默认是 `com.example.bookkeepingApp.swift`），
+1. 在 iLoader 里导入第 1 步下载的 `.ipa`。
+2. **以后每次安装都用同一个 Apple 账户，不要改 Bundle ID**（默认是 `com.example.bookkeepingApp.swift`），
    否则会被当成另一个 App：数据不能保留，快捷指令里的动作引用也会失效。
-4. 不要勾选会删除或修改 App 能力的选项；本 App 不需要任何额外权限（无 App Group、推送、iCloud）。
 
 ## 5. 在 iPhone 上允许运行
 
