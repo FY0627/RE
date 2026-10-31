@@ -278,7 +278,7 @@ struct AddAccountView: View {
     /// 账户添加好以后换上自己的照片；文字用白色，在大多数照片上更清楚
     private func applyPhoto(to account: Account) async {
         guard useOwnPhoto, let photoID else { return }
-        try? await store.updateCardFace(accountID: account.id, paletteID: paletteID, face: CardFace(imageID: photoID, textColor: 0xFFFFFF))
+        try? await store.updateCardFace(accountID: account.id, paletteID: paletteID, face: CardFace(imageID: photoID))
         keptPhotoID = photoID
     }
 

@@ -32,7 +32,7 @@ public enum CardType: String, Sendable, Codable, CaseIterable {
 public struct CardFace: Hashable, Sendable, Codable {
     /// 背景图的标识。图片本身保存在 App 的文件目录，不进数据库；每次换图都生成新标识。
     public var imageID: String?
-    /// 文字颜色（0xRRGGBB）；nil 时用配色方案的文字颜色。
+    /// 文字颜色（0xRRGGBB）；nil 时用配色方案的文字颜色，有背景图时用白色。
     public var textColor: UInt32?
     /// 文字大小倍数，1 为默认。
     public var textScale: Double

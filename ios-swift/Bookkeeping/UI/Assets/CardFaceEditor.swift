@@ -3,6 +3,7 @@ import PhotosUI
 import BKModel
 
 /// 编辑卡面：配色或相册图片作背景，文字颜色和大小。只影响显示，不影响账户匹配。
+/// 卡片固定在最上面，往下调文字时也一直看得到。
 /// 选图后立即裁剪缩小存成文件；没有保存就关闭时删除这次新存的图片。
 struct CardFaceEditor: View {
     let accountID: String
@@ -40,20 +41,6 @@ struct CardFaceEditor: View {
         let palette = CardPalette.named(paletteID)
         return Form {
             Section {
-                Color.clear
-                    .aspectRatio(AppLayout.cardAspect, contentMode: .fit)
-                    .overlay {
-                        WalletCardView(
-                            account: preview,
-                            balanceText: store.balances[account.id]?.cardText ?? "余额未知"
-                        )
-                    }
-                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pixelWidth = min(1200, $0 * displayScale) }
-                    .listRowBackground(Color.clear)
-                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-            }
-
-            Section {
                 PhotosPicker(selection: $pickerItem, matching: .images) {
                     HStack {
                         Label(face.imageID == nil ? "从相册选择图片" : "更换图片", systemImage: "photo")
@@ -69,12 +56,15 @@ struct CardFaceEditor: View {
                 Text("背景图片")
             }
 
-            Section(face.imageID == nil ? "配色" : "配色（移除图片后显示）") {
-                PaletteGrid(selection: $paletteID).padding(.vertical, 4)
+            if face.imageID == nil {
+                Section("配色") {
+                    PaletteGrid(selection: $paletteID).padding(.vertical, 4)
+                }
             }
 
             Section("文字") {
-                ColorPicker("文字颜色", selection: textColor(default: palette.text), supportsOpacity: false)
+                textColorSwatches
+                ColorPicker("文字颜色", selection: textColor(default: face.imageID == nil ? palette.text : 0xFFFFFF), supportsOpacity: false)
                 if face.textColor != nil {
                     Button("恢复默认颜色") { face.textColor = nil }
                 }
@@ -95,6 +85,19 @@ struct CardFaceEditor: View {
                 Section { Text(errorText).foregroundStyle(.red) }
             }
         }
+        .safeAreaBar(edge: .top) {
+            Color.clear
+                .aspectRatio(AppLayout.cardAspect, contentMode: .fit)
+                .overlay {
+                    WalletCardView(
+                        account: preview,
+                        balanceText: store.balances[account.id]?.cardText ?? "余额未知"
+                    )
+                }
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pixelWidth = min(1200, $0 * displayScale) }
+                .padding(.horizontal, AppLayout.cardInset)
+                .padding(.bottom, 8)
+        }
         .navigationTitle("编辑卡面")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -113,6 +116,34 @@ struct CardFaceEditor: View {
         .onChange(of: pickerItem) { _, item in
             guard let item else { return }
             Task { await importImage(item) }
+        }
+    }
+
+    /// 常用的文字颜色：系统色盘是弹窗，可能盖住卡片；点这里不用打开它，卡片上马上变
+    private static let textColors: [(name: String, hex: UInt32)] = [
+        ("白色", 0xFFFFFF), ("黑色", 0x1C1C1E), ("金色", 0xF5D76E), ("红色", 0xFF453A), ("绿色", 0x30D158), ("蓝色", 0x64D2FF),
+    ]
+
+    private var textColorSwatches: some View {
+        HStack(spacing: 0) {
+            ForEach(Self.textColors, id: \.hex) { color in
+                let isSelected = face.textColor == color.hex
+                Button {
+                    face.textColor = color.hex
+                } label: {
+                    Circle()
+                        .fill(Color(hex: color.hex))
+                        .frame(width: 30, height: 30)
+                        .overlay(Circle().stroke(.separator))
+                        .padding(3)
+                        .overlay(Circle().stroke(.tint, lineWidth: isSelected ? 2 : 0))
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(color.name)
+                .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+            }
         }
     }
 
@@ -138,8 +169,6 @@ struct CardFaceEditor: View {
                 try CardFaceImages.importImage(data, pixelWidth: pixelWidth, aspect: AppLayout.cardAspect)
             }.value
             importedIDs.append(id)
-            // 第一次换成图片时文字默认改为白色，在大多数照片上更清楚
-            if face.imageID == nil, face.textColor == nil { face.textColor = 0xFFFFFF }
             face.imageID = id
             errorText = nil
         } catch {

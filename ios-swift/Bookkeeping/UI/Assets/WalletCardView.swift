@@ -1,7 +1,7 @@
 import SwiftUI
 import BKModel
 
-/// 卡面：配色渐变或自定义图片、银行圆标、名称与卡类型、余额、尾号。尺寸由外部 frame 决定。
+/// 卡面：配色渐变时有银行圆标、名称与卡类型、余额、尾号；自定义图片时只有右上角的余额。尺寸由外部 frame 决定。
 ///
 /// 渲染开销按 Apple 的建议压低：
 /// - 阴影只画在一个圆角矩形上（形状阴影），不对含文字的整张卡做阴影，避免离屏渲染；
@@ -31,8 +31,33 @@ struct WalletCardView: View {
 
     private func face(_ palette: CardPalette) -> some View {
         let style = account.face
+        // 图片上默认用白字，在大多数照片上更清楚
+        let text = style.textColor.map { Color(hex: $0) } ?? (style.imageID == nil ? palette.textColor : .white)
+        return Group {
+            if style.imageID == nil {
+                details(palette, text: text)
+            } else {
+                balance.frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .foregroundStyle(text)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background { background(palette, imageID: style.imageID) }
+    }
+
+    private var balance: some View {
+        Text(balanceText)
+            .font(.system(size: 14 * account.face.textScale, weight: .bold))
+            .monospacedDigit()
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+    }
+
+    private func details(_ palette: CardPalette, text: Color) -> some View {
+        let style = account.face
         let s = style.textScale
-        let text = style.textColor.map { Color(hex: $0) } ?? palette.textColor
         let subtext = style.textColor == nil ? palette.subtextColor : text.opacity(0.75)
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 8) {
@@ -52,7 +77,7 @@ struct WalletCardView: View {
                 Spacer(minLength: 8)
                 HStack(spacing: 4) {
                     Image(systemName: "wave.3.right").font(.system(size: 13 * s)).opacity(0.8)
-                    Text(balanceText).font(.system(size: 14 * s, weight: .bold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+                    balance
                 }
             }
             Spacer(minLength: 0)
@@ -67,11 +92,6 @@ struct WalletCardView: View {
                 Text(Self.currencyLabel(account)).font(.system(size: 12 * s, weight: .bold)).italic().opacity(0.8)
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
-        .foregroundStyle(text)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background { background(palette, imageID: style.imageID) }
     }
 
     /// 圆标里的字：列表里的银行用它的简称（「中国工商银行」写「工」），自己填的银行用名称的第一个字

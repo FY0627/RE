@@ -89,7 +89,7 @@ final class HomeTopBarView: UIView, UITextFieldDelegate {
         let metrics = UIFontMetrics(forTextStyle: .largeTitle)
         titleLabel.font = metrics.scaledFont(for: UIFont.systemFont(ofSize: 34, weight: .bold))
         titleLabel.adjustsFontForContentSizeCategory = true
-        titleLabel.text = "REC"
+        titleLabel.text = "首页"
         titleLabel.textColor = .label
         titleLabel.accessibilityTraits = .header
         addSubview(titleLabel)

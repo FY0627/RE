@@ -147,6 +147,7 @@ docker run --rm -v "<仓库>/ios-swift/Packages/BKCore:/pkg" -w /pkg bk-swift sw
 - **卡面图片**：选图时用 ImageIO 一次性按卡片比例居中裁剪、缩小到卡片的屏幕像素（最大 1200px 宽）存成 JPEG，
   放在 `Application Support/Ledger/CardFaces/`，数据库只存文件标识。显示时后台解码并缓存（`CardFaceImages`），
   卡包滚动和详情转场只绘制已解码的位图。换图、移除或取消编辑时删除不再使用的文件。
+  用图片时卡面上只有右上角的金额（默认白字），编辑页不显示配色；编辑页的卡片固定在最上面，改文字颜色、大小时实时看到变化。
 - **停用**：卡片信息里，或资产页「更多 › 管理银行卡」里停用（`accounts.archived`）。停用的卡不参与自动记账匹配和净资产，
   流水保留，在资产页最下方以灰色卡包显示，可以点开详情，也可以重新启用。
 - **删除**：只有停用的卡能删除（卡片信息最下面，确认后删除，不能恢复）。只做标记（`accounts.deleted_at`，`AccountDAO.markDeleted`）：

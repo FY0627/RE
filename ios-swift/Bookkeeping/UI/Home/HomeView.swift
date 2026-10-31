@@ -70,7 +70,7 @@ struct HomeView: View {
             .listStyle(.insetGrouped)
             .scrollDismissesKeyboard(.immediately)
             .trackingScrollUnderTopBar($scrolledUnderBar)
-            .navigationTitle("REC")
+            .navigationTitle("首页")
             // 系统导航栏藏起来了，但默认的大标题模式仍在：往下拉时列表先停在「大标题展开」的位置再弹回，
             // 点状态栏回到顶部时列表停在大标题展开的位置（多出一截空白）。改成小标题就没有这一截
             .navigationBarTitleDisplayMode(.inline)
